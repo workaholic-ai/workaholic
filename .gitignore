@@ -1,3 +1,13 @@
 .gitnexus
 .claude
 .venv
+
+# Python bytecode and tool state
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Python package artifacts
+build/
+dist/
+*.egg-info/
