@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import importlib
-import os
 import subprocess
 import sys
 import sysconfig
@@ -11,6 +10,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 import pytest
+from click import unstyle
 from typer.testing import CliRunner
 
 from workaholic.cli.main import app as cli_app
@@ -38,13 +38,10 @@ def _run_command(
         The completed process with decoded stdout and stderr.
 
     """
-    environment = os.environ.copy()
-    environment["NO_COLOR"] = "1"
     return subprocess.run(
         command,
         check=False,
         cwd=working_directory,
-        env=environment,
         capture_output=True,
         text=True,
     )
@@ -110,10 +107,11 @@ def test_console_script_without_command_prints_help(
 ) -> None:
     """A commandless invocation prints help, does not prompt, and succeeds."""
     result = _run_command([console_script], working_directory=tmp_path)
+    output = unstyle(result.stdout)
 
     assert result.returncode == 0
-    assert "Usage: workaholic [OPTIONS] COMMAND [ARGS]..." in result.stdout
-    assert "Coordinate work between human operators" in result.stdout
+    assert "Usage: workaholic [OPTIONS] COMMAND [ARGS]..." in output
+    assert "Coordinate work between human operators" in output
     assert result.stderr == ""
 
 
