@@ -1,0 +1,73 @@
+[build-system]
+requires = ["hatchling==1.31.0"]
+build-backend = "hatchling.build"
+
+[project]
+name = "workaholic-ai"
+version = "0.0.0"
+description = "CLI-first task coordination for human operators and autonomous agents."
+requires-python = ">=3.14"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+authors = [
+  { name = "Pavels Gurskis", email = "pg@ithesion.com" },
+]
+maintainers = [
+  { name = "Pavels Gurskis", email = "pg@ithesion.com" },
+]
+keywords = [
+  "agents",
+  "automation",
+  "cli",
+  "task-management",
+]
+classifiers = [
+  "Development Status :: 2 - Pre-Alpha",
+  "Environment :: Console",
+  "Intended Audience :: Developers",
+  "License :: OSI Approved :: Apache Software License",
+  "Operating System :: OS Independent",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3 :: Only",
+  "Programming Language :: Python :: 3.14",
+  "Topic :: Software Development",
+]
+dependencies = [
+  "typer>=0.27.0,<0.28.0",
+]
+
+[project.urls]
+Documentation = "https://github.com/workaholic-ai/workaholic/tree/main/docs"
+Issues = "https://github.com/workaholic-ai/workaholic/issues"
+Repository = "https://github.com/workaholic-ai/workaholic"
+
+[project.scripts]
+workaholic = "workaholic.cli.main:main"
+
+[dependency-groups]
+dev = [
+  "pytest>=9.1.1,<10.0.0",
+]
+
+[tool.hatch.build.targets.sdist]
+include = [
+  "/.python-version",
+  "/LICENSE",
+  "/docs",
+  "/pyproject.toml",
+  "/src",
+  "/tests",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/workaholic"]
+
+[tool.pytest.ini_options]
+addopts = [
+  "--strict-config",
+  "--strict-markers",
+  "-ra",
+]
+filterwarnings = ["error"]
+testpaths = ["tests"]
+xfail_strict = true
