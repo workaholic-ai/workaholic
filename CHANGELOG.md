@@ -29,3 +29,6 @@ public versioning begins.
   verification.
 - Public source development from Phase 0, while package publication and
   supported releases remain gated by the release-candidate phases.
+- A fail-fast Phase 0 acceptance gate that proves the locked source checkout,
+  full quality and test suite, package build, and isolated wheel installation
+  from a clean clone.
