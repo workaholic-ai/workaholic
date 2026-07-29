@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 import pytest
+from click import unstyle
 from typer.testing import CliRunner
 
 from workaholic.cli.main import app as cli_app
@@ -106,10 +107,11 @@ def test_console_script_without_command_prints_help(
 ) -> None:
     """A commandless invocation prints help, does not prompt, and succeeds."""
     result = _run_command([console_script], working_directory=tmp_path)
+    output = unstyle(result.stdout)
 
     assert result.returncode == 0
-    assert "Usage: workaholic [OPTIONS] COMMAND [ARGS]..." in result.stdout
-    assert "Coordinate work between human operators" in result.stdout
+    assert "Usage: workaholic [OPTIONS] COMMAND [ARGS]..." in output
+    assert "Coordinate work between human operators" in output
     assert result.stderr == ""
 
 

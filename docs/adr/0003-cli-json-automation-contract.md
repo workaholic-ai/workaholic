@@ -93,4 +93,3 @@ semantics.
 - [Architecture](../architecture.md)
 - [ADR 0002: Local and Remote Sessions](0002-local-and-remote-sessions.md)
 - [ADR 0004: Private Versioned Client/Server Protocol](0004-private-versioned-client-server-protocol.md)
-

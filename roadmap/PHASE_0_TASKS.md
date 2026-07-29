@@ -514,7 +514,7 @@ decisions:
   - One Phase 0 epic issue
   - One implementation issue for each task in this document
   - `main` branch ruleset
-- Description: Create or connect the private organization repository and encode
+- Description: Create or connect the public organization repository and encode
   the trunk-based development workflow. This task changes GitHub state and must
   be performed by an authorized repository owner. Copy each task into an
   independently assignable issue while preserving implementation order and
@@ -528,7 +528,7 @@ decisions:
   - CI check names from Task 10.
   - CODEOWNERS and issue forms from Task 9.
 - Outputs:
-  - A protected private repository with milestones, labels, and actionable
+  - A protected public repository with milestones, labels, and actionable
     implementation issues.
 - Tests:
   - Open a temporary pull request or use the ruleset evaluator to verify direct
@@ -610,8 +610,8 @@ decisions:
 4. Every pull request that changes installation, CLI commands, output,
    prerequisites, support status, or the primary user journey must update the
    relevant `README.md` quick-start or status content in the same change.
-5. Do not publish a package or create a public release during Phase 0. Built
-   artifacts are internal CI evidence only.
+5. Public source development begins in Phase 0, but do not publish a package or
+   create a GitHub release during Phase 0. Built artifacts are CI evidence only.
 6. Phase 0 introduces no persisted application schema, data migration, server,
    external service, or deployment procedure. No production migration or
    rollback step is required.

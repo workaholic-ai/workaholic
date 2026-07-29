@@ -97,4 +97,3 @@ ranges and advertised features allow explicit supported combinations.
 - [CLI contract](../cli-contract.md)
 - [ADR 0002: Local and Remote Sessions](0002-local-and-remote-sessions.md)
 - [ADR 0003: CLI JSON Automation Contract](0003-cli-json-automation-contract.md)
-

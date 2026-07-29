@@ -89,4 +89,3 @@ credential handling, and operational support that are outside v1.
 - [Architecture](../architecture.md)
 - [Product scope](../product-scope.md)
 - [ADR 0005: Semantic Persistence Interface](0005-semantic-persistence-interface.md)
-

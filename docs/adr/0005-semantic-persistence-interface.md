@@ -97,4 +97,3 @@ contract for later backends.
 - [Threat model](../threat-model.md)
 - [Compatibility policy](../compatibility-policy.md)
 - [ADR 0009: No Storage Migrations in v1](0009-no-storage-migrations-in-v1.md)
-

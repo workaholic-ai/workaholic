@@ -3,7 +3,7 @@
 - Status: Accepted Phase 0 baseline
 - Decision date: 2026-07-29
 - Scope: Embedded and shared-server behavior required for v1
-- Security contact: pg@ithesion.com
+- Security contact: [pg@ithesion.com](mailto:pg@ithesion.com)
 
 ## Purpose
 
@@ -207,4 +207,3 @@ the one organization served by an Instance.
 - [Compatibility policy](compatibility-policy.md)
 - [Glossary](glossary.md)
 - [Security reporting policy](../SECURITY.md)
-

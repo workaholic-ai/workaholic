@@ -88,4 +88,3 @@ which violates stable audit and reference semantics.
 - [Architecture](../architecture.md)
 - [Glossary](../glossary.md)
 - [ADR 0005: Semantic Persistence Interface](0005-semantic-persistence-interface.md)
-

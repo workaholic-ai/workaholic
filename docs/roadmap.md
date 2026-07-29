@@ -12,7 +12,7 @@ This avoids spending months building abstractions, server plumbing, and three st
 
 | Phase | GitHub milestone      | Working result                                           | Suggested release |
 | ----- | --------------------- | -------------------------------------------------------- | ----------------- |
-| 0     | Foundation            | Repository builds, tests, and runs a CLI skeleton        | Internal only     |
+| 0     | Foundation            | Public repository builds, tests, and runs a CLI skeleton | No package        |
 | 1     | Local Alpha           | Solo developer can create and inspect persistent tasks   | `0.1.0a1`         |
 | 2     | Multi-project Alpha   | Working-directory discovery and stable `ACME-1` IDs      | `0.2.0a1`         |
 | 3     | Workflow Alpha        | Full human task lifecycle, dependencies, results, events | `0.3.0a1`         |
@@ -21,7 +21,7 @@ This avoids spending months building abstractions, server plumbing, and three st
 | 6     | Team Alpha            | Remote CLI and shared server work end to end             | `0.6.0a1`         |
 | 7     | Persistence Beta      | JSON, SQLite, and PostgreSQL pass the same contract      | `0.7.0b1`         |
 | 8     | Feature-complete Beta | UX, reliability, packaging, documentation, schema freeze | `0.8.0b1`         |
-| 9     | Release Candidate     | Public-ready repository and installable RC               | `1.0.0rc1`        |
+| 9     | Release Candidate     | Hardened public repository and installable RC             | `1.0.0rc1`        |
 | 10    | v1 Release            | Fully supported public v1                                | `1.0.0`           |
 
 The first meaningfully useful product arrives in **Phase 1**. The first product suitable for autonomous local agents arrives in **Phase 4**. Distributed teams can begin using it after **Phase 6**.
@@ -36,7 +36,8 @@ phase-specific verification.
 
 ## Repository strategy
 
-Start with one private repository in a GitHub organization rather than a personal account:
+Start with one public repository in a GitHub organization rather than a
+personal account:
 
 ```text
 workaholic-ai/workaholic
@@ -53,6 +54,11 @@ Executable:       workaholic
 ```
 
 The product and package names remain provisional until package-name availability and basic legal/name clearance are completed.
+
+Source development is public from Phase 0 under Apache-2.0. Public repository
+visibility does not make a Phase 0 commit a supported release: package
+publication, release artifacts, and compatibility commitments remain gated by
+the later release phases.
 
 Use a trunk-based workflow:
 
@@ -1161,11 +1167,11 @@ All v1 features are present. Remaining work is bug fixing, documentation correct
 
 ---
 
-# Phase 9 — Open-source readiness and release candidate
+# Phase 9 — Release readiness and release candidate
 
 ## Goal
 
-Produce a release candidate that can safely become public.
+Produce a supported release candidate from the public development repository.
 
 ## Repository readiness
 
@@ -1194,7 +1200,8 @@ Make a final decision on:
 * supported Python and operating-system versions;
 * maintenance policy.
 
-Before changing repository visibility:
+Because repository development is public from Phase 0, continuously enforce
+these controls and repeat the complete audit before the release candidate:
 
 * scan the complete Git history for credentials;
 * remove private company URLs and internal names;
@@ -1203,7 +1210,9 @@ Before changing repository visibility:
 * verify documentation examples contain no secrets;
 * confirm all contributors have authority to license their work.
 
-Add a security policy early. Once the repository is public, GitHub private vulnerability reporting can provide a structured private disclosure path to maintainers. ([GitHub Docs][5])
+Add a security policy early. GitHub private vulnerability reporting can provide
+a structured private disclosure path to maintainers of the public repository.
+([GitHub Docs][5])
 
 Enable dependency vulnerability monitoring and controlled dependency-update pull requests. GitHub provides Dependabot alerts, security updates, and configurable version-update behavior. ([GitHub Docs][6])
 
@@ -1249,7 +1258,10 @@ human remote client
 agent remote client
 ```
 
-The preferred open-source timing is at RC, after the security and licensing gates pass. That allows external installation feedback before the final release while avoiding exposing an obviously unfinished repository.
+Source development is public from Phase 0 so contributors can inspect delivery
+decisions and provide early feedback. Package publication and the first
+supported release remain deferred until the release-candidate security,
+licensing, compatibility, and installation gates pass.
 
 ## Exit gate
 
@@ -1362,7 +1374,7 @@ Workaholic AI is v1-ready only when all of the following are true:
 10. Clean wheel, source-distribution, and `uvx` installations pass.
 11. The persisted schema and CLI JSON contract are frozen.
 12. Security, contribution, governance, and support documentation are present.
-13. The repository is safe to make public.
+13. The public repository remains free of secrets and private internal data.
 14. The release workflow publishes without long-lived PyPI credentials.
 15. The v1 limitations are explicit rather than implied.
 

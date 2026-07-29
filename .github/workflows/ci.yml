@@ -133,4 +133,3 @@ jobs:
 
       - name: Test the wheel outside the checkout
         run: scripts/smoke-install.sh dist/workaholic_ai-*.whl
-

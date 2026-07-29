@@ -21,4 +21,3 @@
 # Persistence contract and adapters.
 /docs/persistence-contract.md @pavelsg
 /src/workaholic/persistence/ @pavelsg
-

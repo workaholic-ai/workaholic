@@ -27,3 +27,5 @@ public versioning begins.
 - Least-privilege continuous integration with immutable action pins, locked
   quality and test jobs, inspectable build artifacts, and isolated wheel smoke
   verification.
+- Public source development from Phase 0, while package publication and
+  supported releases remain gated by the release-candidate phases.
