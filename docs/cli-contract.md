@@ -165,9 +165,9 @@ In JSON mode:
 - a successful command exits zero;
 - an error envelope is accompanied by a nonzero exit status.
 
-Exact nonzero exit-code categories remain a reviewed pre-freeze contract item.
-Once documented and frozen in Phase 8, they follow the same v1 compatibility
-rules as error codes.
+Phase 1 establishes nonzero exit categories `2`, `3`, `4`, `5`, and `10` as
+specified below. Additional commands may add error identifiers before the
+Phase 8 freeze, but they must map failures into a documented category.
 
 Failures before the executable can establish JSON mode, such as operating-system
 startup failures, are outside the envelope guarantee and may report only on
@@ -257,6 +257,218 @@ Each agent-facing command specification must define:
 
 A command is not contract-complete until executable tests cover those points in
 both supported Session modes where applicable.
+
+## Phase 1 command contract
+
+This section is normative for the Phase 1 LocalSession vertical slice. Every
+command below accepts `--json` and `--non-interactive`; these flags have the
+global behavior defined above. The Phase 1 commands do not start a daemon,
+select RemoteSession, search parent directories for context, load configurable
+profiles, or require a Token.
+
+### Shared Phase 1 objects
+
+Command data uses these closed Phase 1 shapes. Later pre-freeze phases may add
+fields, and consumers must continue to ignore unknown fields as required by the
+envelope contract.
+
+| Object | Required fields |
+| --- | --- |
+| `instance` | `id` as a nonempty string |
+| `project` | `id` and `key` as strings |
+| `subject` | `id`, `kind`, `display_name`, `is_instance_admin`, and `project_role` |
+| `workspace` | absolute `root` and absolute `context_file` paths |
+
+For Phase 1, `subject.kind` is `human`, `subject.display_name` is
+`Local operator`, `subject.is_instance_admin` is `true`, and
+`subject.project_role` is `owner`. Project keys match
+`[A-Z][A-Z0-9]{1,15}` and are immutable.
+
+A serialized `task` contains exactly these required fields:
+
+| Field | JSON type | Phase 1 rule |
+| --- | --- | --- |
+| `uid` | string | Canonical globally unique Task identity |
+| `project_id` | string | Owning Project identity |
+| `number` | integer | Positive, monotonic within the Project |
+| `key` | string | Immutable `PROJECT-NUMBER` human identity |
+| `title` | string | Trimmed length from 1 through 200 Unicode characters |
+| `objective` | string | Trimmed length from 1 through 4,000 Unicode characters |
+| `state` | string | `open` |
+| `priority` | integer | From 0 through 100 |
+| `version` | integer | `1` at creation |
+| `created_by` | string | Bootstrap Human Subject identity |
+| `created_at` | string | RFC 3339 UTC timestamp |
+| `updated_at` | string | Same as `created_at` at creation |
+
+### `workaholic up`
+
+```text
+workaholic up --project-key KEY
+  [--idempotency-key KEY] [--json] [--non-interactive]
+```
+
+`--project-key` is required and validated before persistent state changes. The
+command initializes the SQLite schema, one local Instance, one Human Subject,
+Instance-administrator status, one Project, and an Owner ProjectGrant. It then
+writes a strict `.workaholic.env` to the exact current directory. It creates no
+Token or TaskEvent.
+
+Success `data` is:
+
+```json
+{
+  "instance": {"id": "ins_01..."},
+  "project": {"id": "prj_01...", "key": "ACME"},
+  "subject": {
+    "id": "sub_01...",
+    "kind": "human",
+    "display_name": "Local operator",
+    "is_instance_admin": true,
+    "project_role": "owner"
+  },
+  "workspace": {
+    "root": "/work/acme",
+    "context_file": "/work/acme/.workaholic.env"
+  }
+}
+```
+
+### `workaholic status`
+
+```text
+workaholic status [--json] [--non-interactive]
+```
+
+The command is read-only. It reads only
+`<current-working-directory>/.workaholic.env`; Phase 1 does not search a parent
+directory. Success `data` is:
+
+```json
+{
+  "mode": "local",
+  "schema_version": 1,
+  "instance": {"id": "ins_01..."},
+  "project": {"id": "prj_01...", "key": "ACME"},
+  "subject": {
+    "id": "sub_01...",
+    "kind": "human",
+    "display_name": "Local operator",
+    "is_instance_admin": true,
+    "project_role": "owner"
+  }
+}
+```
+
+### `workaholic project list`
+
+```text
+workaholic project list [--json] [--non-interactive]
+```
+
+The command is read-only. Success `data` contains `projects`, an array of
+`project` objects ordered by project key ascending:
+
+```json
+{"projects": [{"id": "prj_01...", "key": "ACME"}]}
+```
+
+### `workaholic task add`
+
+```text
+workaholic task add TITLE [--objective TEXT] [--priority INTEGER]
+  [--idempotency-key KEY] [--json] [--non-interactive]
+```
+
+The title is required. Omitted `--objective` defaults to the normalized title;
+omitted `--priority` defaults to `50`. The created Task has state `open` and
+version `1`. The Task and its attributable `task_created` TaskEvent commit in
+one transaction. Success `data` is:
+
+```json
+{"task": {"uid": "tsk_01...", "project_id": "prj_01...", "number": 1, "key": "ACME-1", "title": "First task", "objective": "First task", "state": "open", "priority": 50, "version": 1, "created_by": "sub_01...", "created_at": "2026-07-30T10:00:00Z", "updated_at": "2026-07-30T10:00:00Z"}}
+```
+
+### `workaholic task list`
+
+```text
+workaholic task list [--cursor CURSOR] [--limit INTEGER]
+  [--json] [--non-interactive]
+```
+
+The command is read-only. `--limit` defaults to `100`, must be positive, and
+must not exceed `500`. Tasks are ordered by task number ascending. The cursor
+is opaque and bound to the Project and ordering; callers must not construct or
+interpret it. Success `data` is:
+
+```json
+{"tasks": [], "next_cursor": null}
+```
+
+`next_cursor` is a string only when another page exists, otherwise it is JSON
+`null`. Paging through unchanged records neither duplicates nor omits a Task.
+
+### `workaholic task show`
+
+```text
+workaholic task show TASK [--json] [--non-interactive]
+```
+
+`TASK` accepts a canonical Task UID or a human key such as `ACME-1`. The
+command is read-only. Success `data` is:
+
+```json
+{"task": {"uid": "tsk_01...", "project_id": "prj_01...", "number": 1, "key": "ACME-1", "title": "First task", "objective": "First task", "state": "open", "priority": 50, "version": 1, "created_by": "sub_01...", "created_at": "2026-07-30T10:00:00Z", "updated_at": "2026-07-30T10:00:00Z"}}
+```
+
+### Phase 1 idempotency
+
+`up` and `task add` accept an optional `--idempotency-key`. The key and a
+canonical fingerprint of the normalized semantic input are stored atomically
+with the successful outcome. Repeating the same operation with the same key
+and input returns that outcome. Reusing the key with different input returns
+`IDEMPOTENCY_CONFLICT` and changes neither state nor events.
+
+`up` is also naturally idempotent without a caller key: repeating it for the
+existing Phase 1 Project returns the existing bootstrap entities, and a retry
+after context-file failure safely completes the binding. A different Project
+key returns `PROJECT_KEY_CONFLICT`. By contrast, omitting the key from
+`task add` does not make an ambiguous failed Task creation safe to retry.
+
+### Phase 1 errors and exits
+
+The error message is for Humans and is not an automation discriminator. Phase
+1 code and exit mappings are:
+
+| Error code | Exit | Retryable | Meaning |
+| --- | ---: | :---: | --- |
+| `INVALID_INPUT` | 2 | false | Invalid argument, option, value, or cursor |
+| `CONTEXT_NOT_FOUND` | 3 | false | No exact-directory context file |
+| `CONTEXT_INVALID` | 3 | false | Context file is malformed or untrusted |
+| `NOT_INITIALIZED` | 3 | false | Referenced local Instance is not initialized |
+| `TASK_NOT_FOUND` | 3 | false | Task UID or key does not resolve |
+| `PROJECT_KEY_CONFLICT` | 4 | false | Project key belongs to another Project |
+| `IDEMPOTENCY_CONFLICT` | 4 | false | Key was reused with different input |
+| `PERMISSION_DENIED` | 5 | false | Active Subject lacks the required grant |
+| `SCHEMA_UNSUPPORTED` | 10 | false | Store schema is missing or unsupported |
+| `STORAGE_BUSY` | 10 | true | Bounded SQLite lock acquisition was exhausted |
+| `STORAGE_UNAVAILABLE` | 10 | false | Local storage cannot be opened or made durable |
+| `INTERNAL_ERROR` | 10 | false | Redacted unexpected operational failure |
+
+The command-to-error surface is:
+
+| Command | Documented errors in addition to storage, schema, permission, and internal errors |
+| --- | --- |
+| `up` | `INVALID_INPUT`, `CONTEXT_INVALID`, `PROJECT_KEY_CONFLICT`, `IDEMPOTENCY_CONFLICT` |
+| `status` | `CONTEXT_NOT_FOUND`, `CONTEXT_INVALID`, `NOT_INITIALIZED` |
+| `project list` | `CONTEXT_NOT_FOUND`, `CONTEXT_INVALID`, `NOT_INITIALIZED` |
+| `task add` | `INVALID_INPUT`, `CONTEXT_NOT_FOUND`, `CONTEXT_INVALID`, `NOT_INITIALIZED`, `IDEMPOTENCY_CONFLICT` |
+| `task list` | `INVALID_INPUT`, `CONTEXT_NOT_FOUND`, `CONTEXT_INVALID`, `NOT_INITIALIZED` |
+| `task show` | `INVALID_INPUT`, `CONTEXT_NOT_FOUND`, `CONTEXT_INVALID`, `NOT_INITIALIZED`, `TASK_NOT_FOUND` |
+
+Command parser usage failures also use exit `2`. Once JSON mode is established,
+the CLI maps them to an `INVALID_INPUT` envelope. A failure before Python can
+establish JSON mode remains outside the envelope guarantee.
 
 ## Conformance requirements
 

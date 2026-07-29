@@ -52,6 +52,37 @@ refactored when this semantic behavior remains unchanged.
 
 PostgreSQL is never accessed directly by CLI clients.
 
+## Phase 1 SQLite baseline
+
+Phase 1 implements only the embedded LocalSession SQLite adapter and schema
+version `1`. Its empty-store bootstrap atomically persists:
+
+- one Instance;
+- one enabled Human Subject named `Local operator`;
+- Instance administrator status for that Subject;
+- one Project;
+- one Owner ProjectGrant for that Subject and Project;
+- the next task-number allocation state.
+
+Bootstrap does not persist a Token and does not append a TaskEvent: TaskEvents
+require a Task identity and bootstrap does not invent one. The first accepted
+Task creation atomically allocates the Project number, creates the Task at
+version `1`, appends one attributable `task_created` event with a generated
+request identity, and records the idempotent outcome when a caller key is
+present.
+
+The Phase 1 adapter provides semantic operations for bootstrap, project
+listing, Task creation, Task lookup, and Task listing. Task listing is scoped
+to one Project, ordered by task number ascending, and paged with an opaque
+project-bound cursor. The default limit is 100 and the maximum is 500. These
+reads do not change persisted state.
+
+Phase 1 supports optional durable idempotency for `up` and `task add`.
+Phase 2 extends context discovery, Phase 3 adds Task updates and their version
+increments, Phase 4 adds Attempts and Leases, and Phase 5 adds Tokens and
+general identity management. These deferrals do not weaken the Phase 1
+Subject, ProjectGrant, TaskEvent, schema-validation, or atomicity guarantees.
+
 ## Store opening and schema version
 
 Every store records a backend-independent schema version. Before the first
@@ -104,7 +135,7 @@ Creating a Task atomically:
 2. allocates the next monotonically increasing Project task number;
 3. creates a globally unique Task UID;
 4. derives the stable human key such as `ACME-42`;
-5. creates the initial Task version and state;
+5. creates the initial Task at version `1` and state `open`;
 6. appends the attributable `task_created` TaskEvent;
 7. commits one outcome.
 
@@ -129,6 +160,10 @@ RFC 3339 UTC values without changing their ordering or meaning.
 
 Every mutable Task has an integer optimistic version. A conditional update
 supplies the expected version.
+
+Creation initializes the version to `1`. Version increments and conflict
+checks begin when versioned update commands arrive in Phase 3; creation itself
+does not perform a synthetic increment.
 
 - If the expected version matches, the adapter validates the transition,
   commits the mutation and TaskEvent, and increments the version exactly once.

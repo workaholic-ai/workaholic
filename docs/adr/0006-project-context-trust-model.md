@@ -58,6 +58,20 @@ be mutually consistent with authoritative state.
 `.git/info/exclude` when appropriate. It must not modify a shared `.gitignore`
 unless the user explicitly requests that repository change.
 
+### Phase delivery boundary
+
+Phase 1 `workaholic up` writes the strict file in the exact current directory.
+Every other Phase 1 command inspects only
+`<current-working-directory>/.workaholic.env`; it does not search a parent
+directory. The only accepted profile value is `local`, which names a built-in
+embedded SQLite selection rather than a user-configurable profile. Phase 1
+does not read a user profile, accept a remote endpoint, or select
+RemoteSession.
+
+Phase 2 implements the full upward resolution order and trusted configurable
+profiles described above. It extends the Phase 1 file format rather than
+introducing repository context for the first time.
+
 ## Alternatives considered
 
 ### Store the Token and URL in `.workaholic.env`
@@ -88,6 +102,8 @@ management.
 - Trusted profile and runtime configuration need separate storage and
   permission handling.
 - Nested context is deterministic because the nearest file wins.
+- Phase 1 callers must invoke commands from the bound directory; upward
+  discovery begins in Phase 2.
 - Binding tools must prevent accidental tracking without silently changing
   shared repository policy.
 - A future context format change requires an explicit version and compatibility
