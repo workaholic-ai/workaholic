@@ -7,6 +7,12 @@ resolution-markers = [
 ]
 
 [[package]]
+name = "actionlint-py"
+version = "1.7.12.24"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/6f/0b/3f29683dfbe94208fb5c3806806a6ef419972892e25c3c4f95198f68c978/actionlint_py-1.7.12.24.tar.gz", hash = "sha256:7571b0724fde79b2572b98b2b53792c470249d4db29951b57fc49b9cd3eaf11e", size = 12071, upload-time = "2026-03-31T06:21:35.015Z" }
+
+[[package]]
 name = "annotated-doc"
 version = "0.0.5"
 source = { registry = "https://pypi.org/simple" }
@@ -564,6 +570,7 @@ dependencies = [
 
 [package.dev-dependencies]
 dev = [
+    { name = "actionlint-py" },
     { name = "import-linter" },
     { name = "markdown-it-py" },
     { name = "mypy" },
@@ -581,6 +588,7 @@ requires-dist = [{ name = "typer", specifier = ">=0.27.0,<0.28.0" }]
 
 [package.metadata.requires-dev]
 dev = [
+    { name = "actionlint-py", specifier = ">=1.7.12.24,<1.8.0" },
     { name = "import-linter", specifier = ">=2.13.0,<2.14.0" },
     { name = "markdown-it-py", specifier = ">=4.2.0,<5.0.0" },
     { name = "mypy", specifier = ">=2.3.0,<2.4.0" },

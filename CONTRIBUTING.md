@@ -44,12 +44,19 @@ Useful focused commands are:
 | Import boundaries | `uv run lint-imports --no-cache` |
 | Documentation links | `uv run python scripts/check_doc_links.py` |
 | Package build | `uv build` |
+| Built-wheel smoke test | `scripts/smoke-install.sh <wheel-path>` |
 | CLI smoke check | `uv run workaholic --version` |
 
 Tests treat warnings as errors and enforce the coverage threshold configured in
 `pyproject.toml`. Add unit, integration, contract, or end-to-end coverage in
 proportion to the behavior being changed. Bug fixes should include a regression
 test.
+
+The CI workflow exposes four branch-protection-ready checks: `quality`, `tests`,
+`build`, and `wheel-smoke`. The final check downloads the wheel produced by the
+build job and installs it into a fresh temporary environment outside the source
+checkout. To exercise the same boundary locally, build the package and pass the
+resulting wheel path to `scripts/smoke-install.sh`.
 
 Tests are organized by boundary: `unit` for isolated logic, `contract` for
 observable behavior shared by implementations, `integration` for multiple real

@@ -24,3 +24,6 @@ public versioning begins.
   checks that protect domain, application, Session, and adapter boundaries.
 - Community conduct, vulnerability disclosure, code ownership, structured
   issue intake, pull-request review, and bounded dependency-update policies.
+- Least-privilege continuous integration with immutable action pins, locked
+  quality and test jobs, inspectable build artifacts, and isolated wheel smoke
+  verification.

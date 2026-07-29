@@ -47,6 +47,7 @@ workaholic = "workaholic.cli.main:main"
 
 [dependency-groups]
 dev = [
+  "actionlint-py>=1.7.12.24,<1.8.0",
   "import-linter>=2.13.0,<2.14.0",
   "markdown-it-py>=4.2.0,<5.0.0",
   "mypy>=2.3.0,<2.4.0",
@@ -62,7 +63,7 @@ dev = [
 [tool.hatch.build.targets.sdist]
 include = [
   "/.editorconfig",
-  "/.github/pull_request_template.md",
+  "/.github",
   "/.markdownlint-cli2.yaml",
   "/.pre-commit-config.yaml",
   "/.python-version",

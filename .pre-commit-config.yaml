@@ -91,6 +91,22 @@ repos:
         always_run: true
         pass_filenames: false
 
+      - id: actionlint
+        name: GitHub Actions workflow lint
+        entry: uv run --frozen actionlint
+        language: system
+        files: ^\.github/workflows/.*\.ya?ml$
+
+      - id: ci-contracts
+        name: CI workflow and wheel smoke contracts
+        entry: >-
+          uv run --frozen pytest --no-cov
+          tests/unit/repository/test_ci_configuration.py
+          tests/unit/scripts/test_smoke_install.py
+        language: system
+        files: ^(\.github/workflows/ci\.yml|scripts/smoke-install\.sh|tests/unit/repository/test_ci_configuration\.py|tests/unit/scripts/test_smoke_install\.py)$
+        pass_filenames: false
+
       - id: pytest
         name: pytest with coverage
         entry: uv run --frozen pytest
