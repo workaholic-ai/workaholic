@@ -1,13 +1,17 @@
-"""Semantic persistence contracts and backend adapters."""
+"""Phase 1 SQLite schema and short-lived connection boundaries."""
 
-from workaholic.persistence.sqlite import (
-    SCHEMA_VERSION,
+from workaholic.persistence.sqlite.connection import (
+    open_read_connection,
+    open_write_transaction,
+)
+from workaholic.persistence.sqlite.errors import (
     SchemaUnsupportedError,
     StorageBusyError,
     StorageUnavailableError,
+)
+from workaholic.persistence.sqlite.schema import (
+    SCHEMA_VERSION,
     initialize_empty_store,
-    open_read_connection,
-    open_write_transaction,
     validate_store_schema,
 )
 
