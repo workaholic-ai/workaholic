@@ -642,6 +642,7 @@ name = "workaholic-ai"
 version = "0.0.0"
 source = { editable = "." }
 dependencies = [
+    { name = "platformdirs" },
     { name = "pydantic" },
     { name = "typer" },
 ]
@@ -663,6 +664,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "platformdirs", specifier = ">=4.11.0,<4.12.0" },
     { name = "pydantic", specifier = ">=2.13.4,<2.14.0" },
     { name = "typer", specifier = ">=0.27.0,<0.28.0" },
 ]
