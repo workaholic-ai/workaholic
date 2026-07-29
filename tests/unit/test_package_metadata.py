@@ -36,6 +36,7 @@ def test_source_metadata_matches_foundation_decisions() -> None:
 
     assert project["name"] == _DISTRIBUTION_NAME
     assert project["version"] == "0.0.0"
+    assert project["readme"] == "README.md"
     assert project["requires-python"] == ">=3.14"
     assert project["license"] == "Apache-2.0"
     assert project["license-files"] == ["LICENSE"]
@@ -51,6 +52,7 @@ def test_installed_metadata_matches_source_metadata() -> None:
     project = _project_metadata()
     distribution = metadata.distribution(_DISTRIBUTION_NAME)
     installed = distribution.metadata
+    packaged_metadata = distribution.read_text("METADATA")
 
     assert installed["Name"] == project["name"]
     assert installed["Version"] == project["version"]
@@ -58,6 +60,9 @@ def test_installed_metadata_matches_source_metadata() -> None:
     assert installed["License-Expression"] == project["license"]
     assert installed.get_all("License-File") == ["LICENSE"]
     assert installed["Author-email"] == ("Pavels Gurskis <pg@ithesion.com>")
+    assert installed["Description-Content-Type"] == "text/markdown"
+    assert packaged_metadata is not None
+    assert "# Workaholic AI" in packaged_metadata
 
 
 def test_console_entry_point_loads_public_main() -> None:
