@@ -7,10 +7,19 @@ from importlib import metadata
 from pathlib import Path
 from urllib.parse import unquote, urlsplit
 
+from scripts.check_doc_links import (
+    discover_markdown_files,
+    validate_document_links,
+)
+
 _PROJECT_ROOT = Path(__file__).parents[3]
 _README = _PROJECT_ROOT / "README.md"
 _CONTRIBUTING = _PROJECT_ROOT / "CONTRIBUTING.md"
 _PULL_REQUEST_TEMPLATE = _PROJECT_ROOT / ".github" / "pull_request_template.md"
+_GLOSSARY = _PROJECT_ROOT / "docs" / "glossary.md"
+_ARCHITECTURE = _PROJECT_ROOT / "docs" / "architecture.md"
+_ROADMAP = _PROJECT_ROOT / "docs" / "roadmap.md"
+_THREAT_MODEL = _PROJECT_ROOT / "docs" / "threat-model.md"
 _DISTRIBUTION_NAME = "workaholic-ai"
 _INLINE_LINK_PATTERN = re.compile(r"(?<!!)\[[^\]]+\]\((?P<target>[^)\s]+)\)")
 _QUICK_START_PATTERN = re.compile(
@@ -27,6 +36,37 @@ _VERSION_OUTPUT_PATTERN = re.compile(
 _EXPECTED_QUICK_START = """uv sync
 uv run workaholic --version
 uv run pytest"""
+_REQUIRED_GLOSSARY_TERMS = frozenset(
+    {
+        "Agent",
+        "Attempt",
+        "Human",
+        "Instance",
+        "Lease",
+        "LocalSession",
+        "Project",
+        "ProjectGrant",
+        "RemoteSession",
+        "Result",
+        "Session",
+        "Subject",
+        "Task",
+        "TaskEvent",
+        "Workspace",
+    }
+)
+_REQUIRED_THREATS = frozenset(
+    {
+        "Command injection",
+        "Compromised Agent",
+        "Denial of service",
+        "Event forgery",
+        "Secret exposure",
+        "Stolen Token",
+        "Token redirection",
+        "Unauthorized Attempt mutation",
+    }
+)
 
 
 def test_readme_relative_links_resolve_within_the_repository() -> None:
@@ -47,6 +87,52 @@ def test_readme_relative_links_resolve_within_the_repository() -> None:
 
         assert resolved_path.is_relative_to(_PROJECT_ROOT)
         assert resolved_path.exists(), f"README link does not resolve: {target}"
+
+
+def test_all_repository_documentation_links_resolve() -> None:
+    """Every repository-local Markdown path and heading fragment resolves."""
+    markdown_files = discover_markdown_files(_PROJECT_ROOT)
+    issues = validate_document_links(_PROJECT_ROOT, markdown_files)
+
+    assert not issues, "\n".join(issue.format(_PROJECT_ROOT) for issue in issues)
+
+
+def test_canonical_documents_have_no_root_level_copies() -> None:
+    """Architecture and roadmap exist only under their canonical docs paths."""
+    assert _ARCHITECTURE.is_file()
+    assert _ROADMAP.is_file()
+    assert not (_PROJECT_ROOT / "ARCHITECTURE.md").exists()
+    assert not (_PROJECT_ROOT / "ROADMAP.md").exists()
+
+
+def test_glossary_defines_terms_used_by_architecture_and_roadmap() -> None:
+    """Canonical planning documents use every required glossary term."""
+    glossary = _GLOSSARY.read_text(encoding="utf-8")
+    headings = frozenset(re.findall(r"^## (.+)$", glossary, flags=re.MULTILINE))
+    planning_documents = _ARCHITECTURE.read_text(encoding="utf-8") + _ROADMAP.read_text(
+        encoding="utf-8"
+    )
+
+    assert headings >= _REQUIRED_GLOSSARY_TERMS
+    for term in _REQUIRED_GLOSSARY_TERMS:
+        assert term in planning_documents
+
+
+def test_threat_model_covers_required_boundaries_and_attack_scenarios() -> None:
+    """The accepted threat baseline retains every owner-required scenario."""
+    threat_model = " ".join(_THREAT_MODEL.read_text(encoding="utf-8").split())
+
+    for threat in _REQUIRED_THREATS:
+        assert f"| {threat} |" in threat_model
+    for boundary in (
+        "Instance administrator",
+        "operating-system credential store",
+        "ProjectGrant",
+        ".workaholic.env",
+        "one organization",
+        "public multi-tenant",
+    ):
+        assert boundary in threat_model
 
 
 def test_readme_quick_start_contains_only_executable_phase_zero_commands() -> None:

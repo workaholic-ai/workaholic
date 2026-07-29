@@ -9,6 +9,10 @@ It runs in two modes:
 
 Agents use the CLI exclusively. A future TUI uses the same internal client interface rather than wrapping or parsing the CLI.
 
+Canonical terms are defined in the [glossary](glossary.md). Security assumptions,
+trust boundaries, and required mitigations are defined in the
+[threat model](threat-model.md).
+
 For the examples below:
 
 ```text
@@ -254,6 +258,8 @@ The transport is not the public agent interface. It is an implementation detail 
 ## 5. Project and working-directory context
 
 A project is a logical namespace inside an instance. A working directory is a local binding to that project.
+
+In canonical terminology, each working-directory binding is a **Workspace**.
 
 The same project may be checked out in several places:
 

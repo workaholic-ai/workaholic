@@ -65,12 +65,14 @@ Local task workflows arrive before agent and distributed-team workflows.
 
 These capabilities are roadmap commitments, not features in the current
 package. See the [product scope](docs/product-scope.md) and
-[delivery roadmap](ROADMAP.md) for their boundaries and sequence.
+[delivery roadmap](docs/roadmap.md) for their boundaries and sequence.
 
 ## Project documents
 
-- [Architecture](ARCHITECTURE.md)
-- [Roadmap](ROADMAP.md)
+- [Architecture](docs/architecture.md)
+- [Roadmap](docs/roadmap.md)
+- [Glossary](docs/glossary.md)
+- [Threat model](docs/threat-model.md)
 - [Product scope](docs/product-scope.md)
 - [Compatibility policy](docs/compatibility-policy.md)
 - [Security policy](SECURITY.md)

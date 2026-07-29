@@ -26,6 +26,10 @@ This avoids spending months building abstractions, server plumbing, and three st
 
 The first meaningfully useful product arrives in **Phase 1**. The first product suitable for autonomous local agents arrives in **Phase 4**. Distributed teams can begin using it after **Phase 6**.
 
+The [glossary](glossary.md) defines shared terminology, and the
+[threat model](threat-model.md) maps the accepted security boundary to
+phase-specific verification.
+
 ---
 
 # GitHub operating model

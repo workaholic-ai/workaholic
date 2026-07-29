@@ -47,6 +47,7 @@ workaholic = "workaholic.cli.main:main"
 
 [dependency-groups]
 dev = [
+  "markdown-it-py>=4.2.0,<5.0.0",
   "mypy>=2.3.0,<2.4.0",
   "pre-commit>=4.6.0,<5.0.0",
   "pytest>=9.1.1,<10.0.0",
@@ -62,12 +63,10 @@ include = [
   "/.markdownlint-cli2.yaml",
   "/.pre-commit-config.yaml",
   "/.python-version",
-  "/ARCHITECTURE.md",
   "/CHANGELOG.md",
   "/CONTRIBUTING.md",
   "/LICENSE",
   "/README.md",
-  "/ROADMAP.md",
   "/SECURITY.md",
   "/docs",
   "/pyproject.toml",
@@ -109,6 +108,7 @@ enable_error_code = [
   "truthy-bool",
 ]
 files = [
+  "scripts",
   "src",
   "tests",
 ]
@@ -129,12 +129,14 @@ addopts = [
   "-ra",
 ]
 filterwarnings = ["error"]
+pythonpath = ["."]
 testpaths = ["tests"]
 xfail_strict = true
 
 [tool.ruff]
 line-length = 88
 src = [
+  "scripts",
   "src",
   "tests",
 ]

@@ -41,5 +41,6 @@ a public multi-tenant hosted service are outside v1.
 
 The current Phase 0 package does not implement authentication, persistence,
 project context, agent execution, or network services. See the
-[product scope](docs/product-scope.md) for the accepted v1 security boundary.
-
+[product scope](docs/product-scope.md) for the accepted v1 security boundary
+and the [threat model](docs/threat-model.md) for trust assumptions, threats,
+and required mitigations.

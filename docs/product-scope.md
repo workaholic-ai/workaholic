@@ -112,6 +112,9 @@ arbitrary endpoint.
 Cross-organization tenant isolation, untrusted instance administrators, and a
 public multi-tenant hosted service are not v1 requirements.
 
+The [threat model](threat-model.md) records the trusted components, threats,
+required mitigations, and phase-specific verification for this boundary.
+
 ## Explicitly outside v1
 
 The following capabilities must not delay v1:

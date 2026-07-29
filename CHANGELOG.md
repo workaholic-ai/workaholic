@@ -15,4 +15,4 @@ public versioning begins.
 - Installable `workaholic-ai` package with the `workaholic` bootstrap CLI.
 - Reproducible local linting, formatting, typing, testing, and build controls.
 - Public quick start, contribution guidance, and repository impact checks.
-
+- Canonical architecture, roadmap, glossary, and v1 threat model.

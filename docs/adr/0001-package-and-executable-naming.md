@@ -103,5 +103,5 @@ distribution.
 
 - [Product scope](../product-scope.md)
 - [Compatibility policy](../compatibility-policy.md)
-- [Architecture](../../ARCHITECTURE.md)
-- [Delivery roadmap](../../ROADMAP.md)
+- [Architecture](../architecture.md)
+- [Delivery roadmap](../roadmap.md)

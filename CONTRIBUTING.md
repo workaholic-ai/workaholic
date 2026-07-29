@@ -39,6 +39,7 @@ Useful focused commands are:
 | Commit-stage checks | `uv run pre-commit run --all-files` |
 | Complete test suite | `uv run pytest` |
 | One test module | `uv run pytest --no-cov tests/unit/docs/test_public_documentation.py` |
+| Documentation links | `uv run python scripts/check_doc_links.py` |
 | Package build | `uv build` |
 | CLI smoke check | `uv run workaholic --version` |
 
@@ -71,7 +72,8 @@ through persistence. Local and remote sessions must preserve the same
 application behavior. Importing the normal CLI path must not start services,
 access storage, use the network, or write to user directories.
 
-Review [the architecture](ARCHITECTURE.md), [product scope](docs/product-scope.md),
+Review [the architecture](docs/architecture.md),
+[product scope](docs/product-scope.md), [threat model](docs/threat-model.md),
 and accepted [architecture decisions](docs/adr/) before changing a boundary or
 public contract. Material changes require an ADR rather than an undocumented
 exception.
