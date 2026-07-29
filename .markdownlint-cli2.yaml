@@ -12,5 +12,6 @@ globs:
   - "**/*.md"
 
 ignores:
+  - ".claude/**"
   - ".gitnexus/**"
   - ".venv/**"

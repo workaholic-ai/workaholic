@@ -20,6 +20,12 @@ _GLOSSARY = _PROJECT_ROOT / "docs" / "glossary.md"
 _ARCHITECTURE = _PROJECT_ROOT / "docs" / "architecture.md"
 _ROADMAP = _PROJECT_ROOT / "docs" / "roadmap.md"
 _THREAT_MODEL = _PROJECT_ROOT / "docs" / "threat-model.md"
+_PRODUCT_SCOPE = _PROJECT_ROOT / "docs" / "product-scope.md"
+_COMPATIBILITY_POLICY = _PROJECT_ROOT / "docs" / "compatibility-policy.md"
+_IDENTITY_ADR = (
+    _PROJECT_ROOT / "docs" / "adr" / "0007-human-and-agent-identity-model.md"
+)
+_SESSIONS_ADR = _PROJECT_ROOT / "docs" / "adr" / "0002-local-and-remote-sessions.md"
 _DISTRIBUTION_NAME = "workaholic-ai"
 _INLINE_LINK_PATTERN = re.compile(r"(?<!!)\[[^\]]+\]\((?P<target>[^)\s]+)\)")
 _QUICK_START_PATTERN = re.compile(
@@ -33,9 +39,12 @@ _BASH_BLOCK_PATTERN = re.compile(
 _VERSION_OUTPUT_PATTERN = re.compile(
     r"The version command prints:\n\n```text\n(?P<output>[^\n]+)\n```"
 )
-_EXPECTED_QUICK_START = """uv sync
+_EXPECTED_QUICK_START = """uv sync --frozen
+uv run pre-commit run --all-files
 uv run workaholic --version
-uv run pytest"""
+uv run pytest
+uv build
+scripts/smoke-install.sh dist/*.whl"""
 _REQUIRED_GLOSSARY_TERMS = frozenset(
     {
         "Agent",
@@ -154,6 +163,31 @@ def test_readme_version_output_matches_installed_distribution() -> None:
     assert output_match.group("output") == (
         f"workaholic {metadata.version(_DISTRIBUTION_NAME)}"
     )
+
+
+def test_phase_zero_scope_decisions_are_consistent_across_public_documents() -> None:
+    """Tenancy, compatibility, and v1 sequencing retain one accepted answer."""
+    readme = " ".join(_README.read_text(encoding="utf-8").split())
+    scope = " ".join(_PRODUCT_SCOPE.read_text(encoding="utf-8").split())
+    compatibility = " ".join(_COMPATIBILITY_POLICY.read_text(encoding="utf-8").split())
+    identity_adr = " ".join(_IDENTITY_ADR.read_text(encoding="utf-8").split())
+    sessions_adr = " ".join(_SESSIONS_ADR.read_text(encoding="utf-8").split())
+    roadmap = " ".join(_ROADMAP.read_text(encoding="utf-8").split())
+
+    assert "compatibility is not promised" in readme
+    assert "before `1.0.0`" in readme
+    assert (
+        "formal public backward-compatibility promise begins with the final "
+        "`1.0.0` release" in compatibility
+    )
+    assert "Cross-organization tenant isolation" in scope
+    assert "outside v1" in scope
+    assert "Single-organization scope" in identity_adr
+    assert "embedded local operation before distributed team coordination" in (
+        sessions_adr
+    )
+    assert "Local task workflows arrive before agent and distributed-team" in readme
+    assert "Distributed teams can begin using it after **Phase 6**" in roadmap
 
 
 def test_contribution_policy_defines_readme_update_triggers() -> None:

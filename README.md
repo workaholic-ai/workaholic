@@ -32,9 +32,12 @@ Clone the repository with your preferred Git transport, change into the
 checkout, and run:
 
 ```bash
-uv sync
+uv sync --frozen
+uv run pre-commit run --all-files
 uv run workaholic --version
 uv run pytest
+uv build
+scripts/smoke-install.sh dist/*.whl
 ```
 
 The version command prints:
@@ -42,6 +45,19 @@ The version command prints:
 ```text
 workaholic 0.0.0
 ```
+
+## Phase 0 acceptance gate
+
+From a fresh clone with no active virtual environment, run:
+
+```bash
+scripts/verify-phase-0.sh
+```
+
+The gate executes the exact quick-start sequence above, fails on the first
+invalid stage, installs the built wheel outside the checkout, and rejects dirty
+or pre-generated repository state. It creates only ignored `.venv` and `dist`
+paths and does not publish an artifact.
 
 ## Current CLI
 

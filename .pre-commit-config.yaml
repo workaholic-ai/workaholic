@@ -107,6 +107,16 @@ repos:
         files: ^(\.github/workflows/ci\.yml|scripts/smoke-install\.sh|tests/unit/repository/test_ci_configuration\.py|tests/unit/scripts/test_smoke_install\.py)$
         pass_filenames: false
 
+      - id: phase-zero-contracts
+        name: Phase 0 acceptance and public documentation contracts
+        entry: >-
+          uv run --frozen pytest --no-cov
+          tests/unit/docs/test_public_documentation.py
+          tests/unit/scripts/test_verify_phase_0.py
+        language: system
+        files: ^(README\.md|scripts/verify-phase-0\.sh|tests/e2e/test_phase_0_distribution\.py|tests/unit/docs/test_public_documentation\.py|tests/unit/scripts/test_verify_phase_0\.py)$
+        pass_filenames: false
+
       - id: pytest
         name: pytest with coverage
         entry: uv run --frozen pytest
