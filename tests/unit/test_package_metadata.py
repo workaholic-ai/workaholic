@@ -43,7 +43,10 @@ def test_source_metadata_matches_foundation_decisions() -> None:
     assert project["authors"] == [
         {"name": "Pavels Gurskis", "email": "pg@ithesion.com"}
     ]
-    assert project["dependencies"] == ["typer>=0.27.0,<0.28.0"]
+    assert project["dependencies"] == [
+        "pydantic>=2.13.4,<2.14.0",
+        "typer>=0.27.0,<0.28.0",
+    ]
     assert project["scripts"] == {"workaholic": "workaholic.cli.main:main"}
 
 
@@ -61,6 +64,10 @@ def test_installed_metadata_matches_source_metadata() -> None:
     assert installed.get_all("License-File") == ["LICENSE"]
     assert installed["Author-email"] == ("Pavels Gurskis <pg@ithesion.com>")
     assert installed["Description-Content-Type"] == "text/markdown"
+    assert installed.get_all("Requires-Dist") == [
+        "pydantic<2.14.0,>=2.13.4",
+        "typer<0.28.0,>=0.27.0",
+    ]
     assert packaged_metadata is not None
     assert "# Workaholic AI" in packaged_metadata
 

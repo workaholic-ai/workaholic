@@ -4,9 +4,9 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass, field
+from datetime import datetime  # noqa: TC003
 from enum import StrEnum
 from types import MappingProxyType
-from typing import TYPE_CHECKING
 
 from workaholic.domain.errors import DomainValidationError
 from workaholic.domain.identifiers import (
@@ -28,9 +28,7 @@ from workaholic.domain.rules import (
     validate_utc_timestamp,
 )
 
-if TYPE_CHECKING:
-    from datetime import datetime
-
+# Pydantic application boundaries resolve domain annotations at runtime.
 type JsonScalar = None | bool | int | float | str
 
 _SUBJECT_DISPLAY_NAME_MIN_LENGTH = 1
