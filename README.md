@@ -77,10 +77,15 @@ package. See the [product scope](docs/product-scope.md) and
 - [Threat model](docs/threat-model.md)
 - [Product scope](docs/product-scope.md)
 - [Compatibility policy](docs/compatibility-policy.md)
-- [Security policy](SECURITY.md)
+
+## Community and project policies
+
 - [Contributing guide](CONTRIBUTING.md)
+- [Code of Conduct](CODE_OF_CONDUCT.md)
+- [Security policy](SECURITY.md)
 - [Changelog](CHANGELOG.md)
 - [Apache License 2.0](LICENSE)
 
-Security concerns should be reported privately as described in the
-[security policy](SECURITY.md).
+Use the [repository issue forms](https://github.com/workaholic-ai/workaholic/issues/new/choose)
+for bugs, feature proposals, and architecture decisions. Security concerns and
+conduct reports must be submitted privately through their respective policies.

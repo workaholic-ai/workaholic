@@ -4,6 +4,10 @@
 
 <!-- Describe the problem, outcome, and important implementation decisions. -->
 
+## Related work
+
+<!-- Link the issue, milestone, ADR, or roadmap task. Use "None" when standalone. -->
+
 ## Verification
 
 <!-- List the exact commands and any manual checks used to verify this change. -->
@@ -28,6 +32,8 @@ the impact notes.
       credentials, authorization, untrusted input, and data exposure.
 - [ ] Architecture-decision impact has been assessed; an ADR was added or
       updated when a product contract or architecture boundary changed.
+- [ ] Dependency and supply-chain impact has been assessed, including lockfile,
+      build, and external-action changes.
 
 ## Impact notes
 
@@ -40,3 +46,10 @@ the impact notes.
 - [ ] User-visible behavior is reflected in the README and changelog where
       applicable.
 
+## Security
+
+<!--
+Do not disclose an unpatched vulnerability, credential, private key, token,
+production data, or personal information in this pull request. Follow
+SECURITY.md for private reporting.
+-->

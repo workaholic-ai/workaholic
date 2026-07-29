@@ -22,3 +22,5 @@ public versioning begins.
   pytest taxonomy and phase-specific enablement gates.
 - Exhaustive package dependency contracts and isolated CLI import-weight
   checks that protect domain, application, Session, and adapter boundaries.
+- Community conduct, vulnerability disclosure, code ownership, structured
+  issue intake, pull-request review, and bounded dependency-update policies.

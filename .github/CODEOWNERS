@@ -1,0 +1,24 @@
+# Default ownership. Later matching rules make sensitive boundaries explicit.
+* @pavelsg
+
+# Repository governance and automation.
+/.github/ @pavelsg
+/.github/CODEOWNERS @pavelsg
+/.github/dependabot.yml @pavelsg
+/.github/workflows/ @pavelsg
+
+# Security policy and authentication boundary.
+/SECURITY.md @pavelsg
+/docs/threat-model.md @pavelsg
+/src/workaholic/auth/ @pavelsg
+
+# Private client-server protocol contract and implementation.
+/docs/cli-contract.md @pavelsg
+/docs/adr/0004-private-versioned-client-server-protocol.md @pavelsg
+/src/workaholic/protocol/ @pavelsg
+/src/workaholic/client/ @pavelsg
+
+# Persistence contract and adapters.
+/docs/persistence-contract.md @pavelsg
+/src/workaholic/persistence/ @pavelsg
+

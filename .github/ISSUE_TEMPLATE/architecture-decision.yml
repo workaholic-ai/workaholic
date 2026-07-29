@@ -1,0 +1,87 @@
+name: Architecture decision
+description: Propose a durable product contract or architecture-boundary decision.
+title: "[Decision]: "
+labels:
+  - "area:docs"
+  - "kind:decision"
+  - "priority:p1"
+  - "status:needs-design"
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use this form when a change requires an architecture decision record.
+        The accepted decision must later use the repository
+        [ADR template](https://github.com/workaholic-ai/workaholic/blob/main/docs/adr/0000-adr-template.md).
+
+        Do not disclose credentials, private data, or unpatched vulnerabilities
+        in this public form. Use the
+        [private security-reporting process](https://github.com/workaholic-ai/workaholic/security/policy)
+        when applicable.
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Primary affected area
+      description: Select the closest ownership area; maintainers may apply additional labels.
+      options:
+        - "area:domain"
+        - "area:cli"
+        - "area:context"
+        - "area:auth"
+        - "area:server"
+        - "area:storage"
+        - "area:release"
+        - "area:docs"
+    validations:
+      required: true
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Context and decision pressure
+      description: Explain the constraint, conflict, or irreversible choice that requires a decision.
+    validations:
+      required: true
+
+  - type: textarea
+    id: decision
+    attributes:
+      label: Proposed decision
+      description: State the proposed rule and its explicit boundaries.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives
+      description: Compare credible options, including the status quo.
+    validations:
+      required: true
+
+  - type: textarea
+    id: consequences
+    attributes:
+      label: Consequences and reversibility
+      description: Describe benefits, costs, failure modes, migration needs, and how the decision could be reversed.
+    validations:
+      required: true
+
+  - type: textarea
+    id: contract_impact
+    attributes:
+      label: Contract, security, and delivery impact
+      description: Identify affected public contracts, dependency boundaries, threat-model assumptions, phases, tests, and documentation.
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: confirmation
+    attributes:
+      label: Submission checks
+      options:
+        - label: I reviewed existing ADRs and linked related decisions or issues.
+          required: true
+        - label: This proposal contains no secrets, credentials, private data, or unpatched vulnerability details.
+          required: true

@@ -1,0 +1,85 @@
+name: Feature proposal
+description: Propose a user outcome that fits the accepted product scope.
+title: "[Feature]: "
+labels:
+  - "kind:feature"
+  - "priority:p2"
+  - "status:needs-design"
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Describe the problem before prescribing an implementation. Planned v1
+        behavior must remain consistent with the product scope and roadmap.
+
+        Do not disclose credentials, private data, or unpatched vulnerabilities
+        in this public form. Use the
+        [private security-reporting process](https://github.com/workaholic-ai/workaholic/security/policy)
+        when applicable.
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Primary area
+      description: Select the closest ownership area; maintainers will apply the matching label.
+      options:
+        - "area:domain"
+        - "area:cli"
+        - "area:context"
+        - "area:auth"
+        - "area:server"
+        - "area:storage"
+        - "area:release"
+        - "area:docs"
+    validations:
+      required: true
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: Explain who is blocked, what they are trying to accomplish, and why current behavior is insufficient.
+    validations:
+      required: true
+
+  - type: textarea
+    id: outcome
+    attributes:
+      label: Desired outcome
+      description: Describe observable success without depending on a particular implementation.
+    validations:
+      required: true
+
+  - type: textarea
+    id: use_cases
+    attributes:
+      label: Representative use cases
+      description: Give concrete human or agent workflows and important edge cases.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Explain workarounds or smaller approaches and their limitations.
+    validations:
+      required: true
+
+  - type: textarea
+    id: contracts
+    attributes:
+      label: Contract and compatibility impact
+      description: Identify affected CLI, persistence, protocol, security, tenancy, or architecture contracts.
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: confirmation
+    attributes:
+      label: Submission checks
+      options:
+        - label: I checked the roadmap and existing issues for this outcome.
+          required: true
+        - label: This proposal contains no secrets, credentials, private data, or unpatched vulnerability details.
+          required: true

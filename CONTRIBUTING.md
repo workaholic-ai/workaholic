@@ -2,7 +2,8 @@
 
 Workaholic AI is in pre-alpha development. Contributions should preserve the
 current foundation contracts and clearly distinguish implemented behavior from
-the planned v1 direction.
+the planned v1 direction. Participation is governed by the
+[Code of Conduct](CODE_OF_CONDUCT.md).
 
 ## Development environment
 
@@ -135,3 +136,17 @@ every documented command and output example matches the current package.
 
 Report vulnerabilities privately through the [security policy](SECURITY.md),
 not in a public issue or pull request.
+
+## Issues and proposals
+
+Use the repository's
+[issue chooser](https://github.com/workaholic-ai/workaholic/issues/new/choose)
+for bug reports, feature proposals, and architecture decisions. Choose the
+closest `area:*` value in the form and provide a minimal, reproducible,
+non-sensitive example where applicable.
+
+Do not put credentials, private keys, access tokens, production data, personal
+information, or unpatched vulnerability details in an issue. Security reports
+must follow the private process in the [security policy](SECURITY.md). Conduct
+concerns must follow the private process in the
+[Code of Conduct](CODE_OF_CONDUCT.md).
