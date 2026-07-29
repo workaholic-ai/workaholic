@@ -43,6 +43,13 @@ repos:
         files: ^(pyproject\.toml|uv\.lock)$
         pass_filenames: false
 
+      - id: import-boundaries
+        name: Import dependency boundaries
+        entry: uv run --frozen lint-imports --no-cache
+        language: system
+        files: ^(pyproject\.toml|src/workaholic/.*\.py)$
+        pass_filenames: false
+
       - id: ruff-check
         name: Ruff lint
         entry: uv run --frozen ruff check --fix --exit-non-zero-on-fix

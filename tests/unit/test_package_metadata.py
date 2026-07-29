@@ -92,6 +92,7 @@ def test_console_entry_point_loads_public_main() -> None:
         "workaholic.protocol",
         "workaholic.server",
         "workaholic.session",
+        "workaholic.tui",
     ],
 )
 def test_declared_package_boundaries_are_importable(module_name: str) -> None:

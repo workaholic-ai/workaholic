@@ -1,0 +1,22 @@
+[tool.importlinter]
+root_package = "boundary_sample"
+
+[[tool.importlinter.contracts]]
+id = "package-layers"
+name = "Package layer violation sample"
+type = "layers"
+containers = ["boundary_sample"]
+layers = [
+  "cli : persistence",
+  "application",
+  "domain",
+]
+exhaustive = true
+
+[[tool.importlinter.contracts]]
+id = "cli-session-boundary"
+name = "CLI violation sample"
+type = "forbidden"
+source_modules = ["boundary_sample.cli"]
+forbidden_modules = ["boundary_sample.persistence"]
+allow_indirect_imports = true

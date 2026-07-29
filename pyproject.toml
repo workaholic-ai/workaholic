@@ -47,6 +47,7 @@ workaholic = "workaholic.cli.main:main"
 
 [dependency-groups]
 dev = [
+  "import-linter>=2.13.0,<2.14.0",
   "markdown-it-py>=4.2.0,<5.0.0",
   "mypy>=2.3.0,<2.4.0",
   "pre-commit>=4.6.0,<5.0.0",
@@ -107,6 +108,7 @@ enable_error_code = [
   "redundant-expr",
   "truthy-bool",
 ]
+exclude = ["^tests/contract/fixtures/"]
 files = [
   "scripts",
   "src",
@@ -117,6 +119,37 @@ python_version = "3.14"
 show_error_code_links = true
 strict = true
 warn_unreachable = true
+
+[tool.importlinter]
+exclude_type_checking_imports = false
+root_package = "workaholic"
+
+[[tool.importlinter.contracts]]
+id = "package-layers"
+name = "Domain and application dependency direction"
+type = "layers"
+containers = ["workaholic"]
+layers = [
+  "cli : tui : server : session : persistence : protocol : client : context",
+  "application : auth",
+  "domain",
+]
+exhaustive = true
+exhaustive_ignores = ["__main__"]
+
+[[tool.importlinter.contracts]]
+id = "cli-session-boundary"
+name = "CLI presentation uses sessions instead of application adapters"
+type = "forbidden"
+source_modules = ["workaholic.cli"]
+forbidden_modules = [
+  "workaholic.application",
+  "workaholic.client",
+  "workaholic.persistence",
+  "workaholic.protocol",
+  "workaholic.server",
+]
+allow_indirect_imports = true
 
 [tool.pytest.ini_options]
 addopts = [

@@ -12,3 +12,7 @@ schema and private route details do not.
 
 The canonical end-to-end acceptance flows remain in the
 [golden journey directory](../e2e/golden/README.md).
+
+Intentional negative samples live under [fixtures](fixtures/README.md). They
+prove each dependency rule and the CLI startup detector fail with actionable
+importer and imported-module names.

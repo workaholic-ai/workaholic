@@ -40,6 +40,7 @@ Useful focused commands are:
 | Complete test suite | `uv run pytest` |
 | One test module | `uv run pytest --no-cov tests/unit/docs/test_public_documentation.py` |
 | Collect golden specifications | `uv run pytest --collect-only tests/e2e/golden` |
+| Import boundaries | `uv run lint-imports --no-cache` |
 | Documentation links | `uv run python scripts/check_doc_links.py` |
 | Package build | `uv build` |
 | CLI smoke check | `uv run workaholic --version` |
@@ -79,6 +80,12 @@ The CLI must communicate through the session boundary rather than directly
 through persistence. Local and remote sessions must preserve the same
 application behavior. Importing the normal CLI path must not start services,
 access storage, use the network, or write to user directories.
+
+Import Linter enforces the package layers declared in `pyproject.toml`.
+Composition exceptions belong only at the explicit Session and server
+composition roots documented in the architecture. Do not add package-wide
+ignores; any narrow import exception requires an architecture explanation and
+a failing-then-passing contract test.
 
 Review [the architecture](docs/architecture.md),
 [CLI automation contract](docs/cli-contract.md),

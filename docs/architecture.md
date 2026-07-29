@@ -997,7 +997,7 @@ Agents
 
 Polling the event cursor is sufficient initially. Streaming transport can be added later without changing the TUI’s session interface.
 
-## 15. Suggested package structure
+## 15. Package structure and enforced dependency boundaries
 
 ```text
 src/workaholic/
@@ -1078,7 +1078,44 @@ CLI / TUI
 Session interface
 ```
 
-The normal remote-client startup path must not eagerly import server frameworks, PostgreSQL drivers, or server scheduling code. This keeps CLI startup light and makes later native packaging easier.
+These boundaries are executable contracts:
+
+| Layer | Packages | Dependency rule |
+| --- | --- | --- |
+| Domain | `domain` | May not import any other Workaholic AI package |
+| Application and policy | `application`, `auth` | May depend inward on Domain, but not on presentation, Session, context, transport, server, or persistence packages |
+| Presentation and adapters | `cli`, `tui`, `server`, `session`, `persistence`, `protocol`, `client`, `context` | May depend inward; sibling dependencies are allowed where an adapter requires them |
+
+The root `workaholic.__main__` module is the only exhaustive-layer exclusion. It
+is a console entry-point shim that delegates immediately to `cli.main` and owns
+no application behavior.
+
+CLI and TUI presentation modules may import Session interfaces. They must not
+directly import application services, persistence adapters, private protocol
+models, transport clients, or server modules. Indirect dependencies reached
+through a Session implementation are expected and do not make presentation
+code an adapter composition root.
+
+Composition is restricted to explicit adapter boundaries:
+
+- `session.local` may wire the application layer to an embedded persistence
+  adapter;
+- `session.remote` may wire Session operations to the official transport
+  client;
+- `server.main` may wire server routes, application services, authentication,
+  and one configured persistence adapter.
+
+There are currently no ignored import edges. A future exception requires a
+narrow source-to-target rule, architecture documentation, and a test proving
+why the composition root is necessary; no production package may be exempted
+wholesale.
+
+The exhaustive layer contract and direct CLI contract are configured in
+`pyproject.toml` and run through Import Linter in pytest and pre-commit. The
+normal client startup path is also tested in a fresh isolated Python process.
+It must not eagerly import server frameworks, PostgreSQL drivers, scheduling
+frameworks, or `workaholic.server`. This keeps CLI startup light and makes later
+native packaging easier.
 
 ## 16. Correctness invariants
 

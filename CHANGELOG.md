@@ -20,3 +20,5 @@ public versioning begins.
   persistence delivery contracts.
 - Executable specifications for all six golden user journeys, with a strict
   pytest taxonomy and phase-specific enablement gates.
+- Exhaustive package dependency contracts and isolated CLI import-weight
+  checks that protect domain, application, Session, and adapter boundaries.
