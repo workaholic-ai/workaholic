@@ -39,6 +39,7 @@ Useful focused commands are:
 | Commit-stage checks | `uv run pre-commit run --all-files` |
 | Complete test suite | `uv run pytest` |
 | One test module | `uv run pytest --no-cov tests/unit/docs/test_public_documentation.py` |
+| Collect golden specifications | `uv run pytest --collect-only tests/e2e/golden` |
 | Documentation links | `uv run python scripts/check_doc_links.py` |
 | Package build | `uv build` |
 | CLI smoke check | `uv run workaholic --version` |
@@ -47,6 +48,13 @@ Tests treat warnings as errors and enforce the coverage threshold configured in
 `pyproject.toml`. Add unit, integration, contract, or end-to-end coverage in
 proportion to the behavior being changed. Bug fixes should include a regression
 test.
+
+Tests are organized by boundary: `unit` for isolated logic, `contract` for
+observable behavior shared by implementations, `integration` for multiple real
+components, and `e2e` for supported user-facing workflows. The
+[golden journey guide](tests/e2e/golden/README.md) defines the six canonical
+acceptance specifications, their enabling phases, and the conditions for
+removing each Phase 0 skip.
 
 ## Code and interface expectations
 

@@ -18,3 +18,5 @@ public versioning begins.
 - Canonical architecture, roadmap, glossary, and v1 threat model.
 - Foundational architecture decision records and the CLI automation and
   persistence delivery contracts.
+- Executable specifications for all six golden user journeys, with a strict
+  pytest taxonomy and phase-specific enablement gates.

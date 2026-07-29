@@ -129,6 +129,15 @@ addopts = [
   "-ra",
 ]
 filterwarnings = ["error"]
+markers = [
+  "contract: observable behavior shared across implementations or boundaries",
+  "e2e: end-to-end behavior through supported user-facing interfaces",
+  "golden: canonical product-journey acceptance specification",
+  "integration: behavior spanning multiple real components",
+  "requires_network: test opens network connections or accesses a registry",
+  "requires_postgres: test requires an isolated PostgreSQL service",
+  "requires_uv: test invokes the external uv or uvx executable",
+]
 pythonpath = ["."]
 testpaths = ["tests"]
 xfail_strict = true
