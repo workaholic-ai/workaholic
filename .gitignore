@@ -5,7 +5,13 @@
 # Python bytecode and tool state
 __pycache__/
 *.py[cod]
+.coverage
+.coverage.*
+.mypy_cache/
 .pytest_cache/
+.ruff_cache/
+coverage.xml
+htmlcov/
 
 # Python package artifacts
 build/

@@ -1,0 +1,96 @@
+minimum_pre_commit_version: "4.6.0"
+default_install_hook_types:
+  - pre-commit
+  - pre-push
+default_stages:
+  - pre-commit
+fail_fast: false
+
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: 3e8a8703264a2f4a69428a0aa4dcb512790b2c8c # frozen: v6.0.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-added-large-files
+        args:
+          - --maxkb=1024
+      - id: check-ast
+      - id: check-case-conflict
+      - id: check-executables-have-shebangs
+      - id: check-json
+      - id: check-merge-conflict
+      - id: check-shebang-scripts-are-executable
+      - id: check-toml
+      - id: check-yaml
+      - id: debug-statements
+      - id: detect-private-key
+      - id: mixed-line-ending
+        args:
+          - --fix=lf
+
+  - repo: https://github.com/DavidAnson/markdownlint-cli2
+    rev: 996abf60411a8d954288ac9856aae7602b80cbda # frozen: v0.22.1
+    hooks:
+      - id: markdownlint-cli2
+
+  - repo: local
+    hooks:
+      - id: lockfile-check
+        name: uv lockfile check
+        entry: uv lock --check
+        language: system
+        files: ^(pyproject\.toml|uv\.lock)$
+        pass_filenames: false
+
+      - id: ruff-check
+        name: Ruff lint
+        entry: uv run --frozen ruff check --fix --exit-non-zero-on-fix
+        language: system
+        types_or:
+          - python
+          - pyi
+        require_serial: true
+
+      - id: ruff-format
+        name: Ruff format
+        entry: uv run --frozen ruff format
+        language: system
+        types_or:
+          - python
+          - pyi
+        require_serial: true
+
+      - id: mypy
+        name: mypy strict
+        entry: uv run --frozen mypy
+        language: system
+        types_or:
+          - python
+          - pyi
+        pass_filenames: false
+
+      - id: shellcheck
+        name: ShellCheck
+        entry: uv run --frozen shellcheck
+        language: system
+        types:
+          - shell
+
+      - id: pytest
+        name: pytest with coverage
+        entry: uv run --frozen pytest
+        language: system
+        always_run: true
+        pass_filenames: false
+        stages:
+          - pre-push
+
+      - id: package-build
+        name: source and wheel build
+        entry: uv build --no-progress
+        language: system
+        always_run: true
+        pass_filenames: false
+        stages:
+          - pre-push

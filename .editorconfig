@@ -1,0 +1,25 @@
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+indent_style = space
+trim_trailing_whitespace = true
+
+[*.py]
+indent_size = 4
+max_line_length = 88
+
+[*.{json,md,toml,yaml,yml}]
+indent_size = 2
+
+[*.md]
+max_line_length = off
+
+[*.sh]
+indent_size = 2
+max_line_length = 88
+
+[LICENSE]
+max_line_length = off

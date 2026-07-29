@@ -20,13 +20,13 @@ def _project_metadata() -> dict[str, Any]:
 
     Returns:
         The ``project`` table from ``pyproject.toml``.
+
     """
     pyproject = tomllib.loads(
         (_PROJECT_ROOT / "pyproject.toml").read_text(encoding="utf-8")
     )
     project = pyproject.get("project")
-    if not isinstance(project, dict):
-        raise AssertionError("pyproject.toml must define a project table.")
+    assert isinstance(project, dict), "pyproject.toml must define a project table."
     return project
 
 
@@ -57,20 +57,15 @@ def test_installed_metadata_matches_source_metadata() -> None:
     assert installed["Requires-Python"] == project["requires-python"]
     assert installed["License-Expression"] == project["license"]
     assert installed.get_all("License-File") == ["LICENSE"]
-    assert installed["Author-email"] == (
-        "Pavels Gurskis <pg@ithesion.com>"
-    )
+    assert installed["Author-email"] == ("Pavels Gurskis <pg@ithesion.com>")
 
 
 def test_console_entry_point_loads_public_main() -> None:
     """The installed console entry point resolves to the public main function."""
     entry_points = [
         entry_point
-        for entry_point in metadata.distribution(
-            _DISTRIBUTION_NAME
-        ).entry_points
-        if entry_point.group == "console_scripts"
-        and entry_point.name == "workaholic"
+        for entry_point in metadata.distribution(_DISTRIBUTION_NAME).entry_points
+        if entry_point.group == "console_scripts" and entry_point.name == "workaholic"
     ]
 
     assert len(entry_points) == 1
@@ -99,6 +94,7 @@ def test_declared_package_boundaries_are_importable(module_name: str) -> None:
 
     Args:
         module_name: Fully qualified package boundary to import.
+
     """
     assert importlib.import_module(module_name) is not None
 

@@ -23,10 +23,11 @@ def _show_version(value: bool) -> None:
 
     Args:
         value: Whether the eager ``--version`` option was supplied.
+
     """
     if value:
         typer.echo(f"{_PROGRAM_NAME} {distribution_version(_DISTRIBUTION_NAME)}")
-        raise typer.Exit()
+        raise typer.Exit(code=0)
 
 
 VersionOption = Annotated[
@@ -50,6 +51,7 @@ def _root(
     Args:
         ctx: Active CLI context used to render root help.
         version: Eager version flag handled by ``_show_version``.
+
     """
     del version
     if ctx.invoked_subcommand is None:

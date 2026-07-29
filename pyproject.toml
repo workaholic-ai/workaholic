@@ -46,7 +46,12 @@ workaholic = "workaholic.cli.main:main"
 
 [dependency-groups]
 dev = [
+  "mypy>=2.3.0,<2.4.0",
+  "pre-commit>=4.6.0,<5.0.0",
   "pytest>=9.1.1,<10.0.0",
+  "pytest-cov>=7.1.0,<8.0.0",
+  "ruff>=0.15.22,<0.16.0",
+  "shellcheck-py>=0.11.0.1,<0.12.0.0",
 ]
 
 [tool.hatch.build.targets.sdist]
@@ -62,8 +67,51 @@ include = [
 [tool.hatch.build.targets.wheel]
 packages = ["src/workaholic"]
 
+[tool.coverage.paths]
+source = [
+  "src/workaholic",
+  "*/site-packages/workaholic",
+]
+
+[tool.coverage.report]
+exclude_also = [
+  "if TYPE_CHECKING:",
+  "if __name__ == .__main__.:",
+]
+precision = 2
+show_missing = true
+skip_covered = true
+
+[tool.coverage.run]
+branch = true
+relative_files = true
+source = ["workaholic"]
+
+[tool.mypy]
+enable_error_code = [
+  "deprecated",
+  "exhaustive-match",
+  "ignore-without-code",
+  "possibly-undefined",
+  "redundant-expr",
+  "truthy-bool",
+]
+files = [
+  "src",
+  "tests",
+]
+pretty = true
+python_version = "3.14"
+show_error_code_links = true
+strict = true
+warn_unreachable = true
+
 [tool.pytest.ini_options]
 addopts = [
+  "--cov=workaholic",
+  "--cov-branch",
+  "--cov-fail-under=95",
+  "--cov-report=term-missing:skip-covered",
   "--strict-config",
   "--strict-markers",
   "-ra",
@@ -71,3 +119,80 @@ addopts = [
 filterwarnings = ["error"]
 testpaths = ["tests"]
 xfail_strict = true
+
+[tool.ruff]
+line-length = 88
+src = [
+  "src",
+  "tests",
+]
+target-version = "py314"
+
+[tool.ruff.format]
+docstring-code-format = true
+line-ending = "lf"
+quote-style = "double"
+
+[tool.ruff.lint]
+ignore = [
+  "D203",
+  "D213",
+  "ISC001",
+]
+select = [
+  "A",
+  "ANN",
+  "ARG",
+  "ASYNC",
+  "B",
+  "BLE",
+  "C4",
+  "D",
+  "DTZ",
+  "E",
+  "EM",
+  "ERA",
+  "EXE",
+  "F",
+  "FA",
+  "FBT",
+  "FLY",
+  "FURB",
+  "G",
+  "I",
+  "ICN",
+  "INP",
+  "ISC",
+  "LOG",
+  "N",
+  "PERF",
+  "PGH",
+  "PIE",
+  "PL",
+  "PT",
+  "PTH",
+  "RET",
+  "RSE",
+  "RUF",
+  "S",
+  "SIM",
+  "T10",
+  "T20",
+  "TC",
+  "TRY",
+  "UP",
+  "W",
+  "YTT",
+]
+
+[tool.ruff.lint.per-file-ignores]
+"src/workaholic/cli/main.py" = [
+  "FBT001",
+  "FBT002",
+]
+"tests/**/*.py" = [
+  "INP001",
+  "PLR2004",
+  "S101",
+  "S603",
+]

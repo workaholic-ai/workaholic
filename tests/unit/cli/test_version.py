@@ -1,13 +1,24 @@
 """Tests for the Workaholic AI CLI entry points."""
 
+from __future__ import annotations
+
+import importlib
 import subprocess
 import sys
 import sysconfig
-from collections.abc import Sequence
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import pytest
+from typer.testing import CliRunner
 
+from workaholic.cli.main import app as cli_app
+from workaholic.cli.main import main as cli_entrypoint
+
+if TYPE_CHECKING:
+    from collections.abc import Sequence
+
+_CLI_RUNNER = CliRunner()
 _EXPECTED_VERSION_OUTPUT = "workaholic 0.0.0\n"
 
 
@@ -24,6 +35,7 @@ def _run_command(
 
     Returns:
         The completed process with decoded stdout and stderr.
+
     """
     return subprocess.run(
         command,
@@ -59,6 +71,14 @@ def test_console_script_reports_exact_version(
     assert result.stderr == ""
 
 
+def test_cli_application_reports_exact_version_in_process() -> None:
+    """The Typer application handles its eager version option in process."""
+    result = _CLI_RUNNER.invoke(cli_app, ["--version"])
+
+    assert result.exit_code == 0
+    assert result.stdout == _EXPECTED_VERSION_OUTPUT
+
+
 def test_module_entry_point_reports_exact_version(tmp_path: Path) -> None:
     """The module entry point reports the same exact distribution version."""
     result = _run_command(
@@ -69,6 +89,15 @@ def test_module_entry_point_reports_exact_version(tmp_path: Path) -> None:
     assert result.returncode == 0
     assert result.stdout == _EXPECTED_VERSION_OUTPUT
     assert result.stderr == ""
+
+
+def test_cli_application_without_command_prints_help_in_process() -> None:
+    """The Typer application renders root help in process."""
+    result = _CLI_RUNNER.invoke(cli_app)
+
+    assert result.exit_code == 0
+    assert "Usage:" in result.stdout
+    assert "Coordinate work between human operators" in result.stdout
 
 
 def test_console_script_without_command_prints_help(
@@ -82,6 +111,31 @@ def test_console_script_without_command_prints_help(
     assert "Usage: workaholic [OPTIONS] COMMAND [ARGS]..." in result.stdout
     assert "Coordinate work between human operators" in result.stdout
     assert result.stderr == ""
+
+
+def test_public_main_invokes_the_named_application(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The public entry point invokes Typer with the stable program name."""
+    program_names: list[str] = []
+
+    def fake_app(*, prog_name: str) -> None:
+        """Record the program name passed across the CLI boundary."""
+        program_names.append(prog_name)
+
+    cli_module = importlib.import_module("workaholic.cli.main")
+    monkeypatch.setattr(cli_module, "app", fake_app)
+
+    cli_entrypoint()
+
+    assert program_names == ["workaholic"]
+
+
+def test_module_package_is_importable_without_running_the_cli() -> None:
+    """Importing the module entry point does not execute its main guard."""
+    module = importlib.import_module("workaholic.__main__")
+
+    assert module is not None
 
 
 def test_import_is_silent_and_does_not_modify_working_directory(
