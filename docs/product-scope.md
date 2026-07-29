@@ -164,4 +164,7 @@ acceptable.
 
 Pre-1.0 compatibility and the contract-freeze process are defined in
 [Compatibility policy](compatibility-policy.md). Package and command naming are
-defined in [ADR 0001](adr/0001-package-and-executable-naming.md).
+defined in [ADR 0001](adr/0001-package-and-executable-naming.md). The normative
+delivery boundaries are defined in the
+[CLI automation contract](cli-contract.md) and
+[persistence contract](persistence-contract.md).

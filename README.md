@@ -71,6 +71,8 @@ package. See the [product scope](docs/product-scope.md) and
 
 - [Architecture](docs/architecture.md)
 - [Roadmap](docs/roadmap.md)
+- [CLI automation contract](docs/cli-contract.md)
+- [Persistence contract](docs/persistence-contract.md)
 - [Glossary](docs/glossary.md)
 - [Threat model](docs/threat-model.md)
 - [Product scope](docs/product-scope.md)

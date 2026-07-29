@@ -136,8 +136,9 @@ not grant authorization and must never be interpreted as a Project role.
 ## Related documents
 
 - [Architecture](architecture.md)
+- [CLI automation contract](cli-contract.md)
 - [Delivery roadmap](roadmap.md)
+- [Persistence contract](persistence-contract.md)
 - [Product scope](product-scope.md)
 - [Compatibility policy](compatibility-policy.md)
 - [Threat model](threat-model.md)
-

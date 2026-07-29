@@ -669,6 +669,10 @@ No message broker or WebSocket infrastructure is required in v1.
 
 The persistence layer exposes domain-level transactional operations, not generic key-value CRUD.
 
+The normative adapter requirements are recorded in the
+[persistence contract](persistence-contract.md) and
+[ADR 0005](adr/0005-semantic-persistence-interface.md).
+
 Representative operations:
 
 ```text
@@ -912,6 +916,12 @@ Contract rules:
 * Mutations support idempotency.
 * Large payloads are read from files or stdin.
 * Credentials are not accepted in visible positional arguments.
+
+The normative public JSON envelope and automation rules are recorded in the
+[CLI automation contract](cli-contract.md) and
+[ADR 0003](adr/0003-cli-json-automation-contract.md). The client/server
+transport is a separate private protocol governed by
+[ADR 0004](adr/0004-private-versioned-client-server-protocol.md).
 
 Example error:
 

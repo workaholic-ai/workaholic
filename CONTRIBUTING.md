@@ -73,6 +73,8 @@ application behavior. Importing the normal CLI path must not start services,
 access storage, use the network, or write to user directories.
 
 Review [the architecture](docs/architecture.md),
+[CLI automation contract](docs/cli-contract.md),
+[persistence contract](docs/persistence-contract.md),
 [product scope](docs/product-scope.md), [threat model](docs/threat-model.md),
 and accepted [architecture decisions](docs/adr/) before changing a boundary or
 public contract. Material changes require an ADR rather than an undocumented

@@ -16,3 +16,5 @@ public versioning begins.
 - Reproducible local linting, formatting, typing, testing, and build controls.
 - Public quick start, contribution guidance, and repository impact checks.
 - Canonical architecture, roadmap, glossary, and v1 threat model.
+- Foundational architecture decision records and the CLI automation and
+  persistence delivery contracts.
