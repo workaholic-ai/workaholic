@@ -9,6 +9,7 @@ from workaholic.persistence.sqlite.errors import (
     StorageBusyError,
     StorageUnavailableError,
 )
+from workaholic.persistence.sqlite.repository import SQLitePhaseOneRepository
 from workaholic.persistence.sqlite.schema import (
     SCHEMA_VERSION,
     initialize_empty_store,
@@ -17,6 +18,7 @@ from workaholic.persistence.sqlite.schema import (
 
 __all__ = [
     "SCHEMA_VERSION",
+    "SQLitePhaseOneRepository",
     "SchemaUnsupportedError",
     "StorageBusyError",
     "StorageUnavailableError",

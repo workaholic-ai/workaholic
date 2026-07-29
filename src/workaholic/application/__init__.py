@@ -1,5 +1,6 @@
 """Use-case contracts independent of transports and concrete storage."""
 
+from workaholic.application.bootstrap import BootstrapApplication
 from workaholic.application.commands import (
     BootstrapLocalProjectInput,
     BootstrapMutation,
@@ -14,6 +15,9 @@ from workaholic.application.errors import (
     ApplicationError,
     ApplicationErrorCode,
     ExitCategory,
+    IdempotencyConflictError,
+    PermissionDeniedError,
+    ProjectKeyConflictError,
 )
 from workaholic.application.ports import Clock, IdentifierFactory, PhaseOneRepository
 from workaholic.application.results import (
@@ -25,6 +29,7 @@ from workaholic.application.results import (
 __all__ = [
     "ApplicationError",
     "ApplicationErrorCode",
+    "BootstrapApplication",
     "BootstrapLocalProjectInput",
     "BootstrapMutation",
     "BootstrapResult",
@@ -33,10 +38,13 @@ __all__ = [
     "ExitCategory",
     "GetLocalStatus",
     "GetTask",
+    "IdempotencyConflictError",
     "IdentifierFactory",
     "ListProjects",
     "ListTasks",
+    "PermissionDeniedError",
     "PhaseOneRepository",
+    "ProjectKeyConflictError",
     "StatusResult",
     "TaskCreationMutation",
     "TaskPage",

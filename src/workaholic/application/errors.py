@@ -174,6 +174,39 @@ class ApplicationError(Exception):
         return self._exit_category
 
 
+class ProjectKeyConflictError(ApplicationError):
+    """Report a second Project key in the single-Project local runtime."""
+
+    def __init__(self) -> None:
+        """Initialize the stable Project-key conflict failure."""
+        super().__init__(
+            ApplicationErrorCode.PROJECT_KEY_CONFLICT,
+            "The local Instance is already initialized with another Project key.",
+        )
+
+
+class IdempotencyConflictError(ApplicationError):
+    """Report reuse of one caller key for different semantic input."""
+
+    def __init__(self) -> None:
+        """Initialize the stable idempotency conflict failure."""
+        super().__init__(
+            ApplicationErrorCode.IDEMPOTENCY_CONFLICT,
+            "The idempotency key was already used for a different request.",
+        )
+
+
+class PermissionDeniedError(ApplicationError):
+    """Report a missing or disabled Phase 1 Owner authorization."""
+
+    def __init__(self) -> None:
+        """Initialize the stable authorization failure."""
+        super().__init__(
+            ApplicationErrorCode.PERMISSION_DENIED,
+            "The selected local Subject is not authorized for this Project.",
+        )
+
+
 def _validate_safe_message(value: object) -> str:
     """Validate one bounded message without terminal control characters.
 
