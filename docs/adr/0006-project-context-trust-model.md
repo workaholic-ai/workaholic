@@ -100,4 +100,3 @@ management.
 - [Product scope](../product-scope.md)
 - [Glossary](../glossary.md)
 - [ADR 0007: Human and Agent Identity Model](0007-human-and-agent-identity-model.md)
-

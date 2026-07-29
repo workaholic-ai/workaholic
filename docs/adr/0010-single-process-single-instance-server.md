@@ -92,4 +92,3 @@ and eliminate the private protocol and Session boundary.
 - [Product scope](../product-scope.md)
 - [Persistence contract](../persistence-contract.md)
 - [ADR 0005: Semantic Persistence Interface](0005-semantic-persistence-interface.md)
-

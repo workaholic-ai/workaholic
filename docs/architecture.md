@@ -1098,11 +1098,11 @@ code an adapter composition root.
 
 Composition is restricted to explicit adapter boundaries:
 
-- `session.local` may wire the application layer to an embedded persistence
+* `session.local` may wire the application layer to an embedded persistence
   adapter;
-- `session.remote` may wire Session operations to the official transport
+* `session.remote` may wire Session operations to the official transport
   client;
-- `server.main` may wire server routes, application services, authentication,
+* `server.main` may wire server routes, application services, authentication,
   and one configured persistence adapter.
 
 There are currently no ignored import edges. A future exception requires a

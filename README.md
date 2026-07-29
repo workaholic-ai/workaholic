@@ -22,8 +22,9 @@ machine-readable CLI as the agent interface.
 - [uv](https://docs.astral.sh/uv/getting-started/installation/)
 - CPython 3.14, which uv can install when needed
 
-The project is not yet published as an installable release. Use a source
-checkout for the current Phase 0 build.
+Source development is public from Phase 0 under Apache-2.0, but the project is
+not yet published as an installable or supported release. Use a source checkout
+for the current Phase 0 build.
 
 ## Quick start
 

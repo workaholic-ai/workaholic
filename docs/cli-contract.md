@@ -283,4 +283,3 @@ Contract tests must verify at least:
 - [Compatibility policy](compatibility-policy.md)
 - [Threat model](threat-model.md)
 - [Architecture](architecture.md)
-

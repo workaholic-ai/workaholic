@@ -3,7 +3,8 @@
 - Status: Accepted
 - Decision date: 2026-07-29
 - Product owner: Pavels Gurskis
-- Code ownership and security contact: pg@ithesion.com
+- Code ownership and security contact:
+  [pg@ithesion.com](mailto:pg@ithesion.com)
 
 ## Product statement
 
@@ -148,7 +149,7 @@ not make them implicit v1 commitments.
 | Copyright holder | Pavels Gurskis |
 | Minimum development Python | Python 3.14 |
 | Phase 0 CI Python | Python 3.14 |
-| Code ownership and security contact | pg@ithesion.com |
+| Code ownership and security contact | [pg@ithesion.com](mailto:pg@ithesion.com) |
 
 Python 3.14 is the only Phase 0 development and CI line. The final public
 operating-system and Python support matrix will be fixed before the release

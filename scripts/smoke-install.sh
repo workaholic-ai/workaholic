@@ -92,4 +92,3 @@ if [ "$smoke_output" != "$smoke_expected_output" ]; then
 fi
 
 printf '%s\n' "Verified $smoke_expected_output from an isolated wheel install."
-

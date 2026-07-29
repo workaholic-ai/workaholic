@@ -3,7 +3,7 @@
 - Status: Accepted
 - Decision date: 2026-07-29
 - Applies to: Workaholic AI source, pre-releases, and v1 releases
-- Contact: pg@ithesion.com
+- Contact: [pg@ithesion.com](mailto:pg@ithesion.com)
 
 ## Purpose
 

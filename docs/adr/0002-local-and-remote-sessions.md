@@ -89,4 +89,3 @@ commitment. The supported v1 automation interface is versioned CLI JSON.
 - [CLI contract](../cli-contract.md)
 - [ADR 0003: CLI JSON Automation Contract](0003-cli-json-automation-contract.md)
 - [ADR 0004: Private Versioned Client/Server Protocol](0004-private-versioned-client-server-protocol.md)
-

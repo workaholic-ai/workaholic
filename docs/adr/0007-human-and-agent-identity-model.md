@@ -95,4 +95,3 @@ least-privilege requirements among Projects or Subjects.
 - [Architecture](../architecture.md)
 - [Product scope](../product-scope.md)
 - [ADR 0006: Project Context Trust Model](0006-project-context-trust-model.md)
-

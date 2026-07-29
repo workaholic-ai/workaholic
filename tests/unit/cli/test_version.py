@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib
+import os
 import subprocess
 import sys
 import sysconfig
@@ -37,10 +38,13 @@ def _run_command(
         The completed process with decoded stdout and stderr.
 
     """
+    environment = os.environ.copy()
+    environment["NO_COLOR"] = "1"
     return subprocess.run(
         command,
         check=False,
         cwd=working_directory,
+        env=environment,
         capture_output=True,
         text=True,
     )
