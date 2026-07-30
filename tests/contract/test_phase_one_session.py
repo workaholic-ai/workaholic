@@ -24,7 +24,7 @@ if TYPE_CHECKING:
 
     from tests.contract.phase_one import PhaseOneSessionFactory
 
-    from workaholic.session import WorkaholicSession
+    from workaholic.session import TaskSession
 
 pytestmark = pytest.mark.contract
 
@@ -33,7 +33,7 @@ pytestmark = pytest.mark.contract
 class _LocalSessionFactory:
     """Construct production embedded Sessions for the shared contract."""
 
-    def create(self, root: Path, workspace: Path) -> WorkaholicSession:
+    def create(self, root: Path, workspace: Path) -> TaskSession:
         """Construct a LocalSession without invoking an operation.
 
         Args:
@@ -278,7 +278,7 @@ def _workspace(tmp_path: Path, name: str) -> Path:
 
 
 def _invoke_invalid_operation(
-    session: WorkaholicSession,
+    session: TaskSession,
     operation: str,
 ) -> object:
     """Invoke one deliberately invalid Session operation.
@@ -296,7 +296,7 @@ def _invoke_invalid_operation(
 
     """
     if operation == "up":
-        return session.up(UpRequest(project_key="lowercase"))
+        return session.up(UpRequest.model_construct(project_key="lowercase"))
     if operation == "task_add":
         return session.create_task(TaskCreateRequest(title="   "))
     if operation == "task_list":

@@ -26,7 +26,7 @@ from workaholic.domain import (
 )
 
 if TYPE_CHECKING:
-    from workaholic.application import PhaseOneRepository
+    from workaholic.application import TaskRepository
 
 _NOW = datetime(2026, 7, 30, 12, 0, tzinfo=UTC)
 
@@ -114,7 +114,7 @@ def test_create_builds_one_attributable_mutation_with_command_defaults() -> None
     expected = _task()
     recording = _RecordingRepository(expected)
     application = TaskApplication(
-        repository=cast("PhaseOneRepository", recording),
+        repository=cast("TaskRepository", recording),
         clock=_Clock(),
         identifiers=_Identifiers(),
     )
@@ -162,7 +162,7 @@ def test_constructor_runtime_validates_dependencies(
     """Missing dependency methods fail at composition time."""
     with pytest.raises(TypeError, match="Task"):
         TaskApplication(
-            repository=cast("PhaseOneRepository", repository),
+            repository=cast("TaskRepository", repository),
             clock=cast("_Clock", clock),
             identifiers=cast("_Identifiers", identifiers),
         )
@@ -171,7 +171,7 @@ def test_constructor_runtime_validates_dependencies(
 def test_create_runtime_validates_command_type() -> None:
     """The use case rejects bypasses of the validated command boundary."""
     application = TaskApplication(
-        repository=cast("PhaseOneRepository", _RecordingRepository(_task())),
+        repository=cast("TaskRepository", _RecordingRepository(_task())),
         clock=_Clock(),
         identifiers=_Identifiers(),
     )
@@ -193,7 +193,7 @@ def test_invalid_dependency_output_is_a_safe_internal_error() -> None:
             return _NOW.replace(tzinfo=None)
 
     application = TaskApplication(
-        repository=cast("PhaseOneRepository", _RecordingRepository(_task())),
+        repository=cast("TaskRepository", _RecordingRepository(_task())),
         clock=_InvalidClock(),
         identifiers=_Identifiers(),
     )
@@ -213,7 +213,7 @@ def test_invalid_dependency_output_is_a_safe_internal_error() -> None:
 def test_invalid_repository_result_is_a_safe_internal_error() -> None:
     """The application verifies concrete Task output at runtime."""
     application = TaskApplication(
-        repository=cast("PhaseOneRepository", _RecordingRepository(object())),
+        repository=cast("TaskRepository", _RecordingRepository(object())),
         clock=_Clock(),
         identifiers=_Identifiers(),
     )

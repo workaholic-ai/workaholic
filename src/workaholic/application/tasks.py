@@ -12,7 +12,7 @@ if TYPE_CHECKING:
     from workaholic.application.ports import (
         Clock,
         IdentifierFactory,
-        PhaseOneRepository,
+        TaskRepository,
     )
 
 
@@ -21,14 +21,14 @@ class TaskApplication:
 
     def __init__(
         self,
-        repository: PhaseOneRepository,
+        repository: TaskRepository,
         clock: Clock,
         identifiers: IdentifierFactory,
     ) -> None:
         """Initialize explicit application dependencies.
 
         Args:
-            repository: Semantic Phase 1 persistence boundary.
+            repository: Semantic Task persistence boundary.
             clock: Authoritative transaction clock.
             identifiers: Candidate opaque identifier factory.
 

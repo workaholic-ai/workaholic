@@ -29,8 +29,8 @@ if TYPE_CHECKING:
         TaskCreateRequest,
         TaskGetRequest,
         TaskListRequest,
+        TaskSession,
         UpRequest,
-        WorkaholicSession,
     )
 
 _NOW = datetime(2026, 7, 30, 12, 30, tzinfo=UTC)
@@ -254,7 +254,7 @@ class SessionProviderSpy:
         self.session = session
         self.call_count = 0
 
-    def __call__(self) -> WorkaholicSession:
+    def __call__(self) -> TaskSession:
         """Return the configured Session and record acquisition."""
         self.call_count += 1
         return self.session

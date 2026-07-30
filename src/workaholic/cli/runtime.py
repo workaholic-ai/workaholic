@@ -5,9 +5,9 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import cast
 
-from workaholic.session import WorkaholicSession
+from workaholic.session import TaskSession
 
-type SessionProvider = Callable[[], WorkaholicSession]
+type SessionProvider = Callable[[], TaskSession]
 
 _SESSION_OPERATIONS = (
     "up",
@@ -19,7 +19,7 @@ _SESSION_OPERATIONS = (
 )
 
 
-def acquire_session(provider: SessionProvider) -> WorkaholicSession:
+def acquire_session(provider: SessionProvider) -> TaskSession:
     """Acquire and runtime-check one command-scoped Session.
 
     Args:
@@ -43,4 +43,4 @@ def acquire_session(provider: SessionProvider) -> WorkaholicSession:
     ):
         message = "CLI Session provider returned an invalid Session."
         raise TypeError(message)
-    return cast("WorkaholicSession", candidate)
+    return cast("TaskSession", candidate)

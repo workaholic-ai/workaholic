@@ -37,7 +37,7 @@ from workaholic.domain import (
 if TYPE_CHECKING:
     from collections.abc import Callable
 
-    from workaholic.application import PhaseOneRepository
+    from workaholic.application import QueryRepository
 
 _NOW = datetime(2026, 7, 30, 13, 0, tzinfo=UTC)
 
@@ -205,7 +205,7 @@ class _MissingGetTaskRepository:
 def test_queries_delegate_exact_validated_commands() -> None:
     """Each query delegates once and preserves valid repository results."""
     repository = _RecordingRepository()
-    application = QueryApplication(cast("PhaseOneRepository", repository))
+    application = QueryApplication(cast("QueryRepository", repository))
     status_command = GetLocalStatus(
         instance_id=InstanceId("ins_local"),
         project_id=ProjectId("prj_acme"),
@@ -245,12 +245,12 @@ def test_queries_delegate_exact_validated_commands() -> None:
 def test_constructor_requires_every_query_method(repository: object) -> None:
     """Missing repository capabilities fail during composition."""
     with pytest.raises(TypeError, match="Query repository"):
-        QueryApplication(cast("PhaseOneRepository", repository))
+        QueryApplication(cast("QueryRepository", repository))
 
 
 def test_each_method_runtime_validates_its_command_type() -> None:
     """Bypassing any validated command boundary returns stable INVALID_INPUT."""
-    application = QueryApplication(cast("PhaseOneRepository", _RecordingRepository()))
+    application = QueryApplication(cast("QueryRepository", _RecordingRepository()))
     invocations: tuple[Callable[[], object], ...] = (
         lambda: application.status(cast("GetLocalStatus", object())),
         lambda: application.list_projects(cast("ListProjects", object())),
@@ -267,7 +267,7 @@ def test_each_method_runtime_validates_its_command_type() -> None:
 def test_invalid_repository_results_map_to_safe_internal_errors() -> None:
     """No malformed adapter value crosses the application result boundary."""
     repository = _RecordingRepository()
-    application = QueryApplication(cast("PhaseOneRepository", repository))
+    application = QueryApplication(cast("QueryRepository", repository))
     status_command = GetLocalStatus(
         instance_id=InstanceId("ins_local"),
         project_id=ProjectId("prj_acme"),
@@ -310,7 +310,7 @@ def test_unsorted_project_result_is_rejected() -> None:
         _project(key="BETA", suffix="beta"),
         _project(key="ACME", suffix="acme"),
     )
-    application = QueryApplication(cast("PhaseOneRepository", repository))
+    application = QueryApplication(cast("QueryRepository", repository))
 
     with pytest.raises(ApplicationError) as captured:
         application.list_projects(
@@ -326,7 +326,7 @@ def test_unsorted_project_result_is_rejected() -> None:
 def test_type_correct_cross_selection_results_are_rejected() -> None:
     """Repository results must match every exact identity in their query."""
     repository = _RecordingRepository()
-    application = QueryApplication(cast("PhaseOneRepository", repository))
+    application = QueryApplication(cast("QueryRepository", repository))
     other_instance = Instance(id=InstanceId("ins_other"), created_at=_NOW)
     other_project = Project(
         id=ProjectId("prj_other"),
@@ -403,7 +403,7 @@ def test_typed_repository_error_propagates_unchanged() -> None:
             """Raise the stable missing-Task error."""
             raise TaskNotFoundError
 
-    application = QueryApplication(cast("PhaseOneRepository", _MissingTaskRepository()))
+    application = QueryApplication(cast("QueryRepository", _MissingTaskRepository()))
 
     with pytest.raises(TaskNotFoundError) as captured:
         application.get_task(

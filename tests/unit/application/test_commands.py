@@ -1,4 +1,4 @@
-"""Unit tests for strict Phase 1 application boundary models."""
+"""Unit tests for strict cumulative application boundary models."""
 
 from __future__ import annotations
 
@@ -14,14 +14,21 @@ from workaholic.application import (
     BootstrapLocalProjectInput,
     BootstrapMutation,
     BootstrapResult,
+    ContextResult,
+    CreateProjectInput,
     CreateTaskInput,
     GetLocalStatus,
+    GetProjectByKey,
     GetTask,
+    ListInstanceTasks,
     ListProjects,
     ListTasks,
+    ProjectCreationMutation,
+    ProjectCreationResult,
     StatusResult,
     TaskCreationMutation,
     TaskPage,
+    WorkaholicRepository,
 )
 from workaholic.domain import (
     Instance,
@@ -273,6 +280,70 @@ def test_query_commands_require_typed_domain_identifiers() -> None:
         )
 
 
+def test_project_commands_normalize_names_and_validate_selectors() -> None:
+    """Project creation and lookup expose canonical semantic values."""
+    creation = CreateProjectInput(
+        instance_id=InstanceId("ins_local"),
+        subject_id=SubjectId("sub_local"),
+        project_key="DOCS",
+        project_name="  Cafe\u0301 docs  ",
+        idempotency_key="project-docs-1",
+    )
+    lookup = GetProjectByKey(
+        instance_id=creation.instance_id,
+        subject_id=creation.subject_id,
+        project_key="DOCS",
+    )
+
+    assert creation.project_name == "Café docs"
+    assert lookup.project_key == "DOCS"
+    with pytest.raises(ValidationError):
+        CreateProjectInput.model_validate(
+            {
+                **creation.model_dump(),
+                "unexpected": True,
+            }
+        )
+    with pytest.raises(ValidationError):
+        GetProjectByKey.model_validate(
+            {
+                "instance_id": creation.instance_id,
+                "subject_id": creation.subject_id,
+                "project_key": "docs",
+            }
+        )
+
+
+def test_instance_task_query_validates_profile_paging_and_typed_ids() -> None:
+    """All-Project Task queries bind a strict profile and identity selection."""
+    command = ListInstanceTasks(
+        profile="team_1",
+        instance_id=InstanceId("ins_local"),
+        subject_id=SubjectId("sub_local"),
+        cursor="v2.opaque",
+        limit=500,
+    )
+
+    assert command.profile == "team_1"
+    assert command.limit == 500
+    with pytest.raises(ValidationError):
+        ListInstanceTasks.model_validate(
+            {
+                "profile": "Team",
+                "instance_id": command.instance_id,
+                "subject_id": command.subject_id,
+            }
+        )
+    with pytest.raises(ValidationError):
+        ListInstanceTasks.model_validate(
+            {
+                "profile": "local",
+                "instance_id": str(command.instance_id),
+                "subject_id": command.subject_id,
+            }
+        )
+
+
 def test_create_task_defaults_and_normalizes_fields() -> None:
     """Task input applies documented defaults after trimming Human text."""
     command = CreateTaskInput(
@@ -438,6 +509,7 @@ def test_bootstrap_mutation_requires_typed_ids_and_utc_time() -> None:
     )
 
     assert mutation.occurred_at is _NOW
+    assert mutation.project_name == "ACME"
     with pytest.raises(ValidationError):
         BootstrapMutation.model_validate(
             {
@@ -448,6 +520,36 @@ def test_bootstrap_mutation_requires_typed_ids_and_utc_time() -> None:
                 "occurred_at": _NOW.replace(tzinfo=None),
                 "project_key": mutation.project_key,
                 "idempotency_key": mutation.idempotency_key,
+            }
+        )
+
+
+def test_project_creation_mutation_canonicalizes_fingerprint_fields() -> None:
+    """Project mutations normalize every caller-controlled fingerprint field."""
+    mutation = ProjectCreationMutation(
+        project_id=ProjectId("prj_docs"),
+        request_id=RequestId("req_docs"),
+        instance_id=InstanceId("ins_local"),
+        actor_subject_id=SubjectId("sub_local"),
+        occurred_at=_NOW,
+        project_key="DOCS",
+        project_name="  Cafe\u0301 docs  ",
+        idempotency_key="project-docs-1",
+    )
+
+    assert mutation.project_name == "Café docs"
+    assert mutation.model_dump(
+        include={"project_key", "project_name", "idempotency_key"}
+    ) == {
+        "project_key": "DOCS",
+        "project_name": "Café docs",
+        "idempotency_key": "project-docs-1",
+    }
+    with pytest.raises(ValidationError):
+        ProjectCreationMutation.model_validate(
+            {
+                **mutation.model_dump(),
+                "occurred_at": True,
             }
         )
 
@@ -502,6 +604,52 @@ def test_result_models_validate_consistent_bootstrap_and_status() -> None:
     assert status.schema_version == 1
 
 
+def test_phase_two_results_validate_creation_and_safe_context() -> None:
+    """Phase 2 results accept only consistent grants and safe context paths."""
+    project = _project()
+    grant = _grant()
+    creation = ProjectCreationResult(project=project, grant=grant)
+    context = ContextResult(
+        profile="team_1",
+        instance=_instance(),
+        project=project,
+        subject=_subject(),
+        grant=grant,
+        workspace_root=Path("/work/acme"),
+        context_source=Path("/work/.workaholic.env"),
+    )
+
+    assert creation.project is project
+    assert context.mode == "embedded"
+    assert context.schema_version == 2
+    assert context.profile == "team_1"
+    with pytest.raises(ValidationError, match="grant"):
+        ProjectCreationResult(
+            project=project,
+            grant=_grant(project_id=ProjectId("prj_other")),
+        )
+    with pytest.raises(ValidationError, match="both"):
+        ContextResult(
+            profile="local",
+            instance=_instance(),
+            project=project,
+            subject=_subject(),
+            grant=grant,
+            workspace_root=Path("/work/acme"),
+            context_source=None,
+        )
+    with pytest.raises(ValidationError, match="within"):
+        ContextResult(
+            profile="local",
+            instance=_instance(),
+            project=project,
+            subject=_subject(),
+            grant=grant,
+            workspace_root=Path("/outside"),
+            context_source=Path("/work/.workaholic.env"),
+        )
+
+
 @pytest.mark.parametrize(
     ("instance", "project", "subject", "grant", "workspace"),
     [
@@ -554,25 +702,37 @@ def test_bootstrap_result_rejects_cross_entity_inconsistency(
 
 
 def test_task_page_requires_tuple_project_consistency_and_ascending_order() -> None:
-    """Task pages enforce deterministic ordering and one Project boundary."""
+    """Task pages enforce deterministic single- or multi-Project ordering."""
     empty_page = TaskPage(tasks=(), next_cursor=None)
     page = TaskPage(tasks=(_task(1), _task(3)), next_cursor="v1:3")
+    all_projects = TaskPage(
+        tasks=(
+            _task(1),
+            _task(
+                2,
+                project_id=ProjectId("prj_other"),
+                project_key="OTHER",
+            ),
+        ),
+        next_cursor="v2.opaque",
+    )
 
     assert empty_page.tasks == ()
     assert tuple(task.number for task in page.tasks) == (1, 3)
+    assert tuple(task.key for task in all_projects.tasks) == ("ACME-1", "OTHER-2")
     with pytest.raises(ValidationError):
         TaskPage.model_validate({"tasks": [_task(1)], "next_cursor": None})
     with pytest.raises(ValidationError, match="ordered"):
         TaskPage(tasks=(_task(2), _task(1)), next_cursor=None)
-    with pytest.raises(ValidationError, match="combine Projects"):
+    with pytest.raises(ValidationError, match="ordered"):
         TaskPage(
             tasks=(
-                _task(1),
                 _task(
                     2,
                     project_id=ProjectId("prj_other"),
                     project_key="OTHER",
                 ),
+                _task(1),
             ),
             next_cursor=None,
         )
@@ -614,6 +774,25 @@ def test_application_modules_import_only_owned_and_declared_boundaries() -> None
             ), path
         imported_roots = {module.partition(".")[0] for module in imported_modules}
         assert imported_roots <= sys.stdlib_module_names | {"pydantic", "workaholic"}
+
+
+def test_cumulative_repository_port_declares_phase_two_semantics() -> None:
+    """Adapters receive one explicit cumulative semantic operation surface."""
+    methods = {
+        "bootstrap_local_project",
+        "create_project",
+        "create_task",
+        "get_local_status",
+        "get_project_by_key",
+        "list_projects",
+        "list_tasks",
+        "list_tasks_for_instance",
+        "get_task",
+    }
+
+    assert all(
+        callable(getattr(WorkaholicRepository, method, None)) for method in methods
+    )
 
 
 def test_application_models_reject_non_utc_offsets() -> None:

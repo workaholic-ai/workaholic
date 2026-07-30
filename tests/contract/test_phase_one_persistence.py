@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 import pytest
 from tests.contract.phase_one import (
@@ -28,7 +28,7 @@ if TYPE_CHECKING:
     from collections.abc import Callable
     from pathlib import Path
 
-    from workaholic.application import BootstrapResult, PhaseOneRepository
+    from workaholic.application import BootstrapResult, WorkaholicRepository
 
 pytestmark = pytest.mark.contract
 
@@ -37,7 +37,7 @@ pytestmark = pytest.mark.contract
 class _SQLiteRepositoryFactory:
     """Construct isolated SQLite repositories for the shared contract."""
 
-    def create(self, root: Path) -> PhaseOneRepository:
+    def create(self, root: Path) -> WorkaholicRepository:
         """Construct a repository over one test-owned SQLite path.
 
         Args:
@@ -47,7 +47,10 @@ class _SQLiteRepositoryFactory:
             SQLite repository without initializing its store.
 
         """
-        return SQLitePhaseOneRepository(root / "local.db")
+        return cast(
+            "WorkaholicRepository",
+            SQLitePhaseOneRepository(root / "local.db"),
+        )
 
 
 class PhaseOnePersistenceContract:
@@ -408,7 +411,7 @@ class TestSQLitePhaseOnePersistence(PhaseOnePersistenceContract):
 def _bootstrapped(
     factory: PhaseOneRepositoryFactory,
     root: Path,
-) -> tuple[PhaseOneRepository, BootstrapResult]:
+) -> tuple[WorkaholicRepository, BootstrapResult]:
     """Create one repository with a committed ACME bootstrap graph.
 
     Args:

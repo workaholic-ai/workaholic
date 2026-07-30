@@ -40,7 +40,7 @@ from workaholic.session import LocalSession
 if TYPE_CHECKING:
     from collections.abc import Mapping
 
-    from workaholic.session import WorkaholicSession
+    from workaholic.session import TaskSession
 
 _PROGRAM_NAME = "workaholic"
 _UUID7_VERSION = 7
@@ -114,7 +114,7 @@ def create_local_session(
     *,
     cwd: Path,
     environment: Mapping[str, str],
-) -> WorkaholicSession:
+) -> TaskSession:
     """Compose one short-lived embedded local Session.
 
     Session construction resolves trusted paths but performs no database or
@@ -151,7 +151,7 @@ def main() -> None:
     application(prog_name=_PROGRAM_NAME)
 
 
-def _create_process_session() -> WorkaholicSession:
+def _create_process_session() -> TaskSession:
     """Compose one Session from the current trusted process boundary."""
     return create_local_session(
         cwd=Path.cwd(),

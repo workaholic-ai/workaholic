@@ -12,7 +12,7 @@ from workaholic.cli.up import register_up_command
 
 if TYPE_CHECKING:
     from workaholic.cli.runtime import SessionProvider
-    from workaholic.session import WorkaholicSession
+    from workaholic.session import TaskSession
 
 _DISTRIBUTION_NAME = "workaholic-ai"
 _PROGRAM_NAME = "workaholic"
@@ -114,7 +114,7 @@ def create_app(session_provider: SessionProvider) -> typer.Typer:
     return application
 
 
-def _unconfigured_session() -> WorkaholicSession:
+def _unconfigured_session() -> TaskSession:
     """Fail safely when the application factory has no composition root.
 
     Raises:

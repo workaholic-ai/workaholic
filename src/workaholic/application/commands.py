@@ -1,4 +1,4 @@
-"""Strict Pydantic commands and semantic mutations for Phase 1."""
+"""Strict Pydantic commands and semantic mutations for cumulative use cases."""
 
 from __future__ import annotations
 
@@ -22,8 +22,10 @@ from workaholic.domain import (
     SubjectId,
     TaskEventId,
     TaskId,
+    normalize_project_name,
     normalize_task_objective,
     normalize_task_title,
+    validate_profile_name,
     validate_project_key,
     validate_task_key,
     validate_task_priority,
@@ -50,10 +52,30 @@ class _CommandModel(BaseModel):
 
 
 class BootstrapLocalProjectInput(_CommandModel):
-    """Validated request to bootstrap or locate the one Phase 1 Project."""
+    """Validated request to bootstrap or locate the initial local Project."""
 
     project_key: str
+    project_name: str = ""
     idempotency_key: str | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def _default_project_name_to_key(cls, value: object) -> object:
+        """Default a missing initial Project name to its immutable key.
+
+        Args:
+            value: Candidate model input.
+
+        Returns:
+            A copied mapping with the Project name default, or the input.
+
+        """
+        if not isinstance(value, Mapping):
+            return value
+        copied = dict(value)
+        if copied.get("project_name") is None and "project_key" in copied:
+            copied["project_name"] = copied["project_key"]
+        return copied
 
     @field_validator("project_key", mode="before")
     @classmethod
@@ -68,6 +90,20 @@ class BootstrapLocalProjectInput(_CommandModel):
 
         """
         return validate_project_key(value)
+
+    @field_validator("project_name", mode="before")
+    @classmethod
+    def _normalize_project_name(cls, value: object) -> str:
+        """Normalize and validate the initial Project display name.
+
+        Args:
+            value: Candidate Project display name.
+
+        Returns:
+            The normalized Project display name.
+
+        """
+        return normalize_project_name(value)
 
     @field_validator("idempotency_key", mode="before")
     @classmethod
@@ -102,6 +138,85 @@ class ListProjects(_CommandModel):
 
     instance_id: InstanceId
     subject_id: SubjectId
+
+
+class GetProjectByKey(_CommandModel):
+    """Read one authorized Project by its immutable key."""
+
+    instance_id: InstanceId
+    subject_id: SubjectId
+    project_key: str
+
+    @field_validator("project_key", mode="before")
+    @classmethod
+    def _validate_project_key(cls, value: object) -> str:
+        """Validate the immutable Project selector.
+
+        Args:
+            value: Candidate Project key.
+
+        Returns:
+            The validated Project key.
+
+        """
+        return validate_project_key(value)
+
+
+class CreateProjectInput(_CommandModel):
+    """Validated request to create one Project in an initialized Instance."""
+
+    instance_id: InstanceId
+    subject_id: SubjectId
+    project_key: str
+    project_name: str
+    idempotency_key: str | None = None
+
+    @field_validator("project_key", mode="before")
+    @classmethod
+    def _validate_project_key(cls, value: object) -> str:
+        """Validate the immutable Project key.
+
+        Args:
+            value: Candidate Project key.
+
+        Returns:
+            The validated Project key.
+
+        """
+        return validate_project_key(value)
+
+    @field_validator("project_name", mode="before")
+    @classmethod
+    def _normalize_project_name(cls, value: object) -> str:
+        """Normalize and validate the Project display name.
+
+        Args:
+            value: Candidate Project display name.
+
+        Returns:
+            The normalized Project display name.
+
+        """
+        return normalize_project_name(value)
+
+    @field_validator("idempotency_key", mode="before")
+    @classmethod
+    def _validate_idempotency_key(cls, value: object) -> str | None:
+        """Validate an optional opaque caller key.
+
+        Args:
+            value: Candidate idempotency key.
+
+        Returns:
+            The validated key or ``None``.
+
+        """
+        return _validate_opaque_token(
+            value,
+            label="Idempotency key",
+            maximum=_IDEMPOTENCY_KEY_MAX_LENGTH,
+            optional=True,
+        )
 
 
 class CreateTaskInput(_CommandModel):
@@ -198,10 +313,68 @@ class CreateTaskInput(_CommandModel):
 class ListTasks(_CommandModel):
     """Read one deterministic page of Tasks for a selected Project."""
 
+    profile: str = "local"
     project_id: ProjectId
     subject_id: SubjectId
     cursor: str | None = None
     limit: int = Field(default=_DEFAULT_PAGE_SIZE, ge=1, le=_MAX_PAGE_SIZE)
+
+    @field_validator("profile", mode="before")
+    @classmethod
+    def _validate_profile(cls, value: object) -> str:
+        """Validate the trusted profile bound into pagination.
+
+        Args:
+            value: Candidate profile name.
+
+        Returns:
+            The validated profile name.
+
+        """
+        return validate_profile_name(value)
+
+    @field_validator("cursor", mode="before")
+    @classmethod
+    def _validate_cursor(cls, value: object) -> str | None:
+        """Validate an optional opaque pagination cursor.
+
+        Args:
+            value: Candidate cursor.
+
+        Returns:
+            The validated cursor or ``None``.
+
+        """
+        return _validate_opaque_token(
+            value,
+            label="Cursor",
+            maximum=_CURSOR_MAX_LENGTH,
+            optional=True,
+        )
+
+
+class ListInstanceTasks(_CommandModel):
+    """Read one deterministic Task page across authorized Instance Projects."""
+
+    profile: str = "local"
+    instance_id: InstanceId
+    subject_id: SubjectId
+    cursor: str | None = None
+    limit: int = Field(default=_DEFAULT_PAGE_SIZE, ge=1, le=_MAX_PAGE_SIZE)
+
+    @field_validator("profile", mode="before")
+    @classmethod
+    def _validate_profile(cls, value: object) -> str:
+        """Validate the trusted profile bound into pagination.
+
+        Args:
+            value: Candidate profile name.
+
+        Returns:
+            The validated profile name.
+
+        """
+        return validate_profile_name(value)
 
     @field_validator("cursor", mode="before")
     @classmethod
@@ -265,7 +438,27 @@ class BootstrapMutation(_CommandModel):
     request_id: RequestId
     occurred_at: datetime
     project_key: str
+    project_name: str = ""
     idempotency_key: str | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def _default_project_name_to_key(cls, value: object) -> object:
+        """Default a missing initial Project name to its immutable key.
+
+        Args:
+            value: Candidate model input.
+
+        Returns:
+            A copied mapping with the Project name default, or the input.
+
+        """
+        if not isinstance(value, Mapping):
+            return value
+        copied = dict(value)
+        if copied.get("project_name") is None and "project_key" in copied:
+            copied["project_name"] = copied["project_key"]
+        return copied
 
     @field_validator("occurred_at", mode="before")
     @classmethod
@@ -294,6 +487,94 @@ class BootstrapMutation(_CommandModel):
 
         """
         return validate_project_key(value)
+
+    @field_validator("project_name", mode="before")
+    @classmethod
+    def _normalize_project_name(cls, value: object) -> str:
+        """Normalize and validate the initial Project display name.
+
+        Args:
+            value: Candidate Project display name.
+
+        Returns:
+            The normalized Project display name.
+
+        """
+        return normalize_project_name(value)
+
+    @field_validator("idempotency_key", mode="before")
+    @classmethod
+    def _validate_idempotency_key(cls, value: object) -> str | None:
+        """Validate an optional opaque caller key.
+
+        Args:
+            value: Candidate idempotency key.
+
+        Returns:
+            The validated key or ``None``.
+
+        """
+        return _validate_opaque_token(
+            value,
+            label="Idempotency key",
+            maximum=_IDEMPOTENCY_KEY_MAX_LENGTH,
+            optional=True,
+        )
+
+
+class ProjectCreationMutation(_CommandModel):
+    """Fully validated semantic input for atomic Project creation."""
+
+    project_id: ProjectId
+    request_id: RequestId
+    instance_id: InstanceId
+    actor_subject_id: SubjectId
+    occurred_at: datetime
+    project_key: str
+    project_name: str
+    idempotency_key: str | None = None
+
+    @field_validator("occurred_at", mode="before")
+    @classmethod
+    def _validate_occurred_at(cls, value: object) -> datetime:
+        """Require an authoritative UTC Project-creation timestamp.
+
+        Args:
+            value: Candidate timestamp.
+
+        Returns:
+            The validated datetime.
+
+        """
+        return validate_utc_timestamp(value, label="Project creation occurred_at")
+
+    @field_validator("project_key", mode="before")
+    @classmethod
+    def _validate_project_key(cls, value: object) -> str:
+        """Validate the immutable Project key.
+
+        Args:
+            value: Candidate Project key.
+
+        Returns:
+            The validated Project key.
+
+        """
+        return validate_project_key(value)
+
+    @field_validator("project_name", mode="before")
+    @classmethod
+    def _normalize_project_name(cls, value: object) -> str:
+        """Normalize and validate the Project display name.
+
+        Args:
+            value: Candidate Project display name.
+
+        Returns:
+            The normalized Project display name.
+
+        """
+        return normalize_project_name(value)
 
     @field_validator("idempotency_key", mode="before")
     @classmethod

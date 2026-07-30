@@ -1,4 +1,4 @@
-"""Read-only application orchestration for Phase 1 query use cases."""
+"""Read-only application orchestration for cumulative query use cases."""
 
 from __future__ import annotations
 
@@ -19,17 +19,17 @@ from workaholic.application.results import StatusResult, TaskPage
 from workaholic.domain import Project, Task, TaskId
 
 if TYPE_CHECKING:
-    from workaholic.application.ports import PhaseOneRepository
+    from workaholic.application.ports import QueryRepository
 
 
 class QueryApplication:
     """Validate query boundaries and delegate read-only repository operations."""
 
-    def __init__(self, repository: PhaseOneRepository) -> None:
+    def __init__(self, repository: QueryRepository) -> None:
         """Initialize the query service with one semantic repository.
 
         Args:
-            repository: Phase 1 read persistence boundary.
+            repository: Read-only semantic persistence boundary.
 
         Raises:
             TypeError: If the dependency lacks a required query method.

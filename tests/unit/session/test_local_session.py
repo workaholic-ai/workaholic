@@ -676,7 +676,7 @@ def test_malformed_user_values_map_to_invalid_input_after_context() -> None:
     log, context, actors, bootstrap, queries, tasks = _dependencies()
     session = _session(context, actors, bootstrap, queries, tasks)
     invalid_operations: tuple[Callable[[], object], ...] = (
-        lambda: session.up(UpRequest(project_key="bad")),
+        lambda: session.up(UpRequest.model_construct(project_key="bad")),
         lambda: session.create_task(TaskCreateRequest(title="   ")),
         lambda: session.list_tasks(TaskListRequest(cursor=" ")),
         lambda: session.get_task(TaskGetRequest(task="not-a-task")),

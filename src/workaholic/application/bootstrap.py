@@ -13,9 +13,9 @@ from workaholic.application.results import BootstrapResult
 
 if TYPE_CHECKING:
     from workaholic.application.ports import (
+        BootstrapRepository,
         Clock,
         IdentifierFactory,
-        PhaseOneRepository,
     )
 
 
@@ -24,14 +24,14 @@ class BootstrapApplication:
 
     def __init__(
         self,
-        repository: PhaseOneRepository,
+        repository: BootstrapRepository,
         clock: Clock,
         identifiers: IdentifierFactory,
     ) -> None:
         """Initialize explicit application dependencies.
 
         Args:
-            repository: Semantic Phase 1 persistence boundary.
+            repository: Semantic bootstrap persistence boundary.
             clock: Authoritative transaction clock.
             identifiers: Candidate opaque identifier factory.
 
@@ -79,6 +79,7 @@ class BootstrapApplication:
                 request_id=self._identifiers.new_request_id(),
                 occurred_at=self._clock.now(),
                 project_key=candidate_command.project_key,
+                project_name=candidate_command.project_name,
                 idempotency_key=candidate_command.idempotency_key,
             )
         except (TypeError, ValueError) as error:
