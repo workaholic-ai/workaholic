@@ -145,9 +145,23 @@ uv build
 scripts/smoke-install.sh dist/*.whl
 ```
 
-The Phase 0 clean-checkout foundation gate remains available as
-`scripts/verify-phase-0.sh`; the Phase 1 gate adds the persistent journey in
-the next delivery task.
+## Phase 1 acceptance gate
+
+From a clean checkout with no active virtual environment and no pre-existing
+`.venv` or `dist`, run:
+
+```bash
+scripts/verify-phase-1.sh
+```
+
+The fail-fast gate runs the locked synchronization, all commit-stage hooks, the
+complete test suite, package build, isolated wheel-install smoke, and installed
+persistent Task journey. The wheel journey uses its own temporary virtual
+environment, `WORKAHOLIC_DATA_DIR`, and Workspace, then removes them on exit.
+It never uses the operator's default profile or database.
+
+The Phase 0 foundation gate remains available as
+`scripts/verify-phase-0.sh`.
 
 ## Project documents
 

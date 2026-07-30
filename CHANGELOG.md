@@ -42,6 +42,8 @@ public versioning begins.
   operations with stable `workaholic.cli/v1` JSON envelopes.
 - Backend-neutral repository and Session conformance suites, separate-connection
   SQLite concurrency coverage, and the enabled persistent solo golden journey.
+- A fail-fast Phase 1 clean-state gate and isolated installed-wheel journey that
+  prove persistent Task behavior without using source or operator state.
 
 ### Security
 

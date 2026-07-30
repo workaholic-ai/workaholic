@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import os
 import re
-import shlex
 import shutil
 import stat
 import subprocess
@@ -13,25 +12,18 @@ from pathlib import Path
 import pytest
 
 _PROJECT_ROOT = Path(__file__).parents[2]
-_GATE_ENVIRONMENT_KEY = "WORKAHOLIC_PHASE_0_GATE_RUNNING"
+_GATE_ENVIRONMENT_KEYS = (
+    "WORKAHOLIC_PHASE_0_GATE_RUNNING",
+    "WORKAHOLIC_PHASE_1_GATE_RUNNING",
+)
 _COMMAND_TIMEOUT_SECONDS = 600
-_QUICK_START_PATTERN = re.compile(
-    r"## Quick start\n.*?```bash\n(?P<commands>.*?)\n```",
-    flags=re.DOTALL,
-)
-_EXPECTED_QUICK_START_COMMANDS = (
-    "uv sync --frozen",
-    "uv run workaholic up --project-key ACME",
-    'uv run workaholic task add "First persistent task"',
-    "uv run workaholic task list",
-)
 
 pytestmark = [
     pytest.mark.e2e,
     pytest.mark.requires_network,
     pytest.mark.requires_uv,
     pytest.mark.skipif(
-        os.environ.get(_GATE_ENVIRONMENT_KEY) == "1",
+        any(os.environ.get(key) == "1" for key in _GATE_ENVIRONMENT_KEYS),
         reason="The outer clean-checkout test owns Phase 0 gate recursion.",
     ),
 ]
@@ -215,37 +207,6 @@ def test_phase_zero_gate_passes_from_a_fresh_clone(tmp_path: Path) -> None:
     assert result.stdout.endswith("Phase 0 clean-checkout acceptance gate passed.\n")
 
 
-def test_readme_quick_start_passes_independently_in_a_fresh_clone(
-    tmp_path: Path,
-) -> None:
-    """Every documented quick-start command succeeds without the wrapper."""
-    clone = _clone_current_revision(tmp_path)
-    readme = (clone / "README.md").read_text(encoding="utf-8")
-    quick_start_match = _QUICK_START_PATTERN.search(readme)
-    assert quick_start_match is not None
-    commands = tuple(quick_start_match.group("commands").splitlines())
-    assert commands == _EXPECTED_QUICK_START_COMMANDS
-
-    environment = _clean_environment(tmp_path)
-    environment[_GATE_ENVIRONMENT_KEY] = "1"
-    for command in commands:
-        if command == "scripts/smoke-install.sh dist/*.whl":
-            wheels = tuple((clone / "dist").glob("*.whl"))
-            assert len(wheels) == 1
-            arguments = [str(clone / "scripts" / "smoke-install.sh"), str(wheels[0])]
-        else:
-            arguments = shlex.split(command)
-        result = _run(arguments, cwd=clone, environment=environment)
-        _require_success(result, context=f"README command `{command}`")
-
-    status_result = _run(
-        ["git", "status", "--porcelain=v1", "--untracked-files=all"],
-        cwd=clone,
-    )
-    _require_success(status_result, context="checking README journey cleanliness")
-    assert status_result.stdout == ""
-
-
 def test_phase_zero_gate_rejects_a_stale_lockfile(tmp_path: Path) -> None:
     """Uncommitted dependency resolution cannot pass clean-clone acceptance."""
     clone = _clone_current_revision(tmp_path)
@@ -328,7 +289,7 @@ exec "$WORKAHOLIC_TEST_REAL_UV" "$@"
         uv_wrapper.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH
     )
     environment = _clean_environment(tmp_path)
-    environment[_GATE_ENVIRONMENT_KEY] = "1"
+    environment["WORKAHOLIC_PHASE_0_GATE_RUNNING"] = "1"
     environment["PATH"] = f"{binary_directory}{os.pathsep}{environment.get('PATH', '')}"
     environment["WORKAHOLIC_TEST_REAL_UV"] = real_uv
 

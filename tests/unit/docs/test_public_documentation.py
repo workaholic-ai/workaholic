@@ -174,6 +174,8 @@ def test_readme_quick_start_executes_in_an_isolated_source_checkout(
     environment.update(
         {
             "NO_COLOR": "1",
+            "UV_CACHE_DIR": str(tmp_path / "uv-cache"),
+            "UV_LINK_MODE": "copy",
             "UV_NO_PROGRESS": "1",
             "WORKAHOLIC_DATA_DIR": str(data_directory),
         }
@@ -219,6 +221,23 @@ def test_readme_version_output_matches_installed_distribution() -> None:
     assert output_match.group("output") == (
         f"workaholic {metadata.version(_DISTRIBUTION_NAME)}"
     )
+
+
+def test_readme_publishes_the_phase_one_clean_state_gate() -> None:
+    """Public development guidance exposes the isolated aggregate command."""
+    readme = " ".join(_README.read_text(encoding="utf-8").split())
+
+    assert "## Phase 1 acceptance gate" in _README.read_text(encoding="utf-8")
+    assert "scripts/verify-phase-1.sh" in readme
+    for guarantee in (
+        "clean checkout",
+        "no active virtual environment",
+        "no pre-existing `.venv` or `dist`",
+        "temporary virtual environment",
+        "`WORKAHOLIC_DATA_DIR`",
+        "never uses the operator's default profile or database",
+    ):
+        assert guarantee in readme
 
 
 def test_phase_one_status_and_limitations_are_explicit() -> None:

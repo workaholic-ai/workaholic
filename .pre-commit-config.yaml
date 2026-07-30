@@ -117,6 +117,16 @@ repos:
         files: ^(README\.md|scripts/verify-phase-0\.sh|tests/e2e/test_phase_0_distribution\.py|tests/unit/docs/test_public_documentation\.py|tests/unit/scripts/test_verify_phase_0\.py)$
         pass_filenames: false
 
+      - id: phase-one-contracts
+        name: Phase 1 acceptance and wheel journey contracts
+        entry: >-
+          uv run --frozen pytest --no-cov
+          tests/unit/scripts/test_smoke_phase_one_wheel.py
+          tests/unit/scripts/test_verify_phase_one.py
+        language: system
+        files: ^(README\.md|scripts/(smoke-phase-1-wheel|verify-phase-1)\.sh|tests/e2e/test_phase_1_distribution\.py|tests/unit/scripts/test_(smoke_phase_one_wheel|verify_phase_one)\.py)$
+        pass_filenames: false
+
       - id: pytest
         name: pytest with coverage
         entry: uv run --frozen pytest
