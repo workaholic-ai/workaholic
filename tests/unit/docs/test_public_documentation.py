@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import os
 import re
-import shlex
 import shutil
 import subprocess
 from importlib import metadata
@@ -47,6 +46,7 @@ _VERSION_OUTPUT_PATTERN = re.compile(
     r"The version command prints:\n\n```text\n(?P<output>[^\n]+)\n```"
 )
 _EXPECTED_QUICK_START = """uv sync --frozen
+export WORKAHOLIC_DATA_DIR="$(mktemp -d "${TMPDIR:-/tmp}/workaholic-quickstart.XXXXXX")"
 uv run workaholic up --project-key ACME
 uv run workaholic task add "First persistent task"
 uv run workaholic task list"""
@@ -163,53 +163,48 @@ def test_readme_quick_start_contains_only_phase_one_journey_commands() -> None:
 def test_readme_quick_start_executes_in_an_isolated_source_checkout(
     tmp_path: Path,
 ) -> None:
-    """Every documented quick-start command succeeds against isolated state."""
+    """The literal quick-start shell block selects its own isolated state."""
     checkout = tmp_path / "checkout"
     checkout.mkdir()
     for filename in ("LICENSE", "README.md", "pyproject.toml", "uv.lock"):
         shutil.copy2(_PROJECT_ROOT / filename, checkout / filename)
     shutil.copytree(_PROJECT_ROOT / "src", checkout / "src")
-    data_directory = tmp_path / "data"
+    inherited_data_directory = tmp_path / "inherited-data"
+    inherited_data_directory.mkdir()
+    (inherited_data_directory / "local.db").write_bytes(b"not a SQLite store")
     environment = os.environ.copy()
     environment.update(
         {
             "NO_COLOR": "1",
+            "TMPDIR": str(tmp_path),
             "UV_CACHE_DIR": str(tmp_path / "uv-cache"),
             "UV_LINK_MODE": "copy",
             "UV_NO_PROGRESS": "1",
-            "WORKAHOLIC_DATA_DIR": str(data_directory),
+            "WORKAHOLIC_DATA_DIR": str(inherited_data_directory),
         }
     )
 
-    results = [
-        subprocess.run(
-            shlex.split(command),
-            check=False,
-            cwd=checkout,
-            env=environment,
-            capture_output=True,
-            text=True,
-            timeout=60,
-        )
-        for command in _EXPECTED_QUICK_START.splitlines()
-    ]
-
-    failures = "\n\n".join(
-        f"{command}\nstdout:\n{result.stdout}\nstderr:\n{result.stderr}"
-        for command, result in zip(
-            _EXPECTED_QUICK_START.splitlines(),
-            results,
-            strict=True,
-        )
-        if result.returncode != 0
+    result = subprocess.run(
+        ["/bin/sh", "-eu", "-c", _EXPECTED_QUICK_START],
+        check=False,
+        cwd=checkout,
+        env=environment,
+        capture_output=True,
+        text=True,
+        timeout=60,
     )
-    assert [result.returncode for result in results] == [0, 0, 0, 0], failures
-    assert all("Traceback" not in result.stderr for result in results)
-    assert "ACME-1" in results[2].stdout
-    assert "First persistent task" in results[3].stdout
-    assert "ACME-1" in results[3].stdout
+
+    assert result.returncode == 0, f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+    assert "Traceback" not in result.stderr
+    assert "ACME-1" in result.stdout
+    assert "First persistent task" in result.stdout
     assert (checkout / ".workaholic.env").is_file()
-    assert (data_directory / "local.db").is_file()
+    data_directories = tuple(tmp_path.glob("workaholic-quickstart.*"))
+    assert len(data_directories) == 1
+    assert (data_directories[0] / "local.db").is_file()
+    assert (inherited_data_directory / "local.db").read_bytes() == (
+        b"not a SQLite store"
+    )
 
 
 def test_readme_version_output_matches_installed_distribution() -> None:

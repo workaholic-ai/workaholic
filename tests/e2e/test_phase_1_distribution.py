@@ -6,7 +6,6 @@ import hashlib
 import json
 import os
 import re
-import shlex
 import shutil
 import sqlite3
 import subprocess
@@ -31,6 +30,8 @@ _QUICK_START_PATTERN = re.compile(
 )
 _EXPECTED_QUICK_START_COMMANDS = (
     "uv sync --frozen",
+    'export WORKAHOLIC_DATA_DIR="$(mktemp -d '
+    '"${TMPDIR:-/tmp}/workaholic-quickstart.XXXXXX")"',
     "uv run workaholic up --project-key ACME",
     'uv run workaholic task add "First persistent task"',
     "uv run workaholic task list",
@@ -380,18 +381,16 @@ def test_readme_quick_start_passes_independently_in_a_fresh_clone(
 
     environment = _clean_environment(tmp_path)
     environment["WORKAHOLIC_PHASE_1_GATE_RUNNING"] = "1"
-    outputs: list[subprocess.CompletedProcess[str]] = []
-    for command in commands:
-        result = _run(
-            shlex.split(command),
-            cwd=clone,
-            environment=environment,
-        )
-        _require_success(result, context=f"README command `{command}`")
-        outputs.append(result)
+    environment["TMPDIR"] = str(tmp_path)
+    result = _run(
+        ["/bin/sh", "-eu", "-c", "\n".join(commands)],
+        cwd=clone,
+        environment=environment,
+    )
+    _require_success(result, context="README quick-start shell block")
 
-    assert "ACME-1" in outputs[2].stdout
-    assert "First persistent task" in outputs[3].stdout
+    assert "ACME-1" in result.stdout
+    assert "First persistent task" in result.stdout
     status_result = _run(
         ["git", "status", "--porcelain=v1", "--untracked-files=all"],
         cwd=clone,
