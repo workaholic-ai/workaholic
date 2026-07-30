@@ -244,6 +244,9 @@ def _run_cli(
 
     """
     child_environment = dict(environment)
+    child_environment["WORKAHOLIC_CONFIG_DIR"] = str(
+        data_directory.parent / "workaholic-config"
+    )
     child_environment["WORKAHOLIC_DATA_DIR"] = str(data_directory)
     return _run(
         [

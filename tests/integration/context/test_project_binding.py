@@ -82,7 +82,10 @@ def _environment(data_directory: Path) -> dict[str, str]:
         Minimal process environment mapping.
 
     """
-    return {"WORKAHOLIC_DATA_DIR": str(data_directory)}
+    return {
+        "WORKAHOLIC_CONFIG_DIR": str(data_directory.parent / "config"),
+        "WORKAHOLIC_DATA_DIR": str(data_directory),
+    }
 
 
 def test_composed_session_binds_existing_project_without_database_mutation(

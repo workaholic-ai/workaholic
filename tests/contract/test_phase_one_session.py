@@ -46,7 +46,10 @@ class _LocalSessionFactory:
         """
         return create_local_session(
             cwd=workspace,
-            environment={"WORKAHOLIC_DATA_DIR": str(root)},
+            environment={
+                "WORKAHOLIC_CONFIG_DIR": str(root.parent / "config"),
+                "WORKAHOLIC_DATA_DIR": str(root),
+            },
         )
 
 

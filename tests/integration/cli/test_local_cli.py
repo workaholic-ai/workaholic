@@ -40,6 +40,7 @@ def _run_cli(
     environment.update(
         {
             "NO_COLOR": "1",
+            "WORKAHOLIC_CONFIG_DIR": str(data_directory.parent / "config"),
             "WORKAHOLIC_DATA_DIR": str(data_directory),
         }
     )
@@ -206,10 +207,11 @@ def test_local_cli_persists_complete_journey_across_fresh_processes(  # noqa: PL
 
 
 def test_invalid_data_directory_fails_without_traceback(tmp_path: Path) -> None:
-    """A relative trusted override becomes one safe context error envelope."""
+    """A relative trusted override becomes one safe profile error envelope."""
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     environment = os.environ.copy()
+    environment["WORKAHOLIC_CONFIG_DIR"] = str(tmp_path / "config")
     environment["WORKAHOLIC_DATA_DIR"] = "relative-data"
 
     result = subprocess.run(
@@ -228,7 +230,7 @@ def test_invalid_data_directory_fails_without_traceback(tmp_path: Path) -> None:
         text=True,
     )
 
-    detail = require_error(result, expected_code="CONTEXT_INVALID")
+    detail = require_error(result, expected_code="PROFILE_INVALID")
     assert detail["retryable"] is False
     assert result.stderr == ""
     assert "Traceback" not in result.stdout
