@@ -25,6 +25,7 @@ from workaholic.application.results import (
     StatusResult,
     TaskPage,
 )
+from workaholic.application.tasks import TaskApplication
 
 __all__ = [
     "ApplicationError",
@@ -46,6 +47,7 @@ __all__ = [
     "PhaseOneRepository",
     "ProjectKeyConflictError",
     "StatusResult",
+    "TaskApplication",
     "TaskCreationMutation",
     "TaskPage",
 ]

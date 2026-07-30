@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-from datetime import datetime
 from typing import TYPE_CHECKING, Final, cast
 
 from workaholic.application import (
@@ -26,6 +25,13 @@ from workaholic.domain import (
     SubjectKind,
     WorkspaceBinding,
 )
+from workaholic.persistence.sqlite._records import (
+    canonical_json,
+    parse_timestamp,
+    require_boolean,
+    require_text,
+    serialize_timestamp,
+)
 from workaholic.persistence.sqlite.connection import open_write_transaction
 from workaholic.persistence.sqlite.errors import StorageUnavailableError
 
@@ -38,7 +44,6 @@ _BOOTSTRAP_OPERATION: Final = "bootstrap.local_project"
 _BOOTSTRAP_SUBJECT_SCOPE: Final = "local-bootstrap"
 _LOCAL_SUBJECT_DISPLAY_NAME: Final = "Local operator"
 _BOOTSTRAP_OUTCOME_KEYS: Final = frozenset(("instance_id", "project_id", "subject_id"))
-_CANONICAL_TIMESTAMP_LENGTH: Final = 27
 
 
 def bootstrap_local_project(
@@ -114,12 +119,12 @@ def _bootstrap_in_transaction(
     if project_rows:
         if len(project_rows) != 1:
             raise StorageUnavailableError
-        persisted_key = _require_text(project_rows[0][1])
+        persisted_key = require_text(project_rows[0][1])
         if persisted_key != mutation.project_key:
             raise ProjectKeyConflictError
         result = _load_bootstrap_graph(
             connection,
-            expected_project_id=_require_text(project_rows[0][0]),
+            expected_project_id=require_text(project_rows[0][0]),
         )
     else:
         _require_empty_bootstrap_state(connection)
@@ -149,7 +154,7 @@ def _bootstrap_fingerprint(project_key: str) -> str:
         Lowercase SHA-256 hexadecimal digest.
 
     """
-    encoded = _canonical_json({"project_key": project_key}).encode("utf-8")
+    encoded = canonical_json({"project_key": project_key}).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()
 
 
@@ -186,9 +191,9 @@ def _read_idempotent_bootstrap(
     ).fetchone()
     if row is None:
         return None
-    if _require_text(row[0]) != request_fingerprint:
+    if require_text(row[0]) != request_fingerprint:
         raise IdempotencyConflictError
-    outcome = _parse_bootstrap_outcome(_require_text(row[1]))
+    outcome = _parse_bootstrap_outcome(require_text(row[1]))
     result = _load_bootstrap_graph(
         connection,
         expected_project_id=outcome["project_id"],
@@ -219,7 +224,7 @@ def _record_idempotent_bootstrap(
     """
     if mutation.idempotency_key is None:
         return
-    outcome = _canonical_json(
+    outcome = canonical_json(
         {
             "instance_id": str(result.instance.id),
             "project_id": str(result.project.id),
@@ -239,7 +244,7 @@ def _record_idempotent_bootstrap(
             mutation.idempotency_key,
             request_fingerprint,
             outcome,
-            _serialize_timestamp(mutation.occurred_at),
+            serialize_timestamp(mutation.occurred_at),
         ),
     )
 
@@ -281,7 +286,7 @@ def _insert_bootstrap_graph(
         mutation: Validated candidate identities and authoritative time.
 
     """
-    timestamp = _serialize_timestamp(mutation.occurred_at)
+    timestamp = serialize_timestamp(mutation.occurred_at)
     connection.execute(
         "INSERT INTO instances (id, created_at) VALUES (?, ?)",
         (str(mutation.instance_id), timestamp),
@@ -359,7 +364,7 @@ def _load_bootstrap_graph(
     ).fetchall()
     if len(instance_rows) != 1 or len(project_rows) != 1:
         raise StorageUnavailableError
-    project_id = _require_text(project_rows[0][0])
+    project_id = require_text(project_rows[0][0])
     if project_id != expected_project_id:
         raise StorageUnavailableError
 
@@ -375,7 +380,7 @@ def _load_bootstrap_graph(
     ).fetchall()
     if len(grant_rows) != 1:
         raise PermissionDeniedError
-    subject_id = _require_text(grant_rows[0][0])
+    subject_id = require_text(grant_rows[0][0])
     subject_rows = connection.execute(
         """
         SELECT id, kind, display_name, enabled, is_instance_admin
@@ -384,37 +389,37 @@ def _load_bootstrap_graph(
         LIMIT 2
         """
     ).fetchall()
-    if len(subject_rows) != 1 or _require_text(subject_rows[0][0]) != subject_id:
+    if len(subject_rows) != 1 or require_text(subject_rows[0][0]) != subject_id:
         raise PermissionDeniedError
     if (
-        _require_text(subject_rows[0][1]) != SubjectKind.HUMAN.value
-        or _require_boolean(subject_rows[0][3]) is not True
-        or _require_boolean(subject_rows[0][4]) is not True
-        or _require_text(grant_rows[0][2]) != ProjectRole.OWNER.value
+        require_text(subject_rows[0][1]) != SubjectKind.HUMAN.value
+        or require_boolean(subject_rows[0][3]) is not True
+        or require_boolean(subject_rows[0][4]) is not True
+        or require_text(grant_rows[0][2]) != ProjectRole.OWNER.value
     ):
         raise PermissionDeniedError
 
     instance = Instance(
-        id=InstanceId(_require_text(instance_rows[0][0])),
-        created_at=_parse_timestamp(instance_rows[0][1]),
+        id=InstanceId(require_text(instance_rows[0][0])),
+        created_at=parse_timestamp(instance_rows[0][1]),
     )
     project = Project(
         id=ProjectId(project_id),
-        instance_id=InstanceId(_require_text(project_rows[0][1])),
-        key=_require_text(project_rows[0][2]),
-        created_at=_parse_timestamp(project_rows[0][3]),
+        instance_id=InstanceId(require_text(project_rows[0][1])),
+        key=require_text(project_rows[0][2]),
+        created_at=parse_timestamp(project_rows[0][3]),
     )
     subject = Subject(
         id=SubjectId(subject_id),
-        kind=SubjectKind(_require_text(subject_rows[0][1])),
-        display_name=_require_text(subject_rows[0][2]),
-        enabled=_require_boolean(subject_rows[0][3]),
-        is_instance_admin=_require_boolean(subject_rows[0][4]),
+        kind=SubjectKind(require_text(subject_rows[0][1])),
+        display_name=require_text(subject_rows[0][2]),
+        enabled=require_boolean(subject_rows[0][3]),
+        is_instance_admin=require_boolean(subject_rows[0][4]),
     )
     grant = ProjectGrant(
-        subject_id=SubjectId(_require_text(grant_rows[0][0])),
-        project_id=ProjectId(_require_text(grant_rows[0][1])),
-        role=ProjectRole(_require_text(grant_rows[0][2])),
+        subject_id=SubjectId(require_text(grant_rows[0][0])),
+        project_id=ProjectId(require_text(grant_rows[0][1])),
+        role=ProjectRole(require_text(grant_rows[0][2])),
     )
     return BootstrapResult(
         instance=instance,
@@ -451,94 +456,3 @@ def _parse_bootstrap_outcome(value: str) -> Mapping[str, str]:
     if not all(isinstance(item, str) for item in decoded.values()):
         raise StorageUnavailableError
     return cast("Mapping[str, str]", decoded)
-
-
-def _canonical_json(value: Mapping[str, str]) -> str:
-    """Serialize one string mapping deterministically.
-
-    Args:
-        value: Mapping to serialize.
-
-    Returns:
-        Canonical compact JSON with sorted keys.
-
-    """
-    return json.dumps(
-        value,
-        ensure_ascii=True,
-        separators=(",", ":"),
-        sort_keys=True,
-    )
-
-
-def _serialize_timestamp(value: datetime) -> str:
-    """Serialize one authoritative UTC timestamp as canonical RFC 3339 text.
-
-    Args:
-        value: Timezone-aware UTC datetime.
-
-    Returns:
-        Fixed-width microsecond precision text ending in ``Z``.
-
-    """
-    return value.isoformat(timespec="microseconds").replace("+00:00", "Z")
-
-
-def _parse_timestamp(value: object) -> datetime:
-    """Parse one canonical UTC timestamp from SQLite.
-
-    Args:
-        value: Persisted timestamp value.
-
-    Returns:
-        Timezone-aware UTC datetime.
-
-    Raises:
-        StorageUnavailableError: If the persisted timestamp is malformed.
-
-    """
-    text = _require_text(value)
-    if (
-        len(text) != _CANONICAL_TIMESTAMP_LENGTH
-        or not text.endswith("Z")
-        or text[10] != "T"
-        or text[19] != "."
-    ):
-        raise StorageUnavailableError
-    return datetime.fromisoformat(f"{text[:-1]}+00:00")
-
-
-def _require_text(value: object) -> str:
-    """Require one nonempty SQLite text value.
-
-    Args:
-        value: Driver value.
-
-    Returns:
-        Nonempty string.
-
-    Raises:
-        StorageUnavailableError: If persisted data has the wrong type.
-
-    """
-    if not isinstance(value, str) or not value:
-        raise StorageUnavailableError
-    return value
-
-
-def _require_boolean(value: object) -> bool:
-    """Deserialize one strict SQLite boolean integer.
-
-    Args:
-        value: Driver value.
-
-    Returns:
-        Corresponding Python boolean.
-
-    Raises:
-        StorageUnavailableError: If the value is not exactly zero or one.
-
-    """
-    if type(value) is not int or value not in (0, 1):
-        raise StorageUnavailableError
-    return bool(value)

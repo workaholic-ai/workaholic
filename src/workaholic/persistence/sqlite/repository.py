@@ -8,9 +8,15 @@ from typing import TYPE_CHECKING
 from workaholic.persistence.sqlite._bootstrap import (
     bootstrap_local_project as _bootstrap_local_project,
 )
+from workaholic.persistence.sqlite._tasks import create_task as _create_task
 
 if TYPE_CHECKING:
-    from workaholic.application import BootstrapMutation, BootstrapResult
+    from workaholic.application import (
+        BootstrapMutation,
+        BootstrapResult,
+        TaskCreationMutation,
+    )
+    from workaholic.domain import Task
 
 
 class SQLitePhaseOneRepository:
@@ -56,3 +62,15 @@ class SQLitePhaseOneRepository:
 
         """
         return _bootstrap_local_project(self._database_path, mutation)
+
+    def create_task(self, mutation: TaskCreationMutation) -> Task:
+        """Atomically allocate, create, and attribute one initial Task.
+
+        Args:
+            mutation: Validated Task creation mutation.
+
+        Returns:
+            The new or idempotently replayed Task.
+
+        """
+        return _create_task(self._database_path, mutation)
