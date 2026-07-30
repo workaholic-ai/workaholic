@@ -136,6 +136,7 @@ def _connect(
 
     """
     uri = f"{database_path.as_uri()}?mode={mode}"
+    connection: sqlite3.Connection | None = None
     try:
         connection = sqlite3.connect(
             uri,
@@ -147,11 +148,30 @@ def _connect(
         connection.execute("PRAGMA foreign_keys = ON")
         _require_foreign_keys(connection)
     except StorageUnavailableError:
+        _close_after_configuration_failure(connection)
         raise
     except sqlite3.DatabaseError as error:
+        _close_after_configuration_failure(connection)
         _raise_mapped_database_error(error)
     else:
         return connection
+
+
+def _close_after_configuration_failure(
+    connection: sqlite3.Connection | None,
+) -> None:
+    """Close a connection that cannot satisfy required driver configuration.
+
+    The configuration failure remains authoritative; a secondary close failure
+    must not replace its stable public error mapping.
+
+    Args:
+        connection: Partially configured connection, when opening succeeded.
+
+    """
+    if connection is not None:
+        with suppress(sqlite3.DatabaseError):
+            connection.close()
 
 
 def _require_foreign_keys(connection: sqlite3.Connection) -> None:
@@ -166,7 +186,6 @@ def _require_foreign_keys(connection: sqlite3.Connection) -> None:
     """
     foreign_keys = connection.execute("PRAGMA foreign_keys").fetchone()
     if foreign_keys != (1,):
-        connection.close()
         raise StorageUnavailableError
 
 

@@ -6,7 +6,7 @@ import sqlite3
 import stat
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from typing import TYPE_CHECKING, Protocol, cast
+from typing import TYPE_CHECKING, Never, Protocol, cast
 
 import pytest
 
@@ -21,6 +21,7 @@ from workaholic.persistence.sqlite import (
     open_write_transaction,
     validate_store_schema,
 )
+from workaholic.persistence.sqlite._driver import _connect
 
 if TYPE_CHECKING:
     from contextlib import AbstractContextManager
@@ -47,6 +48,31 @@ class _ConnectionOpener(Protocol):
     ) -> AbstractContextManager[sqlite3.Connection]:
         """Return a connection context manager for one database path."""
         ...
+
+
+class _ConfigurationFailureConnection:
+    """Record closure after simulating a driver-configuration failure."""
+
+    def __init__(self) -> None:
+        """Initialize an open fake connection."""
+        self.closed = False
+
+    def execute(self, _statement: str) -> Never:
+        """Fail the first required configuration statement.
+
+        Args:
+            _statement: SQL statement supplied by the driver.
+
+        Raises:
+            sqlite3.OperationalError: Always.
+
+        """
+        message = "private configuration detail"
+        raise sqlite3.OperationalError(message)
+
+    def close(self) -> None:
+        """Record deterministic resource release."""
+        self.closed = True
 
 
 def _application_tables(connection: sqlite3.Connection) -> set[str]:
@@ -737,6 +763,37 @@ def test_sqlite_open_failure_is_redacted(
         initialize_empty_store(tmp_path / "local.db")
 
     assert "private driver detail" not in captured.value.safe_message
+
+
+def test_configuration_failure_closes_the_open_connection(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """A partially configured connection is never left for garbage collection."""
+    failing_connection = _ConfigurationFailureConnection()
+
+    def return_failing_connection(
+        *_arguments: object,
+        **_keywords: object,
+    ) -> sqlite3.Connection:
+        """Return the controlled connection boundary.
+
+        Returns:
+            Fake connection cast to the standard-library boundary type.
+
+        """
+        return cast("sqlite3.Connection", failing_connection)
+
+    monkeypatch.setattr(
+        "workaholic.persistence.sqlite._driver.sqlite3.connect",
+        return_failing_connection,
+    )
+
+    with pytest.raises(StorageUnavailableError) as captured:
+        _connect(tmp_path / "local.db", mode="rwc")
+
+    assert failing_connection.closed
+    assert "private configuration detail" not in captured.value.safe_message
 
 
 def test_initialization_lock_timeout_maps_to_retryable_storage_busy(
