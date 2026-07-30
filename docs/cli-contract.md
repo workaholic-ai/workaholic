@@ -1,6 +1,6 @@
 # Workaholic AI CLI Automation Contract
 
-- Status: Accepted v1 contract with Phase 1 implementation
+- Status: Accepted v1 contract with Phase 2 implementation
 - Decision date: 2026-07-29
 - Contract family: `workaholic.cli/v1`
 - Public surface: Documented JSON output of the `workaholic` executable
@@ -8,16 +8,17 @@
 ## Current implementation notice
 
 This document specifies the accepted v1 automation contract through its Phase 8
-freeze. The current `0.1.0a1` development package implements the versioned
-envelopes and exposes all six Phase 1 commands through an injected Session
-boundary. Its default executable composes the embedded LocalSession and SQLite
-adapter, so the durable exact-directory local journey is available. No
-compatibility guarantee applies before `1.0.0`.
+freeze. The current `0.2.0a1` development package implements the versioned
+envelopes and all nine Phase 2 commands through an injected Session boundary.
+Its default executable composes the embedded `LocalSession`, trusted local
+profiles, canonical upward Workspace discovery, and SQLite schema version `2`.
+No compatibility guarantee applies before `1.0.0`.
 
-The alpha does not discover context upward, select multiple active Projects,
-run Agents, issue Tokens, use RemoteSession, start a server, or select JSON or
-PostgreSQL adapters. Those later command contracts remain normative roadmap
-requirements, not current implementation claims.
+The alpha does not run Agents, issue Tokens, use remote profiles or
+credentials, use `RemoteSession`, start a server, update Tasks, archive
+Projects, migrate schemas, or select JSON or PostgreSQL adapters. Those later
+command contracts remain normative roadmap requirements, not current
+implementation claims.
 
 ## Normative language
 
@@ -489,9 +490,8 @@ establish JSON mode remains outside the envelope guarantee.
 
 ## Phase 2 command contract
 
-This section is the normative contract for the Multi-project Alpha. Until the
-Phase 2 acceptance gate passes, it describes the next implementation rather
-than a capability of the current `0.1.0a1` package or README.
+This section is the implemented normative contract for the `0.2.0a1`
+Multi-project Alpha and its public README.
 
 Phase 2 remains embedded-only. It does not accept a remote profile, URL,
 credential, Token, login, `RemoteSession`, network transport, JSON adapter, or

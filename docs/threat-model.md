@@ -9,9 +9,11 @@
 
 This threat model turns the accepted v1 security boundary into explicit
 engineering constraints and verification targets. It covers planned behavior;
-the current `0.1.0a1` development package implements exact-directory Project
-context, local SQLite persistence, and bootstrap-Human attribution. It does not
-yet implement bearer authentication, Agent execution, or network services.
+the current `0.2.0a1` development package implements trusted embedded profiles,
+canonical upward Workspace discovery, safe binding, multi-project
+authorization checks, local SQLite schema version `2`, and bootstrap-Human
+attribution. It does not implement bearer authentication, Agent execution,
+remote profiles, credentials, `RemoteSession`, or network services.
 
 Terms such as Subject, ProjectGrant, Attempt, Lease, and TaskEvent use their
 canonical definitions in the [glossary](glossary.md).

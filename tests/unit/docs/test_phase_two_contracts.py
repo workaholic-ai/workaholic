@@ -274,13 +274,57 @@ def test_phase_two_explicitly_defers_remote_and_credential_capabilities() -> Non
     assert "Phase 2 does not accept a URL, credential, Token" in context_adr
 
 
-def test_readme_remains_scoped_to_verified_phase_one_behavior() -> None:
-    """Keep public quick-start claims behind the Phase 2 acceptance gate."""
+def test_readme_is_scoped_to_verified_phase_two_behavior() -> None:
+    """Expose the multi-Project alpha without claiming deferred capabilities."""
     readme = _read_normalized(_README)
+    current_cli = _section(
+        _README,
+        "## Current CLI",
+        "## Phase 2 boundaries",
+    )
+    boundaries = _section(
+        _README,
+        "## Phase 2 boundaries",
+        "## Planned for v1 (not implemented)",
+    )
 
-    assert "It exposes all six Phase 1 Project and Task operations" in readme
-    assert "upward context discovery or multiple active Projects" in readme
-    assert "multi-project context" in readme
-    assert "workaholic project create" not in readme
-    assert "workaholic project bind" not in readme
-    assert "workaholic context" not in readme
+    assert "It exposes the nine Phase 2 Project, context, and Task operations" in readme
+    for command in (
+        "workaholic context",
+        "workaholic project create",
+        "workaholic project bind",
+        "workaholic task list --all-projects",
+    ):
+        assert command in current_cli
+    for selector in (
+        "`profiles.toml`",
+        "`WORKAHOLIC_CONFIG_DIR`",
+        "`WORKAHOLIC_DATA_DIR`",
+        "`WORKAHOLIC_PROFILE`",
+        'mode = "embedded"',
+    ):
+        assert selector in readme
+    assert "schema version `2`" in readme
+    assert "schema version `1`" in readme
+    assert "There is no automatic migration, conversion, import, export, or reset" in (
+        readme
+    )
+
+    assert "It does not implement:" in boundaries
+    for unavailable in (
+        "Agents",
+        "Tokens, credentials, remote profiles",
+        "`RemoteSession`, a server",
+        "JSON or PostgreSQL persistence adapters",
+        "schema migration",
+        "Project archival",
+        "Task updates",
+    ):
+        assert unavailable in boundaries
+    for unsupported_command in (
+        "workaholic login",
+        "workaholic server",
+        "workaholic task update",
+        "workaholic project archive",
+    ):
+        assert unsupported_command not in current_cli

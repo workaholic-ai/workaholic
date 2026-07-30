@@ -12,7 +12,7 @@ import pytest
 
 _PROJECT_ROOT = Path(__file__).parents[3]
 _SMOKE_SCRIPT = _PROJECT_ROOT / "scripts" / "smoke-phase-1-wheel.sh"
-_EXPECTED_VERSION = "0.1.0a1"
+_EXPECTED_VERSION = "0.2.0a1"
 
 
 def _write_executable(path: Path, source: str) -> None:
@@ -239,7 +239,8 @@ def test_smoke_persists_one_task_across_isolated_cli_processes(
 
     assert result.returncode == 0
     assert result.stdout == (
-        "Verified Phase 1 persistent Task journey from workaholic 0.1.0a1.\n"
+        f"Verified Phase 1 persistent Task journey from workaholic "
+        f"{_EXPECTED_VERSION}.\n"
     )
     assert result.stderr == ""
     assert len(uv_calls) == 3
