@@ -10,8 +10,10 @@ from workaholic.application import (
     ApplicationErrorCode,
     BootstrapLocalProjectInput,
     BootstrapResult,
+    ContextResult,
     CreateTaskInput,
     GetLocalStatus,
+    GetProjectByKey,
     GetTask,
     ListProjects,
     ListTasks,
@@ -20,12 +22,15 @@ from workaholic.application import (
 )
 from workaholic.domain import (
     Project,
+    ProjectGrant,
+    ProjectRole,
     SubjectId,
     Task,
     TaskId,
     WorkspaceBinding,
 )
 from workaholic.session.models import (
+    ProjectBindRequest,
     ProjectListRequest,
     StatusRequest,
     TaskCreateRequest,
@@ -80,6 +85,18 @@ class _QueryService(Protocol):
 
         Returns:
             Projects ordered by immutable key.
+
+        """
+        ...
+
+    def get_project_by_key(self, command: GetProjectByKey) -> Project:
+        """Return one authorized Project selected by immutable key.
+
+        Args:
+            command: Validated Instance-, Subject-, and key-bound query.
+
+        Returns:
+            Matching authorized Project.
 
         """
         ...
@@ -152,11 +169,13 @@ class LocalSession:
         """
         _require_callable(context, "read_current", "context gateway")
         _require_callable(context, "write_current", "context gateway")
+        _require_callable(context, "bind", "context gateway")
         _require_callable(actors, "select", "local actor selector")
         _require_callable(bootstrap, "up", "bootstrap service")
         for method_name in (
             "status",
             "list_projects",
+            "get_project_by_key",
             "list_tasks",
             "get_task",
         ):
@@ -256,6 +275,86 @@ class LocalSession:
         ):
             _raise_internal_result("Project query")
         return projects
+
+    def bind_project(self, request: ProjectBindRequest) -> ContextResult:
+        """Bind an authorized Project to an explicit or current Workspace.
+
+        The current verified context supplies the trusted embedded profile,
+        Instance, and bootstrap Human until Task 10 generalizes selection.
+        The target context becomes authoritative before local Git metadata is
+        updated by the context gateway.
+
+        Args:
+            request: Validated key, optional path/profile, and replacement intent.
+
+        Returns:
+            Effective authoritative selection at the durable target context.
+
+        Raises:
+            ApplicationError: If selection, authorization, or binding fails.
+
+        """
+        candidate: object = request
+        if not isinstance(candidate, ProjectBindRequest):
+            _raise_invalid_input("Project-bind Session request is invalid.")
+        current_binding, subject_id, status = self._verified_selection()
+        profile = (
+            current_binding.profile if candidate.profile is None else candidate.profile
+        )
+        if profile != current_binding.profile:
+            _raise_context_invalid()
+        project: object = self._queries.get_project_by_key(
+            GetProjectByKey(
+                instance_id=current_binding.instance_id,
+                subject_id=subject_id,
+                project_key=candidate.project,
+            )
+        )
+        if (
+            not isinstance(project, Project)
+            or project.instance_id != current_binding.instance_id
+            or project.key != candidate.project
+        ):
+            _raise_internal_result("Project query")
+        binding = WorkspaceBinding(
+            context_version=1,
+            profile=profile,
+            instance_id=current_binding.instance_id,
+            project_id=project.id,
+            project_key=project.key,
+            workspace_root=".",
+        )
+        context_path: object = self._context.bind(
+            candidate.path,
+            binding,
+            replace=candidate.replace,
+        )
+        if (
+            not isinstance(context_path, Path)
+            or not context_path.is_absolute()
+            or context_path.name != ".workaholic.env"
+        ):
+            _raise_internal_result("Workspace context")
+        grant = ProjectGrant(
+            subject_id=subject_id,
+            project_id=project.id,
+            role=ProjectRole.OWNER,
+        )
+        try:
+            return ContextResult(
+                profile=profile,
+                instance=status.instance,
+                project=project,
+                subject=status.subject,
+                grant=grant,
+                workspace_root=context_path.parent,
+                context_source=context_path,
+            )
+        except ValueError as error:
+            raise ApplicationError(
+                ApplicationErrorCode.INTERNAL_ERROR,
+                "Project binding returned an invalid result.",
+            ) from error
 
     def create_task(self, request: TaskCreateRequest) -> Task:
         """Create one Task attributed to the verified current local Human.

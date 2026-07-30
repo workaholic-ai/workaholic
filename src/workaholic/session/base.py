@@ -57,6 +57,26 @@ class WorkspaceContextGateway(Protocol):
         """
         ...
 
+    def bind(
+        self,
+        directory: Path | None,
+        binding: WorkspaceBinding,
+        *,
+        replace: bool,
+    ) -> Path:
+        """Durably bind an explicit or current Workspace directory.
+
+        Args:
+            directory: Explicit target, or ``None`` for the current directory.
+            binding: Authoritative Project binding.
+            replace: Whether valid conflicting context may be replaced.
+
+        Returns:
+            Canonical physical context-file path.
+
+        """
+        ...
+
 
 class LocalActorSelector(Protocol):
     """Select the trusted bootstrap Human from local state."""

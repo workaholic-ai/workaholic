@@ -8,6 +8,7 @@ import tempfile
 from contextlib import suppress
 from pathlib import Path
 
+from workaholic.application import WorkspaceBindingConflictError
 from workaholic.context._files import (
     RegularFileSnapshot,
     UnsafeDataFileError,
@@ -39,6 +40,14 @@ _EXPECTED_KEYS = (
     "WORKAHOLIC_WORKSPACE_ROOT",
 )
 _SHELL_EXPANSION_MARKERS = ("$(", "${", "`")
+
+
+class _WorkspaceContextConflictError(ContextInvalidError):
+    """Signal one valid conflicting binding inside the context boundary."""
+
+    def __init__(self) -> None:
+        """Initialize the internal Phase 1-compatible context failure."""
+        super().__init__("The current directory is already bound to different context.")
 
 
 def read_current_workspace_context(directory: Path) -> WorkspaceBinding:
@@ -149,15 +158,13 @@ def write_workspace_context(
         _resolve_workspace_root(context_directory, raced_binding.workspace_root)
         if raced_binding == validated_binding:
             return context_path
-        message = "The current directory is already bound to different context."
-        raise ContextInvalidError(message) from None
+        raise _WorkspaceContextConflictError from None
 
     _resolve_workspace_root(context_directory, existing.workspace_root)
     if existing == validated_binding:
         return context_path
     if not replace:
-        message = "The current directory is already bound to different context."
-        raise ContextInvalidError(message)
+        raise _WorkspaceContextConflictError
 
     _atomic_write_bytes(
         context_path,
@@ -165,6 +172,44 @@ def write_workspace_context(
         mode=0o600,
         expected_destination=metadata,
     )
+    return context_path
+
+
+def bind_workspace_context(
+    directory: Path,
+    binding: WorkspaceBinding,
+    *,
+    replace: bool = False,
+) -> Path:
+    """Durably bind a Workspace before updating conventional local Git metadata.
+
+    A failure while updating Git's local exclude leaves the authoritative
+    context durable. Retrying the equivalent binding is safe and resumes the
+    idempotent exclude update.
+
+    Args:
+        directory: Existing Workspace directory receiving context.
+        binding: Authoritative validated Project binding.
+        replace: Whether a conflicting valid context may be replaced.
+
+    Returns:
+        Canonical physical path to the durable context file.
+
+    Raises:
+        ContextInvalidError: If input or existing context is unsafe.
+        ContextStorageError: If a durable filesystem operation fails.
+        WorkspaceBindingConflictError: If valid context differs without replace.
+
+    """
+    try:
+        context_path = write_workspace_context(
+            directory,
+            binding,
+            replace=replace,
+        )
+    except _WorkspaceContextConflictError as error:
+        raise WorkspaceBindingConflictError from error
+    exclude_context_from_git(context_path.parent)
     return context_path
 
 

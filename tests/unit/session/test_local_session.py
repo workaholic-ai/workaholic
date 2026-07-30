@@ -18,6 +18,7 @@ from workaholic.application import (
     BootstrapResult,
     CreateTaskInput,
     GetLocalStatus,
+    GetProjectByKey,
     GetTask,
     IdempotencyConflictError,
     ListProjects,
@@ -240,6 +241,8 @@ class _Context:
         self.write_errors: list[ApplicationError] = []
         self.write_result: object = Path("/workspace/.workaholic.env")
         self.written: list[WorkspaceBinding] = []
+        self.bind_result: object = Path("/workspace/.workaholic.env")
+        self.bound: list[tuple[Path | None, WorkspaceBinding, bool]] = []
 
     def read_current(self) -> WorkspaceBinding:
         """Record and return or fail the configured context read."""
@@ -255,6 +258,18 @@ class _Context:
         if self.write_errors:
             raise self.write_errors.pop(0)
         return cast("Path", self.write_result)
+
+    def bind(
+        self,
+        directory: Path | None,
+        binding: WorkspaceBinding,
+        *,
+        replace: bool,
+    ) -> Path:
+        """Record one explicit Project binding."""
+        self.log.append("context.bind")
+        self.bound.append((directory, binding, replace))
+        return cast("Path", self.bind_result)
 
 
 class _Actors:
@@ -300,14 +315,17 @@ class _Queries:
         self.log = log
         self.status_result: object = _status_result()
         self.projects_result: object = (_project(),)
+        self.project_result: object = _project()
         self.tasks_result: object = TaskPage(tasks=(_task(),), next_cursor=None)
         self.task_result: object = _task()
         self.status_error: ApplicationError | None = None
         self.projects_error: ApplicationError | None = None
+        self.project_error: ApplicationError | None = None
         self.tasks_error: ApplicationError | None = None
         self.task_error: ApplicationError | None = None
         self.status_commands: list[GetLocalStatus] = []
         self.project_commands: list[ListProjects] = []
+        self.project_get_commands: list[GetProjectByKey] = []
         self.task_list_commands: list[ListTasks] = []
         self.task_get_commands: list[GetTask] = []
 
@@ -326,6 +344,14 @@ class _Queries:
         if self.projects_error is not None:
             raise self.projects_error
         return cast("tuple[Project, ...]", self.projects_result)
+
+    def get_project_by_key(self, command: GetProjectByKey) -> Project:
+        """Record and return or fail one Project lookup."""
+        self.log.append("queries.get_project_by_key")
+        self.project_get_commands.append(command)
+        if self.project_error is not None:
+            raise self.project_error
+        return cast("Project", self.project_result)
 
     def list_tasks(self, command: ListTasks) -> TaskPage:
         """Record and return or fail one Task page query."""
@@ -850,6 +876,17 @@ def test_invalid_context_gateway_output_is_context_invalid() -> None:
 
         def write_current(self, _binding: WorkspaceBinding) -> Path:
             """Return a valid unused context path."""
+            return Path("/workspace/.workaholic.env")
+
+        def bind(
+            self,
+            _directory: Path | None,
+            _binding: WorkspaceBinding,
+            *,
+            replace: bool,
+        ) -> Path:
+            """Return a valid unused explicit context path."""
+            assert type(replace) is bool
             return Path("/workspace/.workaholic.env")
 
     log, _context, actors, bootstrap, queries, tasks = _dependencies()

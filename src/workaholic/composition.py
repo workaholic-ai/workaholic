@@ -17,6 +17,7 @@ from workaholic.application import (
 from workaholic.cli.main import create_app
 from workaholic.context import (
     ContextInvalidError,
+    bind_workspace_context,
     exclude_context_from_git,
     read_current_workspace_context,
     resolve_local_data_paths,
@@ -72,6 +73,27 @@ class _ExactDirectoryWorkspaceContext:
         context_path = write_current_workspace_context(self.directory, binding)
         exclude_context_from_git(self.directory)
         return context_path
+
+    def bind(
+        self,
+        directory: Path | None,
+        binding: WorkspaceBinding,
+        *,
+        replace: bool,
+    ) -> Path:
+        """Bind an explicit target or the composed current directory.
+
+        Args:
+            directory: Explicit target, or ``None`` for the current directory.
+            binding: Authoritative Project binding.
+            replace: Whether valid conflicting context may be replaced.
+
+        Returns:
+            Canonical durable context-file path.
+
+        """
+        target = self.directory if directory is None else directory
+        return bind_workspace_context(target, binding, replace=replace)
 
 
 class _UtcSystemClock:

@@ -10,6 +10,7 @@ from workaholic.context.errors import (
 )
 from workaholic.context.local import (
     CONTEXT_FILENAME,
+    bind_workspace_context,
     discover_workspace_context,
     exclude_context_from_git,
     read_current_workspace_context,
@@ -42,6 +43,7 @@ __all__ = [
     "ProfileNotFoundError",
     "ProfileRegistry",
     "ProfileUnsupportedError",
+    "bind_workspace_context",
     "discover_workspace_context",
     "exclude_context_from_git",
     "load_profile_registry",
