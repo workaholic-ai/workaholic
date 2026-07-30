@@ -8,6 +8,7 @@ import pytest
 from tests.golden import (
     require_array,
     require_object,
+    require_string,
     require_success,
 )
 
@@ -19,9 +20,6 @@ if TYPE_CHECKING:
 pytestmark = [
     pytest.mark.e2e,
     pytest.mark.golden,
-    pytest.mark.skip(
-        reason=("Phase 1: missing LocalSession, SQLite persistence, and task commands.")
-    ),
 ]
 
 
@@ -33,32 +31,43 @@ def test_solo_tasks_remain_visible_after_reopening_the_project(
     workspace = tmp_path / "solo-workspace"
     workspace.mkdir()
 
-    require_success(
-        golden_runner.cli(
-            (
-                "up",
-                "--project-key",
-                "ACME",
-                "--json",
-                "--non-interactive",
-                "--idempotency-key",
-                "solo-up",
-            ),
-            cwd=workspace,
-        )
+    up_data = require_object(
+        require_success(
+            golden_runner.cli(
+                (
+                    "up",
+                    "--project-key",
+                    "ACME",
+                    "--json",
+                    "--non-interactive",
+                    "--idempotency-key",
+                    "solo-up",
+                ),
+                cwd=workspace,
+            )
+        ),
+        context="up data",
+    )
+    assert up_data.keys() == {"instance", "project", "subject", "workspace"}
+    project = require_object(up_data.get("project"), context="up project")
+    subject = require_object(up_data.get("subject"), context="up subject")
+    project_id = require_string(project.get("id"), context="Project UID")
+    subject_id = require_string(subject.get("id"), context="creator Subject UID")
+    assert project.get("key") == "ACME"
+
+    add_arguments = (
+        "task",
+        "add",
+        "First persistent task",
+        "--json",
+        "--non-interactive",
+        "--idempotency-key",
+        "solo-task-add",
     )
     created_data = require_object(
         require_success(
             golden_runner.cli(
-                (
-                    "task",
-                    "add",
-                    "First persistent task",
-                    "--json",
-                    "--non-interactive",
-                    "--idempotency-key",
-                    "solo-task-add",
-                ),
+                add_arguments,
                 cwd=workspace,
             )
         ),
@@ -68,9 +77,51 @@ def test_solo_tasks_remain_visible_after_reopening_the_project(
         created_data.get("task"),
         context="created task",
     )
+    task_uid = require_string(created_task.get("uid"), context="Task UID")
+    expected_task_fields = {
+        "uid",
+        "project_id",
+        "number",
+        "key",
+        "title",
+        "objective",
+        "state",
+        "priority",
+        "version",
+        "created_by",
+        "created_at",
+        "updated_at",
+    }
 
+    assert created_data.keys() == {"task"}
+    assert created_task.keys() == expected_task_fields
+    assert created_task.get("project_id") == project_id
+    assert created_task.get("number") == 1
     assert created_task.get("key") == "ACME-1"
     assert created_task.get("title") == "First persistent task"
+    assert created_task.get("objective") == "First persistent task"
+    assert created_task.get("state") == "open"
+    assert created_task.get("priority") == 50
+    assert created_task.get("version") == 1
+    assert created_task.get("created_by") == subject_id
+    assert require_string(
+        created_task.get("created_at"),
+        context="Task created_at",
+    ) == require_string(
+        created_task.get("updated_at"),
+        context="Task updated_at",
+    )
+
+    replayed_data = require_object(
+        require_success(
+            golden_runner.cli(
+                add_arguments,
+                cwd=workspace,
+            )
+        ),
+        context="replayed task-add data",
+    )
+    assert replayed_data == created_data
 
     listed_data = require_object(
         require_success(
@@ -86,9 +137,39 @@ def test_solo_tasks_remain_visible_after_reopening_the_project(
         context="listed tasks",
     )
 
-    assert any(
-        require_object(task, context="listed task").get("key") == "ACME-1"
-        and require_object(task, context="listed task").get("title")
-        == "First persistent task"
-        for task in listed_tasks
+    assert listed_data.keys() == {"tasks", "next_cursor"}
+    assert listed_data.get("next_cursor") is None
+    assert listed_tasks == [created_task]
+
+    shown_by_key = require_object(
+        require_success(
+            golden_runner.cli(
+                (
+                    "task",
+                    "show",
+                    "ACME-1",
+                    "--json",
+                    "--non-interactive",
+                ),
+                cwd=workspace,
+            )
+        ),
+        context="task-show by key data",
     )
+    shown_by_uid = require_object(
+        require_success(
+            golden_runner.cli(
+                (
+                    "task",
+                    "show",
+                    task_uid,
+                    "--json",
+                    "--non-interactive",
+                ),
+                cwd=workspace,
+            )
+        ),
+        context="task-show by UID data",
+    )
+    assert shown_by_key == {"task": created_task}
+    assert shown_by_uid == {"task": created_task}

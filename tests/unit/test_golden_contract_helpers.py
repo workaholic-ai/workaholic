@@ -3,10 +3,16 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from subprocess import CompletedProcess
 
 import pytest
-from tests.golden import require_error, require_object, require_success
+from tests.golden import (
+    SubprocessGoldenJourneyRunner,
+    require_error,
+    require_object,
+    require_success,
+)
 
 
 def _completed(*, returncode: int, stdout: str) -> CompletedProcess[str]:
@@ -70,6 +76,11 @@ def test_require_success_returns_validated_data() -> None:
             0,
             '{"schema":"workaholic.cli/v1","ok":true,"data":{}}\n\n',
             id="extra-newline",
+        ),
+        pytest.param(
+            0,
+            ('{"schema":"workaholic.cli/v1","ok":true,"data":{},"unexpected":true}\n'),
+            id="extra-envelope-field",
         ),
     ],
 )
@@ -148,4 +159,71 @@ def test_require_error_rejects_contract_violations(
         require_error(
             _completed(returncode=returncode, stdout=stdout),
             expected_code="LEASE_LOST",
+        )
+
+
+def test_require_error_rejects_extra_envelope_fields() -> None:
+    """An error envelope cannot silently extend its versioned top-level shape."""
+    result = _completed(
+        returncode=3,
+        stdout=(
+            '{"schema":"workaholic.cli/v1","ok":false,'
+            '"error":{"code":"LEASE_LOST","message":"Lost.","retryable":false},'
+            '"unexpected":true}\n'
+        ),
+    )
+
+    with pytest.raises(AssertionError):
+        require_error(result, expected_code="LEASE_LOST")
+
+
+def test_subprocess_runner_validates_owned_paths_and_overrides(
+    tmp_path: Path,
+) -> None:
+    """The runner cannot be redirected to developer state at runtime."""
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    runner = SubprocessGoldenJourneyRunner(tmp_path / "data")
+
+    with pytest.raises(TypeError):
+        SubprocessGoldenJourneyRunner(Path("relative-data"))
+    with pytest.raises(TypeError):
+        runner.cli("status", cwd=workspace)
+    with pytest.raises(TypeError):
+        runner.cli((), cwd=Path("relative-workspace"))
+    with pytest.raises(ValueError, match="existing directory"):
+        runner.cli((), cwd=tmp_path / "missing")
+    with pytest.raises(TypeError):
+        runner.cli((), cwd=workspace, input_text=7)  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="harness-owned"):
+        runner.cli(
+            (),
+            cwd=workspace,
+            environment={"WORKAHOLIC_DATA_DIR": str(tmp_path / "other")},
+        )
+    with pytest.raises(ValueError, match="undocumented"):
+        runner.cli((), cwd=workspace, environment={"UNSUPPORTED": "value"})
+
+
+def test_future_golden_operations_remain_explicitly_unsupported(
+    tmp_path: Path,
+) -> None:
+    """Future orchestration and registry paths cannot fabricate behavior."""
+    runner = SubprocessGoldenJourneyRunner(tmp_path / "data")
+
+    with pytest.raises(NotImplementedError, match="Instance orchestration"):
+        runner.instance(
+            backend="sqlite",
+            project_key="ACME",
+            remote=False,
+            root=tmp_path,
+            subjects={"operator": "human"},
+        )
+    with pytest.raises(NotImplementedError, match="Published-package"):
+        runner.published_package_spec()
+    with pytest.raises(NotImplementedError, match="uvx execution"):
+        runner.uvx(
+            "workaholic-ai==0.1.0a1",
+            ("--version",),
+            cwd=tmp_path,
         )

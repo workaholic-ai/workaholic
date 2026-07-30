@@ -34,7 +34,7 @@ class JourneyExpectation:
 
     test_name: str
     enabling_phase: int
-    skip_reason: str
+    skip_reason: str | None
     resource_markers: frozenset[str] = frozenset()
 
 
@@ -83,9 +83,7 @@ _EXPECTED_JOURNEYS = {
     "test_solo_journey.py": JourneyExpectation(
         test_name="test_solo_tasks_remain_visible_after_reopening_the_project",
         enabling_phase=1,
-        skip_reason=(
-            "Phase 1: missing LocalSession, SQLite persistence, and task commands."
-        ),
+        skip_reason=None,
     ),
     "test_team_journey.py": JourneyExpectation(
         test_name="test_two_remote_users_and_one_agent_share_one_server",
@@ -260,8 +258,8 @@ def test_exactly_one_canonical_specification_exists_for_each_journey() -> None:
         assert test_names == [expectation.test_name], filename
 
 
-def test_golden_specs_have_phase_specific_skips_and_no_xfail() -> None:
-    """Every blocked journey declares its phase and can never silently xpass."""
+def test_enabled_and_blocked_golden_specs_have_exact_markers() -> None:
+    """Only future journeys carry phase-specific skips; none may xfail."""
     for filename, expectation in _EXPECTED_JOURNEYS.items():
         module = _parse(_GOLDEN_DIRECTORY / filename)
         marker_uses = _module_markers(module)
@@ -269,17 +267,21 @@ def test_golden_specs_have_phase_specific_skips_and_no_xfail() -> None:
         expected_markers = {
             "e2e",
             "golden",
-            "skip",
             *expectation.resource_markers,
         }
+        if expectation.skip_reason is not None:
+            expected_markers.add("skip")
         skip_markers = [marker for marker in marker_uses if marker.name == "skip"]
 
         assert markers == expected_markers, filename
         assert len(marker_uses) == len(markers), filename
-        assert len(skip_markers) == 1, filename
-        assert skip_markers[0].reason == expectation.skip_reason, filename
         assert "xfail" not in _all_marker_names(module), filename
 
+        if expectation.skip_reason is None:
+            assert skip_markers == [], filename
+            continue
+        assert len(skip_markers) == 1, filename
+        assert skip_markers[0].reason == expectation.skip_reason, filename
         reason_match = _PHASE_REASON_PATTERN.fullmatch(expectation.skip_reason)
         assert reason_match is not None, filename
         assert int(reason_match.group("phase")) == expectation.enabling_phase, filename
