@@ -8,6 +8,8 @@ public versioning begins.
 
 ## Unreleased
 
+## [0.1.0a1] - 2026-07-30
+
 ### Added
 
 - Accepted product scope, compatibility policy, and package naming decision.
@@ -32,3 +34,26 @@ public versioning begins.
 - A fail-fast Phase 0 acceptance gate that proves the locked source checkout,
   full quality and test suite, package build, and isolated wheel installation
   from a clean clone.
+- Immutable Phase 1 domain entities, validated application commands, and
+  transport-neutral Session contracts.
+- Exact-directory `.workaholic.env` context, disposable SQLite schema version
+  `1`, atomic local bootstrap, and attributable idempotent Task creation.
+- Embedded `LocalSession` composition and the six local Project and Task CLI
+  operations with stable `workaholic.cli/v1` JSON envelopes.
+- Backend-neutral repository and Session conformance suites, separate-connection
+  SQLite concurrency coverage, and the enabled persistent solo golden journey.
+
+### Security
+
+- Local CLI subprocess tests strip inherited `WORKAHOLIC_*` selections and pin
+  storage to test-owned directories.
+- Phase 1 context contains no credentials, authorization is revalidated for
+  every operation, and unsupported stores fail unchanged.
+
+### Known limitations
+
+- This internal alpha implements one exact-directory Project with one
+  bootstrapped Human operator and embedded SQLite only.
+- Stores and automation are disposable; schema migration, Agents, Tokens,
+  RemoteSession, servers, JSON/PostgreSQL adapters, and team coordination are
+  not available.

@@ -9,7 +9,7 @@
 
 This threat model turns the accepted v1 security boundary into explicit
 engineering constraints and verification targets. It covers planned behavior;
-the current `0.0.0` development package implements exact-directory Project
+the current `0.1.0a1` development package implements exact-directory Project
 context, local SQLite persistence, and bootstrap-Human attribution. It does not
 yet implement bearer authentication, Agent execution, or network services.
 

@@ -21,6 +21,20 @@ Python package: workaholic-ai
 Executable:     workaholic
 ```
 
+## Current implementation: `0.1.0a1`
+
+The Phase 1 alpha implements the embedded `LocalSession`, exact-current-
+directory `.workaholic.env` context, one bootstrapped Human Owner, SQLite
+schema version `1`, and the six documented local Project and Task commands.
+Each CLI invocation composes these adapters in-process, performs one operation,
+and exits; no daemon is started.
+
+The remaining diagrams and decisions describe the accepted v1 destination, not
+the current feature inventory. `0.1.0a1` does not implement upward context
+discovery, multiple active Projects, Agents, Tokens, RemoteSession, a server,
+or JSON/PostgreSQL adapters. Alpha storage is disposable and unsupported
+schema versions require a verified reset rather than migration.
+
 ## 1. Architectural decisions
 
 | Area                 | V1 decision                                                    |
@@ -1123,9 +1137,9 @@ These boundaries are executable contracts:
 | Application and policy | `application`, `auth` | May depend inward on Domain, but not on presentation, Session, context, transport, server, or persistence packages |
 | Presentation and adapters | `cli`, `tui`, `server`, `session`, `persistence`, `protocol`, `client`, `context` | May depend inward; sibling dependencies are allowed where an adapter requires them |
 
-The root `workaholic.__main__` module is the only exhaustive-layer exclusion. It
-is a console entry-point shim that delegates immediately to `cli.main` and owns
-no application behavior.
+The root `workaholic.__main__` module is the only exhaustive-layer exclusion.
+It is a console entry-point shim that delegates immediately to
+`workaholic.composition` and owns no application behavior.
 
 CLI and TUI presentation modules may import Session interfaces. They must not
 directly import application services, persistence adapters, private protocol
@@ -1135,8 +1149,9 @@ code an adapter composition root.
 
 Composition is restricted to explicit adapter boundaries:
 
-* `session.local` may wire the application layer to an embedded persistence
-  adapter;
+* `workaholic.composition` wires the CLI process to `LocalSession`, the
+  application services, exact-directory context, SQLite, clock, and identifier
+  adapters;
 * `session.remote` may wire Session operations to the official transport
   client;
 * `server.main` may wire server routes, application services, authentication,

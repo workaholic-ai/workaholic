@@ -1,6 +1,6 @@
 # Workaholic AI CLI Automation Contract
 
-- Status: Accepted Phase 0 baseline
+- Status: Accepted v1 contract with Phase 1 implementation
 - Decision date: 2026-07-29
 - Contract family: `workaholic.cli/v1`
 - Public surface: Documented JSON output of the `workaholic` executable
@@ -8,11 +8,16 @@
 ## Current implementation notice
 
 This document specifies the accepted v1 automation contract through its Phase 8
-freeze. The current `0.0.0` development package implements the versioned
+freeze. The current `0.1.0a1` development package implements the versioned
 envelopes and exposes all six Phase 1 commands through an injected Session
 boundary. Its default executable composes the embedded LocalSession and SQLite
 adapter, so the durable exact-directory local journey is available. No
 compatibility guarantee applies before `1.0.0`.
+
+The alpha does not discover context upward, select multiple active Projects,
+run Agents, issue Tokens, use RemoteSession, start a server, or select JSON or
+PostgreSQL adapters. Those later command contracts remain normative roadmap
+requirements, not current implementation claims.
 
 ## Normative language
 
@@ -105,7 +110,8 @@ The fields have these meanings:
 | `ok` | boolean | Required and `true` |
 | `data` | any JSON value | Required; command-specific documented result |
 
-A success envelope must not contain an `error` field.
+A success envelope is closed: it contains exactly `schema`, `ok`, and `data`
+and must not contain an `error` or any other top-level field.
 
 ### Error
 
@@ -133,9 +139,11 @@ The fields have these meanings:
 | `error.message` | string | Required nonempty explanation for a Human |
 | `error.retryable` | boolean | Required retry guidance for this failure |
 
-An error envelope must not contain a `data` field. Consumers use `error.code`,
-not `error.message`, for control flow. A `retryable` value of `true` does not
-make an unsafe mutation safe to repeat without its required idempotency key.
+An error envelope is closed: it contains exactly `schema`, `ok`, and `error`
+and must not contain `data` or any other top-level field. Consumers use
+`error.code`, not `error.message`, for control flow. A `retryable` value of
+`true` does not make an unsafe mutation safe to repeat without its required
+idempotency key.
 
 Documented error codes use uppercase snake case. Their stability begins at the
 Phase 8 freeze and receives the formal compatibility guarantee at `1.0.0`.

@@ -9,6 +9,7 @@ from typing import Any
 
 import pytest
 
+from workaholic import __version__
 from workaholic.composition import main
 
 _DISTRIBUTION_NAME = "workaholic-ai"
@@ -35,7 +36,8 @@ def test_source_metadata_matches_foundation_decisions() -> None:
     project = _project_metadata()
 
     assert project["name"] == _DISTRIBUTION_NAME
-    assert project["version"] == "0.0.0"
+    assert project["version"] == "0.1.0a1"
+    assert project["version"] == __version__
     assert project["readme"] == "README.md"
     assert project["requires-python"] == ">=3.14"
     assert project["license"] == "Apache-2.0"

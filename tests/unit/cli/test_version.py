@@ -21,7 +21,7 @@ if TYPE_CHECKING:
     from collections.abc import Sequence
 
 _CLI_RUNNER = CliRunner()
-_EXPECTED_VERSION_OUTPUT = "workaholic 0.0.0\n"
+_EXPECTED_VERSION_OUTPUT = "workaholic 0.1.0a1\n"
 
 
 def _run_command(
