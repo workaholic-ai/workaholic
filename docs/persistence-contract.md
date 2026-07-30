@@ -90,6 +90,80 @@ increments, Phase 4 adds Attempts and Leases, and Phase 5 adds Tokens and
 general identity management. These deferrals do not weaken the Phase 1
 Subject, ProjectGrant, TaskEvent, schema-validation, or atomicity guarantees.
 
+## Phase 2 SQLite contract
+
+Phase 2 replaces the disposable Phase 1 layout with clean-store SQLite schema
+version `2`. It does not migrate or reinterpret schema version `1`. Before any
+normal read or mutation, exact version `2` is required. A version `1`, missing,
+malformed, or future store returns `SCHEMA_UNSUPPORTED` without changing any
+byte, schema object, allocation value, or domain record.
+It provides no migration, conversion, import, export, or automatic reset.
+
+One initialized version `2` store represents one embedded Instance and includes:
+
+- one enabled bootstrap Human Subject and Instance-administrator status;
+- one or more named Projects;
+- one Owner ProjectGrant for the bootstrap Human in every Project created in
+  Phase 2;
+- independent next Task-number allocation state for each Project;
+- durable idempotency outcomes for `up`, `project.create`, and `task.add`.
+
+Every persisted Project contains immutable `id`, `instance_id`, `key`, required
+normalized `name`, and `created_at`. Keys remain unique within an Instance and
+cannot be reused. Names contain 1 through 200 Unicode characters after
+normalization but are not identifiers.
+
+Profile resolution is outside persistence. A trusted embedded profile selects
+one exact database path before the repository opens. Repository-controlled
+context can never supply or redirect that path. The cumulative internal SQLite
+adapter is named `SQLiteRepository`; the Phase 1-specific adapter name is not a
+compatibility surface.
+
+### Project creation transaction
+
+One `project.create` transaction:
+
+1. verifies the target Instance is the selected initialized Instance;
+2. verifies the creator is the enabled bootstrap local Human and Instance
+   administrator;
+3. validates and reserves the immutable Project key and normalized display
+   name;
+4. creates the Project and its independent Task-number allocation state;
+5. grants the creator Owner in that Project;
+6. records the optional idempotency fingerprint and committed Project-plus-
+   grant outcome;
+7. commits one atomic outcome.
+
+Project creation never fabricates a Task or TaskEvent. Equivalent replay with
+the same idempotency key returns the original Project and grant. Different
+input returns `IDEMPOTENCY_CONFLICT`. An existing or reserved key returns
+`PROJECT_KEY_CONFLICT`. Any rejected, failed, or rolled-back creation leaves no
+Project, ProjectGrant, idempotency outcome, or visible key reservation.
+Concurrent same-key creation commits once; concurrent distinct-key creation
+may commit both without sharing allocation state.
+
+### Phase 2 queries and cursors
+
+Project lookup is constrained by `instance_id`, `subject_id`, immutable key,
+and an active ProjectGrant. Project lists include only authorized Projects in
+the selected Instance and order by Project key ascending.
+
+One-Project Task lists retain Task-number ascending order. Instance-scoped
+all-Project Task lists include only Projects authorized for the Subject and
+order by `(project key, task number)` ascending. Reads remain non-mutating.
+
+Phase 2 Task cursors use exact prefix `v2.` with an unpadded URL-safe base64
+canonical JSON payload. The closed payload binds integer version `2`, trusted
+profile name, Instance identity, Subject identity, selection kind, selected
+Project identity when present, and the last ordering position. Project scope
+records the last Task number. All-Project scope records the last
+`(project key, task number)` tuple.
+
+Malformed, padded, noncanonical, unsupported-version, cross-profile,
+cross-Instance, cross-Subject, cross-Project, or cross-selection reuse is an
+`INVALID_INPUT` outcome. Traversal of unchanged records neither duplicates nor
+omits a Task.
+
 ## Store opening and schema version
 
 Every store records a backend-independent schema version. Before the first

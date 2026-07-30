@@ -398,22 +398,85 @@ At this point, Workaholic AI is a basic but working local task tracker.
 
 ## Goal
 
-Make Workaholic AI natural to use across several repositories and agent workspaces.
+Deliver the Multi-project Alpha: one embedded Workaholic Instance can contain
+several named Projects, while safe Workspace discovery selects the normal
+Project without requiring an option on every command.
 
 ## Scope
 
-Implement:
+Phase 2 implements:
 
 ```text
 upward `.workaholic.env` discovery
-configurable trusted profiles
+trusted user-level embedded SQLite profiles
 multiple projects per instance
 stable project-prefixed task IDs
 workspace-root resolution
+explicit Project overrides and all-Project Task listing
 ```
 
 Phase 2 extends the strict context file written by Phase 1; it does not
-retroactively introduce that file.
+retroactively introduce that file. It uses disposable SQLite schema version
+`2`. A schema version `1` store is rejected unchanged with
+`SCHEMA_UNSUPPORTED`; Phase 2 adds no migration, conversion, import, export, or
+automatic reset.
+
+Remote profiles, URLs, credentials, login, Tokens, `RemoteSession`, and network
+transport remain deferred to Phases 5 and 6. JSON and PostgreSQL adapters remain
+deferred to Phase 7.
+
+## Trusted embedded profiles
+
+Trusted configuration is the bounded regular non-symlink `profiles.toml` file
+in the operating system's Workaholic user-configuration directory.
+`WORKAHOLIC_CONFIG_DIR` may replace that directory only with an absolute,
+operator- or test-owned path.
+
+The exact Phase 2 grammar is:
+
+```toml
+version = 1
+default_profile = "local"
+
+[profiles.local]
+mode = "embedded"
+data_directory = "/absolute/path/to/workaholic-data"
+```
+
+The top level allows only integer `version = 1`, optional
+`default_profile`, and the `profiles` table. Each `[profiles.NAME]` table
+allows exactly `mode = "embedded"` and one absolute `data_directory`. Profile
+names match `[a-z][a-z0-9_-]{0,31}`. Unknown keys, duplicate semantic values,
+unsupported versions, relative data directories, unsafe files, non-embedded
+modes, URL fields, credential fields, and Token fields fail explicitly.
+
+Configured profile names map one-to-one to canonical data directories. Two
+names cannot alias one embedded Instance. If `profiles.toml` is absent, the
+built-in `local` profile remains available and uses the existing absolute
+`WORKAHOLIC_DATA_DIR` override or the platform user-data default.
+
+Profile precedence is:
+
+1. explicit `--profile`;
+2. trusted `WORKAHOLIC_PROFILE`;
+3. the discovered Workspace context;
+4. configured `default_profile`;
+5. built-in `local`.
+
+## Workspace and Project selection
+
+Discovery starts from the canonical physical current directory and visits each
+physical parent through the filesystem root. Git repository and worktree
+boundaries do not stop the walk. The nearest `.workaholic.env` is
+authoritative; an invalid or unreadable nearer file fails instead of falling
+back to a parent.
+
+A context file must be bounded, regular, and non-symlink. Its
+`WORKAHOLIC_WORKSPACE_ROOT` is relative to the context file's directory,
+resolves to an existing directory, and must remain contained by that directory
+after lexical and symlink resolution. Context-supplied profile, Instance,
+Project, and Project-key values must match authoritative profile and database
+state before any read or mutation.
 
 Example:
 
@@ -427,52 +490,107 @@ WORKAHOLIC_PROJECT_KEY=ACME
 WORKAHOLIC_WORKSPACE_ROOT=.
 ```
 
-The parser must:
+The parser:
 
-* accept only known keys;
-* never invoke a shell;
-* reject command substitution;
-* reject credentials;
-* reject arbitrary endpoint redirection;
-* resolve relative workspace paths from the context file’s directory.
+* accepts only the exact known keys;
+* never invokes a shell or performs substitution;
+* rejects credentials, Tokens, storage paths, executable paths, and endpoints;
+* never obtains a profile definition from repository content.
+
+Project precedence is explicit `--project`, then the discovered context. An
+explicit Project must be authorized and belong to the same resolved Instance;
+it never changes the profile or Instance. An explicit missing key returns
+`PROJECT_NOT_FOUND`. A command that requires one Project but receives neither
+an explicit selector nor context returns `CONTEXT_NOT_FOUND`.
+
+`project create` and `project list` require only a resolved initialized
+profile. `up` initializes an empty profile and its first Project; later Projects
+use `project create`. Omitting `--project-name` from `up` uses the normalized
+Project key as the display name. Project names contain 1 through 200 Unicode
+characters after trimming, and Project keys continue to match
+`[A-Z][A-Z0-9]{1,15}`.
+
+`project bind` defaults `PATH` to the current directory. An equivalent binding
+is a successful no-op. It never silently replaces a different Project,
+Instance, or profile binding. `--replace` may atomically replace only an
+otherwise valid regular context file; malformed files, directories, symlinks,
+and concurrently changed files are never replaced.
 
 ## Commands
 
-```bash
-workaholic project create --key DOCS --name "Documentation"
-workaholic project bind DOCS /work/docs
-workaholic context
-workaholic context --json
-workaholic task list --project ACME
-workaholic task list --all-projects
+```text
+workaholic up --project-key KEY [--project-name NAME] [--profile PROFILE]
+workaholic status [--profile PROFILE] [--project KEY]
+workaholic context [--profile PROFILE] [--project KEY]
+workaholic project create --key KEY --name NAME
+  [--profile PROFILE] [--idempotency-key KEY]
+workaholic project bind KEY [PATH] [--profile PROFILE] [--replace]
+workaholic project list [--profile PROFILE]
+workaholic task add TITLE [--project KEY]
+workaholic task list [--project KEY | --all-projects]
+workaholic task show TASK [--project KEY]
 ```
 
-`project bind` should add `.workaholic.env` to `.git/info/exclude` where appropriate. It must not modify the shared `.gitignore` unless explicitly requested.
+Every command also accepts `--json` and `--non-interactive`. Existing Task
+options, pagination options, and idempotency options remain available where
+documented by the CLI contract. `--project` and `--all-projects` are mutually
+exclusive.
+
+`context` success data contains `mode`, `profile`, `schema_version`,
+`instance`, `project`, `workspace_root`, `subject`, and `context_source`.
+Serialized Projects add required `name` while retaining `id` and `key`.
+
+Phase 2 adds these exact failure identifiers to the existing exit categories:
+
+* `PROFILE_NOT_FOUND`;
+* `PROFILE_INVALID`;
+* `PROFILE_UNSUPPORTED`;
+* `PROJECT_NOT_FOUND`;
+* `WORKSPACE_BINDING_CONFLICT`.
+
+The [CLI automation contract](cli-contract.md) owns their exact messages,
+retryability, exits, command surfaces, and success shapes.
+
+`project bind` adds `.workaholic.env` to a safe conventional
+`.git/info/exclude` when appropriate and only after the context write is
+durable. It never changes the shared `.gitignore`.
 
 ## Task ID invariants
 
-At this phase, enforce:
+Phase 2 enforces:
 
-* project keys are immutable;
-* task numbers are monotonic per project;
-* numbers are never reused;
-* archived project keys are not reused;
-* `ACME-42` always resolves to the same task;
+* Project keys are immutable and unique within an Instance;
+* Task numbers are monotonic per Project and never reused;
+* Projects cannot be archived or deleted, so Project-key reuse is impossible;
+* `ACME-42` always resolves to the same Task in its Instance;
 * the internal UID remains canonical for relationships;
-* tasks cannot be moved between projects.
+* Tasks cannot be moved between Projects.
+
+Project lists order by immutable Project key. One-Project Task lists order by
+Task number. `task list --all-projects` includes only authorized Projects,
+orders by `(project key, task number)` ascending, and uses a new versioned
+opaque cursor with exact prefix `v2.`. A cursor is bound to the profile,
+Instance, Subject, selection scope, selected Project when present, and last
+ordering position. Reuse across any different binding returns `INVALID_INPUT`.
 
 ## Testing
 
 Include:
 
-* nearest-context-file wins;
-* nested repositories;
-* invocation from a deep subdirectory;
-* two projects with independent number sequences;
-* same project checked out at two paths;
-* two unrelated instances with the same project key;
-* symlink and relative-path behavior for supported platforms;
-* context files never override a trusted profile with an arbitrary server.
+* absent and hostile profile configuration;
+* embedded-profile isolation and duplicate canonical data directories;
+* nearest-context-file wins and invalid-nearer hard failure;
+* nested repositories and invocation from a deep directory;
+* physical canonicalization, symlinks, relative roots, and root containment;
+* equivalent binding, conflicting binding, and safe explicit replacement;
+* two Projects with independent number sequences;
+* one Project bound at two paths;
+* two unrelated Instances with the same Project key;
+* explicit Project override and all-Project ordering;
+* cursor rejection across profiles, Instances, Subjects, Projects, and scopes;
+* schema version `1` rejection without mutation;
+* proof that repository context cannot define storage, an endpoint, or a
+  credential.
 
 ## Exit gate
 

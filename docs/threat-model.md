@@ -1,6 +1,6 @@
 # Workaholic AI Threat Model
 
-- Status: Accepted Phase 0 baseline
+- Status: Accepted through Phase 2 contract
 - Decision date: 2026-07-29
 - Scope: Embedded and shared-server behavior required for v1
 - Security contact: [pg@ithesion.com](mailto:pg@ithesion.com)
@@ -37,7 +37,7 @@ Workaholic AI must:
 Security-sensitive assets include:
 
 - raw bearer Tokens and bootstrap credentials;
-- trusted user profiles and their selected server endpoints;
+- trusted user profiles and their selected embedded data directories;
 - Project membership and ProjectGrants;
 - Task content, state, versions, dependencies, and stable identities;
 - Attempt ownership, Lease expiry, Results, and idempotency records;
@@ -81,31 +81,72 @@ its local persistence files, user configuration, process environment, and
 Workspace. Another process with that account's privileges is outside the
 embedded runtime's application isolation boundary.
 
-Human credentials use the operating-system credential store where available.
-A configuration-file fallback must be stored outside repositories with
-permissions limited to the account. Agent credentials may be injected through
-environment variables, mounted secret files, or an orchestrator secret
-mechanism. Deployers must prevent those channels from being exposed to
-untrusted sibling processes or logs.
+Phase 2 trusted configuration contains data-only embedded profile definitions.
+Its `profiles.toml` must be a bounded regular non-symlink file in the
+operating-system user-configuration directory, or in an absolute
+operator-controlled directory selected by `WORKAHOLIC_CONFIG_DIR`. Every
+configured profile selects one canonical absolute data directory, and two
+profile names cannot alias the same directory. Profile names match
+`[a-z][a-z0-9_-]{0,31}`, and every profile has exact
+`mode = "embedded"`. The file cannot contain remote URLs, credentials, Tokens,
+secret references, executable paths, or other profile modes.
+
+Profile selection is deterministic:
+
+1. explicit `--profile`;
+2. trusted `WORKAHOLIC_PROFILE`;
+3. the discovered Workspace context;
+4. configured `default_profile`;
+5. built-in `local`.
+
+If `profiles.toml` is absent, only the built-in `local` profile is available.
+
+Human credential storage begins when authenticated remote operation is
+delivered in Phases 5 and 6. Credentials use the operating-system credential
+store where available. A configuration-file fallback must be stored outside
+repositories with permissions limited to the account. Agent credentials may
+be injected through environment variables, mounted secret files, or an
+orchestrator secret mechanism. Deployers must prevent those channels from
+being exposed to untrusted sibling processes or logs.
 
 ### Repository-controlled context
 
 Every `.workaholic.env` file is untrusted input, even in a trusted
-organization's repository. It may identify a context version, trusted profile,
-Instance, Project, project key, and relative Workspace root only through a
-strict allowlist.
+organization's repository. Discovery starts from the canonical physical
+current directory and visits every physical parent through the filesystem
+root; Git repository and worktree boundaries do not stop it. The nearest file
+is authoritative, and an invalid or unreadable nearer file fails instead of
+falling back to a parent.
+
+The context source must be a bounded regular non-symlink file. It may identify
+a context version, trusted profile name, Instance, Project, Project key, and
+relative Workspace root only through a strict allowlist. The Workspace root
+must resolve from the file's directory to an existing directory contained by
+that directory after lexical and symlink resolution.
 
 The parser must never invoke a shell, perform variable or command substitution,
-load executable paths, or accept credentials. A context file must not select an
-arbitrary server endpoint or override the endpoint owned by a trusted user
-profile. Relative paths are resolved from the context file's directory.
+load executable paths, accept credentials, or accept storage or endpoint
+configuration. A context can name but never define a profile. The selected
+profile, Instance, Project, and Project key must match trusted configuration
+and authoritative persistent state before any read or mutation.
+
+Binding an equivalent context is a successful no-op. A different valid
+binding requires explicit `--replace`, which may atomically replace only a
+regular non-symlink context that remains unchanged during validation. Binding
+never replaces a malformed file, directory, symlink, or concurrently changed
+file, and it never changes a shared `.gitignore`.
 
 ### Remote transport
 
-Remote bearer-token traffic uses HTTPS through trusted deployment
-infrastructure. A trusted profile owns the server URL and expected Instance
-identity. RemoteSession must reject an unexpected Instance and incompatible
-protocol before sending a mutation.
+Phase 2 has no remote profiles, endpoints, credentials, Tokens,
+`RemoteSession`, or network transport. It rejects any configuration that
+attempts to introduce them. Authenticated remote operation begins in Phases 5
+and 6.
+
+When delivered, remote bearer-token traffic uses HTTPS through trusted
+deployment infrastructure. A trusted profile owns the server URL and expected
+Instance identity. RemoteSession must reject an unexpected Instance and
+incompatible protocol before sending a mutation.
 
 The private protocol is supported only between official clients and servers.
 Calling internal routes directly does not create a public security or
@@ -134,7 +175,9 @@ administrator is outside the v1 application boundary.
 | --- | --- | --- | --- |
 | Compromised Agent | An Agent tries to read or mutate unrelated Projects or perform Operator actions. | Use one Subject per independent Agent; enforce ProjectGrant permissions on every application operation; treat Capabilities as scheduling labels only; record attribution. | Cross-Project and role-denial tests through LocalSession and RemoteSession. |
 | Stolen Token | An attacker replays a bearer Token until it expires or is revoked. | Store only Token hashes; support expiry, revocation, and Subject disablement; use narrow ProjectGrants and separate Agent identities; audit every accepted mutation. | Expiry, revocation, disablement, and least-privilege tests. |
-| Token redirection | A repository changes context so a client sends its Token to an attacker endpoint. | Forbid URLs and credentials in `.workaholic.env`; resolve only a named trusted profile; require HTTPS remotely; compare the server's Instance identity before mutations. | Hostile-context and unexpected-Instance tests. |
+| Profile redirection | A repository or unsafe profile file redirects embedded storage to attacker-controlled state. | Forbid storage paths and profile definitions in `.workaholic.env`; read only a bounded regular non-symlink trusted profile file; require absolute canonical one-to-one data directories; validate context identities against selected persistence. | Hostile-context, unsafe-profile, aliasing, and authoritative-identity tests. |
+| Workspace path escape | A context uses `..` or a symlink to claim a Workspace outside its binding directory. | Canonicalize physical discovery; require an existing relative root contained by the context directory after lexical and symlink resolution; fail on the nearest invalid context. | Parent traversal, symlink escape, deep-directory, and invalid-nearer tests. |
+| Token redirection | A repository changes context so a later remote client sends its Token to an attacker endpoint. | Forbid URLs and credentials in `.workaholic.env`; reject all remote configuration in Phase 2; in Phases 5 and 6 resolve only a named trusted remote profile, require HTTPS, and compare the server's Instance identity before mutations. | Phase 2 remote-rejection tests, then hostile-context and unexpected-Instance tests in Phase 6. |
 | Secret exposure | Credentials appear in arguments, task data, events, logs, errors, or repository files. | Reject secrets in context; never accept Tokens in normal command arguments; redact diagnostics and structured logs; exclude raw Tokens from domain models and persistence; protect credential files. | Redaction tests and repository/history secret scans. |
 | Command injection | Context or task input triggers shell expansion or execution. | Parse context with a strict data parser and key allowlist; reject substitution and executable-path keys; never source `.workaholic.env`; use argument-vector subprocess calls at trusted adapter boundaries. | Malformed context, metacharacter, substitution, and unknown-key tests. |
 | Unauthorized Attempt mutation | A Subject heartbeats, releases, reports, or submits against another, expired, or superseded Attempt. | Authenticate the Subject; atomically verify Project access, Attempt owner, current Attempt ID, status, and Lease before mutation; reject stale Attempts without partial writes. | Concurrent claim, foreign owner, expiry, reclaim, and stale-submission tests. |
@@ -169,8 +212,10 @@ transactionally using the authoritative runtime clock.
 
 ## Verification by delivery phase
 
-- Phase 2 tests strict context parsing, trusted-profile endpoint ownership, and
-  malicious `.workaholic.env` input.
+- Phase 2 tests strict context parsing, canonical physical discovery,
+  Workspace-root containment, safe binding replacement, trusted embedded
+  profile storage ownership, schema version `1` rejection without mutation,
+  remote-configuration rejection, and malicious `.workaholic.env` input.
 - Phase 4 tests atomic claims, current Attempt ownership, Lease expiry, stale
   submissions, idempotent Results, and bounded agent payloads.
 - Phase 5 tests Token storage, expiry, revocation, redaction, ProjectGrant

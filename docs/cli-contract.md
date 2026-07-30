@@ -185,7 +185,7 @@ stderr.
 
 ## Mutation idempotency
 
-Every documented mutation command must accept:
+Every documented mutation that may create or change domain state must accept:
 
 ```text
 --idempotency-key KEY
@@ -211,6 +211,11 @@ Idempotency does not replace:
 Durable Agents should generate unique keys, retain them across ambiguous retry
 outcomes, and use bounded retries only when the failure and command semantics
 permit.
+
+Phase 2 `project bind` is the explicit exception: it changes only verified
+local Workspace context, not domain state, and is naturally idempotent for an
+equivalent binding. It does not accept an idempotency key. A different binding
+requires explicit `--replace` and still must pass hostile-file validation.
 
 ## Structured input
 
@@ -241,8 +246,10 @@ is clearer, but they obey the same rules.
   command examples.
 - `.workaholic.env` supplies untrusted Project and Workspace context, never
   credentials or arbitrary endpoints.
-- The trusted profile or runtime owns remote endpoint and credential
-  configuration.
+- Phase 2 trusted profiles own embedded data-directory selection only and
+  reject remote modes, endpoints, credentials, and Tokens.
+- Later authenticated remote profiles or runtimes own endpoint and credential
+  configuration beginning in Phases 5 and 6.
 - Every mutation is attributed to the authenticated Subject and request.
 - Agent Capabilities affect scheduling, not authorization.
 - LocalSession and RemoteSession must enforce the same ProjectGrant and Attempt
@@ -479,6 +486,344 @@ The command-to-error surface is:
 Command parser usage failures also use exit `2`. Once JSON mode is established,
 the CLI maps them to an `INVALID_INPUT` envelope. A failure before Python can
 establish JSON mode remains outside the envelope guarantee.
+
+## Phase 2 command contract
+
+This section is the normative contract for the Multi-project Alpha. Until the
+Phase 2 acceptance gate passes, it describes the next implementation rather
+than a capability of the current `0.1.0a1` package or README.
+
+Phase 2 remains embedded-only. It does not accept a remote profile, URL,
+credential, Token, login, `RemoteSession`, network transport, JSON adapter, or
+PostgreSQL adapter. Every Phase 2 command accepts `--json` and
+`--non-interactive` with the global behavior above.
+
+Phase 2 uses disposable SQLite schema version `2`. It rejects schema version
+`1` unchanged with `SCHEMA_UNSUPPORTED` and provides no migration, conversion,
+import, export, or automatic reset.
+
+### Trusted profile grammar and selection
+
+The trusted file is `profiles.toml` in the operating system's Workaholic
+user-configuration directory. `WORKAHOLIC_CONFIG_DIR` may select another
+absolute trusted configuration directory. The exact version `1` grammar is:
+
+```toml
+version = 1
+default_profile = "local"
+
+[profiles.local]
+mode = "embedded"
+data_directory = "/absolute/path/to/workaholic-data"
+```
+
+The top level is closed and allows only:
+
+| Field | Required | Phase 2 rule |
+| --- | :---: | --- |
+| `version` | Yes | Integer exactly `1`; booleans are not integers |
+| `default_profile` | No | Valid configured profile name |
+| `profiles` | Yes | Tables keyed by unique profile name |
+
+Every `[profiles.NAME]` table is closed and contains exactly:
+
+| Field | Required value |
+| --- | --- |
+| `mode` | String exactly `embedded` |
+| `data_directory` | Absolute path to the profile's trusted data directory |
+
+Profile names match `[a-z][a-z0-9_-]{0,31}`. Data directories are canonical
+one-to-one selections: two names cannot alias the same canonical directory.
+Unknown keys, duplicate semantic values, invalid UTF-8, oversized or unsafe
+files, symlinks, directories, missing defaults, relative paths, URL fields,
+credential fields, Token fields, and other malformed input return
+`PROFILE_INVALID`. A version other than `1` or a mode other than `embedded`
+returns `PROFILE_UNSUPPORTED`.
+
+If the file is absent, the built-in `local` profile uses the absolute trusted
+`WORKAHOLIC_DATA_DIR` override or the platform user-data default. Profile
+precedence is:
+
+1. explicit `--profile`;
+2. trusted `WORKAHOLIC_PROFILE`;
+3. the discovered Workspace context;
+4. configured `default_profile`;
+5. built-in `local`.
+
+The selected profile fixes one embedded data store and Instance before Project
+selection. Project precedence is explicit `--project`, then discovered context.
+An explicit Project must be authorized and belong to that same Instance.
+Neither an explicit Project nor repository context may change the selected
+storage or Instance.
+
+`project create` and `project list` require a resolved initialized profile but
+not a Workspace context. Other Project-scoped commands return
+`CONTEXT_NOT_FOUND` when neither explicit Project nor discovered context exists.
+An explicit key that does not resolve to an authorized Project in the selected
+Instance returns `PROJECT_NOT_FOUND`.
+
+### Workspace discovery and trust
+
+Workspace discovery starts from the canonical physical current directory and
+visits every physical parent through the filesystem root. Git repository and
+worktree boundaries do not stop the walk. The nearest `.workaholic.env` is
+authoritative; a malformed, unreadable, unsafe, or unsupported nearer file
+returns `CONTEXT_INVALID` instead of falling back to a parent.
+
+The context source must be a bounded regular non-symlink file. Its
+`WORKAHOLIC_WORKSPACE_ROOT` is relative to the context file's directory,
+resolves to an existing directory, and remains contained by that directory
+after lexical and symlink resolution. The strict parser accepts only the
+documented identity and relative-root keys and never invokes a shell or
+performs substitution. It rejects endpoints, credentials, Tokens, executable
+paths, storage paths, and profile definitions.
+
+Context-supplied profile, Instance, Project, and Project-key values must match
+trusted configuration and authoritative persistence before any read or
+mutation. Binding never replaces a malformed file, symlink, directory, or
+concurrently changed file and never changes shared `.gitignore`.
+
+### Shared Phase 2 objects
+
+Serialized Phase 2 Projects are closed and contain:
+
+```json
+{"id": "prj_01...", "key": "ACME", "name": "Acme"}
+```
+
+`id` remains the canonical opaque identity. `key` is immutable and matches
+`[A-Z][A-Z0-9]{1,15}`. `name` contains 1 through 200 Unicode characters after
+trimming. Existing Task and Subject objects retain their Phase 1 fields.
+
+The closed effective-context object contains every field below:
+
+```json
+{
+  "mode": "embedded",
+  "profile": "local",
+  "schema_version": 2,
+  "instance": {"id": "ins_01..."},
+  "project": {"id": "prj_01...", "key": "ACME", "name": "Acme"},
+  "workspace_root": "/work/acme",
+  "subject": {
+    "id": "sub_01...",
+    "kind": "human",
+    "display_name": "Local operator",
+    "is_instance_admin": true,
+    "project_role": "owner"
+  },
+  "context_source": "/work/acme/.workaholic.env"
+}
+```
+
+`mode` is exactly `embedded` and `schema_version` is exactly `2`.
+`workspace_root` and `context_source` are absolute paths when discovered or
+bound context supplies them. Both are JSON `null` when an explicit Project
+succeeds without Workspace context. No result contains the profile-file path,
+profile contents, data directory, database path, URL, or credential.
+
+### `workaholic up`
+
+```text
+workaholic up --project-key KEY [--project-name NAME] [--profile PROFILE]
+  [--idempotency-key KEY] [--json] [--non-interactive]
+```
+
+`up` initializes only an empty selected profile with SQLite schema version `2`,
+the bootstrap local Human, and the first Project. Omitting `--project-name`
+uses the normalized Project key as its name. Additional Projects use
+`project create`.
+
+Success retains the Phase 1 `instance`, `project`, `subject`, and `workspace`
+fields; the Project adds required `name`. Repeating an equivalent bootstrap is
+a successful no-op. A different initial key or name in an initialized profile
+returns `PROJECT_KEY_CONFLICT`. Context is written only to the exact current
+directory after durable bootstrap succeeds.
+
+### `workaholic status`
+
+```text
+workaholic status [--profile PROFILE] [--project KEY]
+  [--json] [--non-interactive]
+```
+
+The command is read-only. It resolves and validates the effective embedded
+profile, Instance, Subject, and Project. Success `data` is:
+
+```json
+{
+  "mode": "embedded",
+  "profile": "local",
+  "schema_version": 2,
+  "instance": {"id": "ins_01..."},
+  "project": {"id": "prj_01...", "key": "ACME", "name": "Acme"},
+  "subject": {
+    "id": "sub_01...",
+    "kind": "human",
+    "display_name": "Local operator",
+    "is_instance_admin": true,
+    "project_role": "owner"
+  }
+}
+```
+
+### `workaholic context`
+
+```text
+workaholic context [--profile PROFILE] [--project KEY]
+  [--json] [--non-interactive]
+```
+
+The command is read-only and returns the exact effective-context object defined
+above. It uses the same selection and authority checks as a mutation and never
+returns raw profile configuration or storage paths.
+
+### `workaholic project create`
+
+```text
+workaholic project create --key KEY --name NAME [--profile PROFILE]
+  [--idempotency-key KEY] [--json] [--non-interactive]
+```
+
+The command creates one named Project in the selected initialized Instance and
+automatically grants the bootstrap local Human the Owner role. It does not
+create a TaskEvent. Success `data` is:
+
+```json
+{
+  "project": {"id": "prj_02...", "key": "DOCS", "name": "Documentation"},
+  "grant": {
+    "subject_id": "sub_01...",
+    "project_id": "prj_02...",
+    "role": "owner"
+  }
+}
+```
+
+Creation is idempotent only when `--idempotency-key` is supplied. Equivalent
+replay returns the original Project and grant. Different input returns
+`IDEMPOTENCY_CONFLICT`. Any existing or reserved key returns
+`PROJECT_KEY_CONFLICT` without consuming the key or creating partial state.
+
+### `workaholic project bind`
+
+```text
+workaholic project bind KEY [PATH] [--profile PROFILE] [--replace]
+  [--json] [--non-interactive]
+```
+
+`PATH` defaults to the current directory and must resolve physically to an
+existing directory. The command verifies the selected profile, Instance,
+Subject, and authorized Project before writing a strict `.workaholic.env`.
+Equivalent binding is a successful no-op and returns the effective-context
+object.
+
+A different valid binding returns `WORKSPACE_BINDING_CONFLICT`.
+`--replace` may replace only a valid regular non-symlink context file that
+remains unchanged between validation and atomic replacement. The command never
+replaces a malformed file, symlink, directory, or concurrently changed file.
+It updates a conventional `.git/info/exclude` only after the context is durable
+and never changes shared `.gitignore`.
+
+### `workaholic project list`
+
+```text
+workaholic project list [--profile PROFILE]
+  [--json] [--non-interactive]
+```
+
+The command needs no Project or Workspace context. It returns every Project
+authorized for the bootstrap local Human in the selected Instance, ordered by
+immutable Project key ascending:
+
+```json
+{
+  "projects": [
+    {"id": "prj_01...", "key": "ACME", "name": "Acme"},
+    {"id": "prj_02...", "key": "DOCS", "name": "Documentation"}
+  ]
+}
+```
+
+### Phase 2 Task selection
+
+```text
+workaholic task add TITLE [--project KEY]
+  [--objective TEXT] [--priority INTEGER] [--idempotency-key KEY]
+  [--json] [--non-interactive]
+workaholic task list [--project KEY | --all-projects]
+  [--cursor CURSOR] [--limit INTEGER] [--json] [--non-interactive]
+workaholic task show TASK [--project KEY]
+  [--json] [--non-interactive]
+```
+
+Existing Phase 1 Task validation, success objects, attribution, and
+idempotency remain unchanged. Normal use selects the nearest valid Workspace
+context. `--project` explicitly selects another authorized Project only in the
+same resolved Instance and also permits use without Workspace context.
+
+Only `task list` accepts `--all-projects`. It is mutually exclusive with
+`--project` at the validated request boundary. One-Project lists order by Task
+number ascending. All-Project lists include only authorized Projects and order
+by `(project key, task number)` ascending. Task human keys remain
+Project-prefixed, so JSON and human output are unambiguous.
+
+### Phase 2 cursor contract
+
+Phase 2 Task cursors begin with the exact prefix `v2.` followed by unpadded
+URL-safe base64 of one canonical JSON object. Consumers must treat the complete
+value as opaque and must not construct or interpret it.
+
+The closed canonical payload binds:
+
+- integer version `2`;
+- profile name;
+- Instance identity;
+- Subject identity;
+- selection kind `project` or `all_projects`;
+- selected Project identity for `project`, otherwise JSON `null`;
+- the last Task number for `project`, or last `(project key, task number)` for
+  `all_projects`.
+
+Malformed, padded, noncanonical, unsupported-version, or cross-profile,
+cross-Instance, cross-Subject, cross-Project, or cross-selection reuse returns
+`INVALID_INPUT` and performs no read-side mutation.
+
+### Phase 2 errors and exits
+
+The five Phase 2 errors have fixed safe messages. Messages never contain
+profile contents, data paths, URLs, credentials, SQL, or raw exceptions.
+
+| Error code | Exit | Retryable | Exact message |
+| --- | ---: | :---: | --- |
+| `PROFILE_NOT_FOUND` | 3 | false | `The selected profile was not found.` |
+| `PROFILE_INVALID` | 3 | false | `The trusted profile configuration is invalid.` |
+| `PROFILE_UNSUPPORTED` | 3 | false | `The selected profile mode or configuration version is not supported.` |
+| `PROJECT_NOT_FOUND` | 3 | false | `The selected Project was not found.` |
+| `WORKSPACE_BINDING_CONFLICT` | 4 | false | `The Workspace is already bound to a different Project, Instance, or profile.` |
+
+Existing Phase 1 errors retain their exits. In Phase 2,
+`CONTEXT_NOT_FOUND` means that a Project-scoped command received neither
+explicit Project nor discovered context. `CONTEXT_INVALID` includes an unsafe
+context file, invalid Workspace root, unsupported context version, or mismatch
+between context identity and authoritative profile or persistence state.
+`NOT_INITIALIZED` means the selected profile has no initialized Instance.
+`SCHEMA_UNSUPPORTED` includes every schema version other than exact version
+`2`, including Phase 1 version `1`.
+
+The command-specific additions are:
+
+| Command | Documented Phase 2 errors in addition to existing input, permission, storage, schema, and internal errors |
+| --- | --- |
+| `up` | `PROFILE_NOT_FOUND`, `PROFILE_INVALID`, `PROFILE_UNSUPPORTED`, `CONTEXT_INVALID`, `PROJECT_KEY_CONFLICT`, `IDEMPOTENCY_CONFLICT` |
+| `status` | `PROFILE_NOT_FOUND`, `PROFILE_INVALID`, `PROFILE_UNSUPPORTED`, `CONTEXT_NOT_FOUND`, `CONTEXT_INVALID`, `NOT_INITIALIZED`, `PROJECT_NOT_FOUND` |
+| `context` | `PROFILE_NOT_FOUND`, `PROFILE_INVALID`, `PROFILE_UNSUPPORTED`, `CONTEXT_NOT_FOUND`, `CONTEXT_INVALID`, `NOT_INITIALIZED`, `PROJECT_NOT_FOUND` |
+| `project create` | `PROFILE_NOT_FOUND`, `PROFILE_INVALID`, `PROFILE_UNSUPPORTED`, `NOT_INITIALIZED`, `PROJECT_KEY_CONFLICT`, `IDEMPOTENCY_CONFLICT` |
+| `project bind` | `PROFILE_NOT_FOUND`, `PROFILE_INVALID`, `PROFILE_UNSUPPORTED`, `CONTEXT_INVALID`, `NOT_INITIALIZED`, `PROJECT_NOT_FOUND`, `WORKSPACE_BINDING_CONFLICT` |
+| `project list` | `PROFILE_NOT_FOUND`, `PROFILE_INVALID`, `PROFILE_UNSUPPORTED`, `NOT_INITIALIZED` |
+| `task add` | `PROFILE_NOT_FOUND`, `PROFILE_INVALID`, `PROFILE_UNSUPPORTED`, `CONTEXT_NOT_FOUND`, `CONTEXT_INVALID`, `NOT_INITIALIZED`, `PROJECT_NOT_FOUND`, `IDEMPOTENCY_CONFLICT` |
+| `task list` | `PROFILE_NOT_FOUND`, `PROFILE_INVALID`, `PROFILE_UNSUPPORTED`, `CONTEXT_NOT_FOUND`, `CONTEXT_INVALID`, `NOT_INITIALIZED`, `PROJECT_NOT_FOUND` |
+| `task show` | `PROFILE_NOT_FOUND`, `PROFILE_INVALID`, `PROFILE_UNSUPPORTED`, `CONTEXT_NOT_FOUND`, `CONTEXT_INVALID`, `NOT_INITIALIZED`, `PROJECT_NOT_FOUND`, `TASK_NOT_FOUND` |
 
 ## Conformance requirements
 
