@@ -1,4 +1,4 @@
-"""Transactional Phase 1 SQLite schema creation and exact validation."""
+"""Transactional Phase 2 SQLite schema creation and exact validation."""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ from workaholic.persistence.sqlite.errors import SchemaUnsupportedError
 if TYPE_CHECKING:
     from pathlib import Path
 
-SCHEMA_VERSION: Final = 1
+SCHEMA_VERSION: Final = 2
 
 _SCHEMA_STATEMENTS: Final = (
     """
@@ -56,6 +56,11 @@ _SCHEMA_STATEMENTS: Final = (
                 length(key) BETWEEN 2 AND 16
                 AND key NOT GLOB '*[^A-Z0-9]*'
                 AND substr(key, 1, 1) GLOB '[A-Z]'
+            ),
+        name TEXT NOT NULL
+            CHECK (
+                length(name) BETWEEN 1 AND 200
+                AND name = trim(name)
             ),
         next_task_number INTEGER NOT NULL
             CHECK (next_task_number >= 1),
@@ -167,8 +172,11 @@ _SCHEMA_STATEMENTS: Final = (
             ),
         operation TEXT NOT NULL
             CHECK (
-                length(operation) BETWEEN 1 AND 100
-                AND operation = trim(operation)
+                operation IN (
+                    'bootstrap.local_project',
+                    'project.create',
+                    'task.create'
+                )
             ),
         caller_key TEXT NOT NULL
             CHECK (
@@ -199,13 +207,13 @@ _SCHEMA_STATEMENTS: Final = (
     """,
     """
     INSERT INTO store_metadata (singleton, schema_version)
-    VALUES (1, 1)
+    VALUES (1, 2)
     """,
 )
 
 
 def initialize_empty_store(database_path: Path) -> None:
-    """Atomically create or accept one empty Phase 1 SQLite store.
+    """Atomically create or accept one empty Phase 2 SQLite store.
 
     Concurrent callers serialize through a bounded immediate transaction. An
     existing nonempty store is validated and never repaired or migrated.
@@ -214,7 +222,7 @@ def initialize_empty_store(database_path: Path) -> None:
         database_path: Absolute target path for the SQLite database.
 
     Raises:
-        SchemaUnsupportedError: If an existing store is not exact version 1.
+        SchemaUnsupportedError: If an existing store is not exact version 2.
         StorageBusyError: If another writer outlives the bounded lock wait.
         StorageUnavailableError: If storage cannot be initialized safely.
 
@@ -237,7 +245,7 @@ def validate_store_schema(connection: sqlite3.Connection) -> None:
         connection: Open SQLite connection to inspect.
 
     Raises:
-        SchemaUnsupportedError: If metadata is absent, malformed, or not version 1.
+        SchemaUnsupportedError: If metadata is absent, malformed, or not version 2.
 
     """
     candidate: object = connection

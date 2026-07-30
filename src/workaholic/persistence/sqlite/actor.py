@@ -17,7 +17,7 @@ class SQLiteLocalActorSelector:
         """Bind actor selection to one absolute local database path.
 
         Args:
-            database_path: Absolute Phase 1 SQLite store path.
+            database_path: Absolute Phase 2 SQLite store path.
 
         Raises:
             TypeError: If the path is not an absolute Path.

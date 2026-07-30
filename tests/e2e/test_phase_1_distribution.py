@@ -438,7 +438,7 @@ def test_source_distribution_rejects_corrupt_boundaries_without_mutation(
     )
     database = schema_data / "local.db"
     with closing(sqlite3.connect(database)) as connection:
-        connection.execute("UPDATE store_metadata SET schema_version = 2")
+        connection.execute("UPDATE store_metadata SET schema_version = 1")
         connection.commit()
     schema_before = _file_digest(database)
     unsupported = _run_cli(

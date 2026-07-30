@@ -1,4 +1,4 @@
-"""Authorized, deterministic, and non-mutating Phase 1 SQLite queries."""
+"""Authorized, deterministic, and non-mutating cumulative SQLite queries."""
 
 from __future__ import annotations
 
@@ -23,7 +23,6 @@ from workaholic.application import (
 from workaholic.domain import (
     Instance,
     InstanceId,
-    Project,
     ProjectGrant,
     ProjectId,
     ProjectRole,
@@ -36,6 +35,7 @@ from workaholic.domain import (
 from workaholic.persistence.sqlite._records import (
     canonical_json,
     parse_timestamp,
+    project_from_row,
     require_boolean,
     require_text,
 )
@@ -48,11 +48,12 @@ if TYPE_CHECKING:
     from collections.abc import Mapping
     from pathlib import Path
 
+    from workaholic.domain import Project
+
 _CURSOR_PREFIX: Final = "v1."
 _CURSOR_KEYS: Final = frozenset(("after", "project_id", "v"))
 _CURSOR_VERSION: Final = 1
 _MAX_SQLITE_INTEGER: Final = 9_223_372_036_854_775_807
-_PROJECT_FIELD_COUNT: Final = 4
 _SUBJECT_FIELD_COUNT: Final = 5
 
 
@@ -84,7 +85,7 @@ def get_local_status(
                 """
                 SELECT
                     i.id, i.created_at,
-                    p.id, p.instance_id, p.key, p.created_at,
+                    p.id, p.instance_id, p.key, p.name, p.created_at,
                     s.id, s.kind, s.display_name, s.enabled,
                     s.is_instance_admin,
                     g.subject_id, g.project_id, g.role
@@ -104,21 +105,21 @@ def get_local_status(
             if row is None:
                 raise NotInitializedError
             _require_owner_values(
-                kind=row[7],
-                enabled=row[9],
-                is_instance_admin=row[10],
-                role=row[13],
+                kind=row[8],
+                enabled=row[10],
+                is_instance_admin=row[11],
+                role=row[14],
             )
             instance = Instance(
                 id=InstanceId(require_text(row[0])),
                 created_at=parse_timestamp(row[1]),
             )
-            project = _project_from_values(row[2:6])
-            subject = _subject_from_values(row[6:11])
+            project = project_from_row(row[2:7])
+            subject = _subject_from_values(row[7:12])
             grant = ProjectGrant(
-                subject_id=SubjectId(require_text(row[11])),
-                project_id=ProjectId(require_text(row[12])),
-                role=ProjectRole(require_text(row[13])),
+                subject_id=SubjectId(require_text(row[12])),
+                project_id=ProjectId(require_text(row[13])),
+                role=ProjectRole(require_text(row[14])),
             )
             return StatusResult(
                 instance=instance,
@@ -160,7 +161,7 @@ def list_projects(
             _require_active_subject(connection, candidate.subject_id)
             rows = connection.execute(
                 """
-                SELECT p.id, p.instance_id, p.key, p.created_at
+                SELECT p.id, p.instance_id, p.key, p.name, p.created_at
                 FROM projects AS p
                 JOIN project_grants AS g
                   ON g.project_id = p.id AND g.subject_id = ?
@@ -173,7 +174,7 @@ def list_projects(
                     ProjectRole.OWNER.value,
                 ),
             ).fetchall()
-            return tuple(_project_from_values(row) for row in rows)
+            return tuple(project_from_row(row) for row in rows)
     except ApplicationError:
         raise
     except (IndexError, TypeError, ValueError) as error:
@@ -420,31 +421,6 @@ def _require_owner_values(
         or role != ProjectRole.OWNER.value
     ):
         raise PermissionDeniedError
-
-
-def _project_from_values(value: tuple[object, ...]) -> Project:
-    """Deserialize one Project row in the canonical selected-field order.
-
-    Args:
-        value: SQLite Project values.
-
-    Returns:
-        Validated Project.
-
-    Raises:
-        StorageUnavailableError: If the row has an unexpected shape.
-
-    """
-    if len(value) != _PROJECT_FIELD_COUNT:
-        raise StorageUnavailableError
-    return Project(
-        id=ProjectId(require_text(value[0])),
-        instance_id=InstanceId(require_text(value[1])),
-        key=require_text(value[2]),
-        # Phase 1 rows predate display names; their initial name is the key.
-        name=require_text(value[2]),
-        created_at=parse_timestamp(value[3]),
-    )
 
 
 def _subject_from_values(value: tuple[object, ...]) -> Subject:

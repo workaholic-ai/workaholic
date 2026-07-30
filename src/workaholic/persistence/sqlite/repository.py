@@ -27,14 +27,14 @@ if TYPE_CHECKING:
     from workaholic.domain import Project, Task
 
 
-class SQLitePhaseOneRepository:
-    """SQLite implementation of atomic Phase 1 semantic operations."""
+class SQLiteRepository:
+    """Cumulative SQLite implementation of atomic semantic operations."""
 
     def __init__(self, database_path: Path) -> None:
         """Bind the adapter to one absolute local database path.
 
         Args:
-            database_path: Absolute path to a schema-version-1 SQLite store.
+            database_path: Absolute path to a schema-version-2 SQLite store.
 
         Raises:
             TypeError: If the value is not an absolute Path.

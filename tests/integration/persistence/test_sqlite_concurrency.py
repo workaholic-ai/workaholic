@@ -15,7 +15,7 @@ from tests.contract.phase_one import (
 )
 
 from workaholic.application import ListTasks
-from workaholic.persistence.sqlite import SQLitePhaseOneRepository
+from workaholic.persistence.sqlite import SQLiteRepository
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -33,7 +33,7 @@ def test_separate_connections_allocate_unique_contiguous_task_numbers(
 ) -> None:
     """Concurrent creates serialize without duplicates, gaps, or lost Tasks."""
     database_path = tmp_path / "local.db"
-    bootstrap_repository = SQLitePhaseOneRepository(database_path)
+    bootstrap_repository = SQLiteRepository(database_path)
     bootstrap = bootstrap_repository.bootstrap_local_project(
         bootstrap_mutation("bootstrap")
     )
@@ -53,7 +53,7 @@ def test_separate_connections_allocate_unique_contiguous_task_numbers(
     )
     assert len({task.uid for task in ordered}) == _WORKER_COUNT
 
-    observer = SQLitePhaseOneRepository(database_path)
+    observer = SQLiteRepository(database_path)
     page = observer.list_tasks(
         ListTasks(
             project_id=bootstrap.project.id,
@@ -78,7 +78,7 @@ def _create_task(
 
     """
     database_path, bootstrap, index, barrier = arguments
-    repository = SQLitePhaseOneRepository(database_path)
+    repository = SQLiteRepository(database_path)
     barrier.wait(timeout=10)
     return repository.create_task(
         task_mutation(

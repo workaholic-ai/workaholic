@@ -1,4 +1,4 @@
-"""Phase 1 SQLite schema and short-lived connection boundaries."""
+"""Phase 2 SQLite schema and short-lived connection boundaries."""
 
 from workaholic.persistence.sqlite.actor import SQLiteLocalActorSelector
 from workaholic.persistence.sqlite.connection import (
@@ -10,7 +10,7 @@ from workaholic.persistence.sqlite.errors import (
     StorageBusyError,
     StorageUnavailableError,
 )
-from workaholic.persistence.sqlite.repository import SQLitePhaseOneRepository
+from workaholic.persistence.sqlite.repository import SQLiteRepository
 from workaholic.persistence.sqlite.schema import (
     SCHEMA_VERSION,
     initialize_empty_store,
@@ -20,7 +20,7 @@ from workaholic.persistence.sqlite.schema import (
 __all__ = [
     "SCHEMA_VERSION",
     "SQLiteLocalActorSelector",
-    "SQLitePhaseOneRepository",
+    "SQLiteRepository",
     "SchemaUnsupportedError",
     "StorageBusyError",
     "StorageUnavailableError",

@@ -32,7 +32,7 @@ from workaholic.domain import (
     TaskId,
 )
 from workaholic.persistence.sqlite import (
-    SQLitePhaseOneRepository,
+    SQLiteRepository,
     StorageUnavailableError,
     initialize_empty_store,
     open_write_transaction,
@@ -51,7 +51,7 @@ _ACME_PROJECT_ID = ProjectId("prj_acme")
 
 def _repository(
     tmp_path: Path,
-) -> tuple[SQLitePhaseOneRepository, BootstrapResult]:
+) -> tuple[SQLiteRepository, BootstrapResult]:
     """Create one initialized, bootstrapped SQLite repository.
 
     Args:
@@ -63,7 +63,7 @@ def _repository(
     """
     database_path = tmp_path / "local.db"
     initialize_empty_store(database_path)
-    repository = SQLitePhaseOneRepository(database_path)
+    repository = SQLiteRepository(database_path)
     result = repository.bootstrap_local_project(
         BootstrapMutation(
             instance_id=InstanceId("ins_local"),
@@ -111,7 +111,7 @@ def _task_mutation(
 
 
 def _read_without_mutation[T](
-    repository: SQLitePhaseOneRepository,
+    repository: SQLiteRepository,
     operation: Callable[[], T],
 ) -> T:
     """Execute one query and prove its database file remains byte-identical.
@@ -134,7 +134,7 @@ def _read_without_mutation[T](
         assert repository.database_path.read_bytes() == before
 
 
-def _add_second_project(repository: SQLitePhaseOneRepository) -> ProjectId:
+def _add_second_project(repository: SQLiteRepository) -> ProjectId:
     """Add one authorized Project for isolation and ordering tests.
 
     Args:
@@ -149,13 +149,14 @@ def _add_second_project(repository: SQLitePhaseOneRepository) -> ProjectId:
         connection.execute(
             """
             INSERT INTO projects (
-                id, instance_id, key, next_task_number, created_at
-            ) VALUES (?, ?, ?, ?, ?)
+                id, instance_id, key, name, next_task_number, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?)
             """,
             (
                 str(project_id),
                 "ins_local",
                 "BETA",
+                "Beta",
                 1,
                 _CANONICAL_NOW,
             ),
@@ -213,7 +214,7 @@ def test_status_and_project_listing_are_stable_after_reopen(tmp_path: Path) -> N
     assert status.subject == bootstrap.subject
     assert status.grant == bootstrap.grant
     assert projects == (bootstrap.project,)
-    reopened = SQLitePhaseOneRepository(repository.database_path)
+    reopened = SQLiteRepository(repository.database_path)
     assert (
         _read_without_mutation(
             reopened,
@@ -364,7 +365,7 @@ def test_task_pagination_is_empty_then_complete_stable_and_reopenable(
 
     assert tuple(collected) == expected
     assert tuple(task.number for task in collected) == (1, 2, 3, 4, 5)
-    reopened = SQLitePhaseOneRepository(repository.database_path)
+    reopened = SQLiteRepository(repository.database_path)
     assert (
         _read_without_mutation(
             reopened,
@@ -470,7 +471,7 @@ def test_valid_store_maps_missing_identity_state_to_typed_errors(
     """Valid stores distinguish absent initialization and scoped Task lookup."""
     database_path = tmp_path / "empty.db"
     initialize_empty_store(database_path)
-    repository = SQLitePhaseOneRepository(database_path)
+    repository = SQLiteRepository(database_path)
 
     with pytest.raises(NotInitializedError) as status_error:
         _read_without_mutation(

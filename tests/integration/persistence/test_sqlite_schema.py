@@ -1,4 +1,4 @@
-"""Integration tests for the fixed Phase 1 SQLite schema boundary."""
+"""Integration tests for the fixed Phase 2 SQLite schema boundary."""
 
 from __future__ import annotations
 
@@ -36,6 +36,59 @@ _APPLICATION_TABLES = {
     "subjects",
     "task_events",
     "tasks",
+}
+_EXPECTED_COLUMNS = {
+    "idempotency_records": (
+        "subject_scope",
+        "operation",
+        "caller_key",
+        "request_fingerprint",
+        "outcome_json",
+        "created_at",
+    ),
+    "instances": ("id", "created_at"),
+    "project_grants": ("subject_id", "project_id", "role"),
+    "projects": (
+        "id",
+        "instance_id",
+        "key",
+        "name",
+        "next_task_number",
+        "created_at",
+    ),
+    "store_metadata": ("singleton", "schema_version"),
+    "subjects": (
+        "id",
+        "kind",
+        "display_name",
+        "enabled",
+        "is_instance_admin",
+    ),
+    "task_events": (
+        "cursor",
+        "id",
+        "task_uid",
+        "project_id",
+        "actor_subject_id",
+        "request_id",
+        "event_type",
+        "occurred_at",
+        "payload_json",
+    ),
+    "tasks": (
+        "uid",
+        "project_id",
+        "number",
+        "key",
+        "title",
+        "objective",
+        "state",
+        "priority",
+        "version",
+        "created_by",
+        "created_at",
+        "updated_at",
+    ),
 }
 
 
@@ -135,10 +188,10 @@ def _seed_authorization_graph(connection: sqlite3.Connection) -> None:
     connection.execute(
         """
         INSERT INTO projects (
-            id, instance_id, key, next_task_number, created_at
-        ) VALUES (?, ?, ?, ?, ?)
+            id, instance_id, key, name, next_task_number, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?)
         """,
-        ("prj_acme", "ins_local", "ACME", 2, _TIMESTAMP),
+        ("prj_acme", "ins_local", "ACME", "Acme", 2, _TIMESTAMP),
     )
     connection.execute(
         """
@@ -271,6 +324,86 @@ def test_empty_store_initialization_is_atomic_private_and_reopenable(
         assert connection.execute("PRAGMA foreign_keys").fetchone() == (1,)
 
 
+def test_empty_store_has_exact_columns_indexes_and_foreign_keys(
+    tmp_path: Path,
+) -> None:
+    """The clean schema exposes every required physical integrity boundary."""
+    database_path = tmp_path / "local.db"
+    initialize_empty_store(database_path)
+
+    with open_read_connection(database_path) as connection:
+        actual_columns = {
+            table: tuple(
+                row[0]
+                for row in connection.execute(
+                    "SELECT name FROM pragma_table_info(?) ORDER BY cid",
+                    (table,),
+                )
+            )
+            for table in _APPLICATION_TABLES
+        }
+        assert actual_columns == _EXPECTED_COLUMNS
+
+        expected_unique_indexes = {
+            "idempotency_records": {
+                ("subject_scope", "operation", "caller_key"),
+            },
+            "instances": {("id",)},
+            "project_grants": {("subject_id", "project_id")},
+            "projects": {("id",), ("instance_id", "key")},
+            "store_metadata": set(),
+            "subjects": {("id",)},
+            "task_events": {("id",)},
+            "tasks": {
+                ("key",),
+                ("project_id", "key"),
+                ("project_id", "number"),
+                ("uid",),
+                ("uid", "project_id"),
+            },
+        }
+        actual_unique_indexes: dict[str, set[tuple[str, ...]]] = {}
+        for table in _APPLICATION_TABLES:
+            index_names = connection.execute(
+                """
+                SELECT name
+                FROM pragma_index_list(?)
+                WHERE [unique] = 1
+                """,
+                (table,),
+            ).fetchall()
+            actual_unique_indexes[table] = {
+                tuple(
+                    row[0]
+                    for row in connection.execute(
+                        "SELECT name FROM pragma_index_info(?) ORDER BY seqno",
+                        (index_name,),
+                    )
+                )
+                for (index_name,) in index_names
+            }
+        assert actual_unique_indexes == expected_unique_indexes
+
+        actual_foreign_keys = {
+            (table, row[3], row[2], row[4], row[6])
+            for table in _APPLICATION_TABLES
+            for row in connection.execute(
+                "SELECT * FROM pragma_foreign_key_list(?)",
+                (table,),
+            )
+        }
+        assert actual_foreign_keys == {
+            ("project_grants", "project_id", "projects", "id", "RESTRICT"),
+            ("project_grants", "subject_id", "subjects", "id", "RESTRICT"),
+            ("projects", "instance_id", "instances", "id", "RESTRICT"),
+            ("task_events", "actor_subject_id", "subjects", "id", "RESTRICT"),
+            ("task_events", "project_id", "tasks", "project_id", "RESTRICT"),
+            ("task_events", "task_uid", "tasks", "uid", "RESTRICT"),
+            ("tasks", "created_by", "subjects", "id", "RESTRICT"),
+            ("tasks", "project_id", "projects", "id", "RESTRICT"),
+        }
+
+
 @pytest.mark.parametrize("opener", [open_read_connection, open_write_transaction])
 def test_normal_open_does_not_create_a_missing_database(
     opener: _ConnectionOpener,
@@ -352,10 +485,10 @@ def test_foreign_keys_are_enabled_on_write_connections(tmp_path: Path) -> None:
         connection.execute(
             """
             INSERT INTO projects (
-                id, instance_id, key, next_task_number, created_at
-            ) VALUES (?, ?, ?, ?, ?)
+                id, instance_id, key, name, next_task_number, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?)
             """,
-            ("prj_orphan", "ins_missing", "ORPHAN", 1, _TIMESTAMP),
+            ("prj_orphan", "ins_missing", "ORPHAN", "Orphan", 1, _TIMESTAMP),
         )
 
     with open_read_connection(database_path) as connection:
@@ -391,10 +524,100 @@ def test_checked_boolean_enum_and_project_key_constraints(tmp_path: Path) -> Non
             connection.execute(
                 """
                 INSERT INTO projects (
-                    id, instance_id, key, next_task_number, created_at
-                ) VALUES (?, ?, ?, ?, ?)
+                    id, instance_id, key, name, next_task_number, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?)
                 """,
-                ("prj_duplicate", "ins_local", "ACME", 1, _TIMESTAMP),
+                ("prj_duplicate", "ins_local", "ACME", "Duplicate", 1, _TIMESTAMP),
+            )
+    finally:
+        connection.close()
+
+
+def test_project_name_round_trips_and_rejects_invalid_storage(
+    tmp_path: Path,
+) -> None:
+    """Required normalized Project names survive storage with physical bounds."""
+    database_path = tmp_path / "local.db"
+    initialize_empty_store(database_path)
+    connection = _open_physical_database(database_path)
+    try:
+        _seed_authorization_graph(connection)
+        connection.execute(
+            """
+            INSERT INTO projects (
+                id, instance_id, key, name, next_task_number, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            ("prj_cafe", "ins_local", "CAFE", "Café", 1, _TIMESTAMP),
+        )
+        connection.commit()
+
+        assert connection.execute(
+            "SELECT key, name FROM projects ORDER BY key"
+        ).fetchall() == [("ACME", "Acme"), ("CAFE", "Café")]
+
+        for index, invalid_name in enumerate(("", " padded", "X" * 201)):
+            with pytest.raises(sqlite3.IntegrityError):
+                connection.execute(
+                    """
+                    INSERT INTO projects (
+                        id, instance_id, key, name, next_task_number, created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        f"prj_invalid_{index}",
+                        "ins_local",
+                        f"BAD{index}",
+                        invalid_name,
+                        1,
+                        _TIMESTAMP,
+                    ),
+                )
+            connection.rollback()
+    finally:
+        connection.close()
+
+
+def test_idempotency_operation_constraint_includes_project_creation(
+    tmp_path: Path,
+) -> None:
+    """The closed semantic operation set includes Phase 2 Project creation."""
+    database_path = tmp_path / "local.db"
+    initialize_empty_store(database_path)
+    connection = _open_physical_database(database_path)
+    try:
+        connection.execute(
+            """
+            INSERT INTO idempotency_records (
+                subject_scope, operation, caller_key, request_fingerprint,
+                outcome_json, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "sub_local",
+                "project.create",
+                "create-1",
+                "fingerprint",
+                '{"project_id":"prj_acme"}',
+                _TIMESTAMP,
+            ),
+        )
+        with pytest.raises(sqlite3.IntegrityError):
+            connection.execute(
+                """
+                INSERT INTO idempotency_records (
+                    subject_scope, operation, caller_key, request_fingerprint,
+                    outcome_json, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    "sub_local",
+                    "remote.sync",
+                    "invalid-1",
+                    "fingerprint",
+                    "{}",
+                    _TIMESTAMP,
+                ),
             )
     finally:
         connection.close()
@@ -418,7 +641,7 @@ def test_task_event_and_idempotency_uniqueness_constraints(tmp_path: Path) -> No
             """,
             (
                 "sub_local",
-                "task.add",
+                "task.create",
                 "caller-key",
                 "fingerprint",
                 '{"task_uid":"tsk_first"}',
@@ -536,7 +759,7 @@ def test_task_event_and_idempotency_uniqueness_constraints(tmp_path: Path) -> No
                 """,
                 (
                     "sub_local",
-                    "task.add",
+                    "task.create",
                     "caller-key",
                     "different",
                     "{}",
@@ -580,7 +803,7 @@ def _build_invalid_store(database_path: Path, scenario: str) -> None:
             )
             connection.executemany(
                 "INSERT INTO store_metadata VALUES (?, ?)",
-                [(1, 1), (2, 1)],
+                [(1, 2), (2, 2)],
             )
         else:
             connection.execute(
@@ -600,7 +823,10 @@ def _build_invalid_store(database_path: Path, scenario: str) -> None:
         connection.close()
 
 
-@pytest.mark.parametrize("scenario", ["missing", "malformed", "multiple", "0", "2"])
+@pytest.mark.parametrize(
+    "scenario",
+    ["missing", "malformed", "multiple", "0", "1", "3"],
+)
 def test_schema_validation_rejects_without_modifying_the_store(
     scenario: str,
     tmp_path: Path,
@@ -635,15 +861,30 @@ def test_validation_runtime_checks_connection_type() -> None:
 
 
 def test_initialization_never_repairs_an_unsupported_store(tmp_path: Path) -> None:
-    """Calling initialization on version 2 leaves every schema object unchanged."""
-    database_path = tmp_path / "future.db"
-    _build_invalid_store(database_path, "2")
+    """Calling initialization on version 1 leaves every schema object unchanged."""
+    database_path = tmp_path / "phase-one.db"
+    _build_invalid_store(database_path, "1")
     original_bytes = database_path.read_bytes()
+    connection = sqlite3.connect(database_path)
+    original_schema = connection.execute(
+        "SELECT type, name, sql FROM sqlite_schema ORDER BY type, name"
+    ).fetchall()
+    connection.close()
 
     with pytest.raises(SchemaUnsupportedError):
         initialize_empty_store(database_path)
 
     assert database_path.read_bytes() == original_bytes
+    connection = sqlite3.connect(database_path)
+    try:
+        assert (
+            connection.execute(
+                "SELECT type, name, sql FROM sqlite_schema ORDER BY type, name"
+            ).fetchall()
+            == original_schema
+        )
+    finally:
+        connection.close()
 
 
 @pytest.mark.parametrize("opener", [open_read_connection, open_write_transaction])
@@ -652,8 +893,8 @@ def test_normal_open_rejects_an_unsupported_store(
     tmp_path: Path,
 ) -> None:
     """Every normal connection validates schema before exposing state."""
-    database_path = tmp_path / "future.db"
-    _build_invalid_store(database_path, "2")
+    database_path = tmp_path / "phase-one.db"
+    _build_invalid_store(database_path, "1")
 
     with pytest.raises(SchemaUnsupportedError), opener(database_path):
         pytest.fail("unsupported state must not be exposed")
@@ -662,7 +903,7 @@ def test_normal_open_rejects_an_unsupported_store(
 def test_concurrent_first_initialization_produces_one_valid_schema(
     tmp_path: Path,
 ) -> None:
-    """Concurrent creators serialize into a single complete version-1 store."""
+    """Concurrent creators serialize into a single complete version-2 store."""
     database_path = tmp_path / "concurrent" / "local.db"
 
     with ThreadPoolExecutor(max_workers=4) as executor:

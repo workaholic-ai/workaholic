@@ -33,7 +33,7 @@ from workaholic.domain import (
 )
 from workaholic.persistence.sqlite import (
     SQLiteLocalActorSelector,
-    SQLitePhaseOneRepository,
+    SQLiteRepository,
 )
 from workaholic.session import LocalSession
 
@@ -133,7 +133,7 @@ def create_local_session(
     """
     directory = _require_workspace_directory(cwd)
     data_paths = resolve_local_data_paths(environment)
-    repository = SQLitePhaseOneRepository(data_paths.database_path)
+    repository = SQLiteRepository(data_paths.database_path)
     clock = _UtcSystemClock()
     identifiers = _Uuid7IdentifierFactory()
     return LocalSession(

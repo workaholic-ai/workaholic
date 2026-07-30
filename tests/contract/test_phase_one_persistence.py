@@ -22,7 +22,7 @@ from workaholic.application import (
     ListTasks,
 )
 from workaholic.domain import SubjectId, TaskId
-from workaholic.persistence.sqlite import SQLitePhaseOneRepository
+from workaholic.persistence.sqlite import SQLiteRepository
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -49,7 +49,7 @@ class _SQLiteRepositoryFactory:
         """
         return cast(
             "WorkaholicRepository",
-            SQLitePhaseOneRepository(root / "local.db"),
+            SQLiteRepository(root / "local.db"),
         )
 
 
