@@ -1,4 +1,4 @@
-"""Reusable explicit Typer option aliases for Phase 1 commands."""
+"""Reusable explicit Typer option aliases for Workaholic commands."""
 
 from __future__ import annotations
 
@@ -33,6 +33,38 @@ IdempotencyKeyOption = Annotated[
         "--idempotency-key",
         help="Opaque caller key for safely replaying this mutation.",
         metavar="KEY",
+        prompt=False,
+    ),
+]
+
+ProfileOption = Annotated[
+    str | None,
+    typer.Option(
+        ...,
+        "--profile",
+        help="Select one trusted local profile.",
+        metavar="PROFILE",
+        prompt=False,
+    ),
+]
+
+ProjectOption = Annotated[
+    str | None,
+    typer.Option(
+        ...,
+        "--project",
+        help="Select one Project by immutable key.",
+        metavar="KEY",
+        prompt=False,
+    ),
+]
+
+ReplaceOption = Annotated[
+    bool,
+    typer.Option(
+        ...,
+        "--replace",
+        help="Replace an existing verified Workspace binding.",
         prompt=False,
     ),
 ]

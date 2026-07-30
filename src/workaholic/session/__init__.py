@@ -3,7 +3,9 @@
 from workaholic.application import (
     ApplicationError,
     ApplicationErrorCode,
+    ContextResult,
     ExitCategory,
+    StatusResult,
 )
 from workaholic.session.base import (
     LocalActorSelector,
@@ -32,6 +34,7 @@ __all__ = [
     "ApplicationError",
     "ApplicationErrorCode",
     "ContextRequest",
+    "ContextResult",
     "ExitCategory",
     "LocalActorSelector",
     "LocalIdentity",
@@ -43,6 +46,7 @@ __all__ = [
     "ProjectCreateRequest",
     "ProjectListRequest",
     "StatusRequest",
+    "StatusResult",
     "TaskCreateRequest",
     "TaskGetRequest",
     "TaskListRequest",

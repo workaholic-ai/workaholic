@@ -5,28 +5,31 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import cast
 
-from workaholic.session import TaskSession
+from workaholic.session import WorkaholicSession
 
-type SessionProvider = Callable[[], TaskSession]
+type SessionProvider = Callable[[], WorkaholicSession]
 
 _SESSION_OPERATIONS = (
     "up",
     "status",
+    "context",
     "list_projects",
+    "create_project",
+    "bind_project",
     "create_task",
     "list_tasks",
     "get_task",
 )
 
 
-def acquire_session(provider: SessionProvider) -> TaskSession:
+def acquire_session(provider: SessionProvider) -> WorkaholicSession:
     """Acquire and runtime-check one command-scoped Session.
 
     Args:
         provider: Explicit Session factory supplied by the composition root.
 
     Returns:
-        Session implementing the complete Phase 1 presentation boundary.
+        Session implementing the complete cumulative presentation boundary.
 
     Raises:
         TypeError: If the provider or returned Session violates its contract.
@@ -43,4 +46,4 @@ def acquire_session(provider: SessionProvider) -> TaskSession:
     ):
         message = "CLI Session provider returned an invalid Session."
         raise TypeError(message)
-    return cast("TaskSession", candidate)
+    return cast("WorkaholicSession", candidate)
