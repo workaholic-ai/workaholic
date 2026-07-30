@@ -7,8 +7,10 @@ machine-readable CLI as the agent interface.
 
 > [!WARNING]
 > Workaholic AI is pre-alpha foundation software at version `0.0.0`. The current
-> package is a runnable CLI skeleton and does not manage tasks, agents,
-> persistence, projects, authentication, or remote servers.
+> development revision exposes the first local Project command surface, but its
+> default executable is not yet connected to local storage. It does not yet
+> provide a durable Task workflow, Agent execution, authentication, or a remote
+> server.
 
 > [!IMPORTANT]
 > Python 3.14 is the only tested development runtime in Phase 0. There is no
@@ -61,7 +63,11 @@ paths and does not publish an artifact.
 
 ## Current CLI
 
-Only the bootstrap interface below is implemented.
+The CLI application factory accepts an explicit Session provider and exposes
+the first Phase 1 Project operations. This intermediate revision is intended
+for source development and integration testing; invoking these operations
+through the default executable returns a redacted operational error until the
+embedded local composition is connected.
 
 | Invocation | Current behavior |
 | --- | --- |
@@ -69,9 +75,14 @@ Only the bootstrap interface below is implemented.
 | `uv run workaholic --help` | Prints command help |
 | `uv run workaholic --version` | Prints `workaholic 0.0.0` |
 | `uv run python -m workaholic --version` | Runs the same CLI as a Python module |
+| `uv run workaholic up --project-key ACME` | Parses local bootstrap input and delegates through an injected Session |
+| `uv run workaholic status` | Delegates exact-directory status through an injected Session |
+| `uv run workaholic project list` | Delegates the authorized Project list through an injected Session |
 
-There are no task-management commands or supported machine-readable task
-responses yet.
+These three commands accept `--json` and `--non-interactive`; `up` also accepts
+`--idempotency-key`. Their `workaholic.cli/v1` JSON envelopes and documented
+error exits are implemented. Task add, list, and show commands are not exposed
+yet.
 
 ## Planned for v1 (not implemented)
 

@@ -15,6 +15,25 @@ from workaholic.session import (
 _UNKNOWN_ERROR_MESSAGE = "An unexpected internal error occurred."
 
 
+def write_invalid_input(message: str, *, json_mode: bool) -> Never:
+    """Write one safe CLI-boundary input failure and terminate.
+
+    Args:
+        message: Stable public diagnostic without input echoing.
+        json_mode: Whether to emit the public automation envelope.
+
+    Raises:
+        TypeError: If ``json_mode`` is not a real boolean.
+        DomainValidationError: If ``message`` is not a safe public diagnostic.
+        typer.Exit: Always, after rendering the input failure.
+
+    """
+    write_failure(
+        ApplicationError(ApplicationErrorCode.INVALID_INPUT, message),
+        json_mode=json_mode,
+    )
+
+
 def write_failure(error: Exception, *, json_mode: bool) -> Never:
     """Write one safe failure and terminate with its stable exit category.
 

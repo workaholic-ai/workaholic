@@ -1,21 +1,20 @@
-"""Workaholic AI command-line entry point."""
+"""Workaholic AI command-line application factory and entry point."""
 
 from importlib.metadata import version as distribution_version
-from typing import Annotated
+from typing import TYPE_CHECKING, Annotated
 
 import typer
 
+from workaholic.cli.project import register_project_commands
+from workaholic.cli.status import register_status_command
+from workaholic.cli.up import register_up_command
+
+if TYPE_CHECKING:
+    from workaholic.cli.runtime import SessionProvider
+    from workaholic.session import WorkaholicSession
+
 _DISTRIBUTION_NAME = "workaholic-ai"
 _PROGRAM_NAME = "workaholic"
-
-app = typer.Typer(
-    name=_PROGRAM_NAME,
-    help="Coordinate work between human operators and autonomous agents.",
-    add_completion=False,
-    invoke_without_command=True,
-    no_args_is_help=False,
-    pretty_exceptions_enable=False,
-)
 
 
 def _show_version(value: bool) -> None:
@@ -33,6 +32,7 @@ def _show_version(value: bool) -> None:
 VersionOption = Annotated[
     bool,
     typer.Option(
+        ...,
         "--version",
         callback=_show_version,
         help="Show the installed Workaholic AI version and exit.",
@@ -41,7 +41,6 @@ VersionOption = Annotated[
 ]
 
 
-@app.callback()
 def _root(
     ctx: typer.Context,
     version: VersionOption = False,
@@ -56,6 +55,64 @@ def _root(
     del version
     if ctx.invoked_subcommand is None:
         typer.echo(ctx.get_help())
+
+
+def create_app(session_provider: SessionProvider) -> typer.Typer:
+    """Create the command tree with one explicit Session provider.
+
+    Args:
+        session_provider: Command-scoped Session factory supplied by the
+            composition root.
+
+    Returns:
+        Fully registered Typer application.
+
+    Raises:
+        TypeError: If ``session_provider`` is not callable.
+
+    """
+    candidate_provider: object = session_provider
+    if not callable(candidate_provider):
+        message = "CLI Session provider must be callable."
+        raise TypeError(message)
+    application = typer.Typer(
+        name=_PROGRAM_NAME,
+        help="Coordinate work between human operators and autonomous agents.",
+        add_completion=False,
+        invoke_without_command=True,
+        no_args_is_help=False,
+        pretty_exceptions_enable=False,
+    )
+    application.callback()(_root)
+    register_up_command(application, session_provider=session_provider)
+    register_status_command(application, session_provider=session_provider)
+
+    project_application = typer.Typer(
+        help="Inspect Projects authorized for the local operator.",
+        add_completion=False,
+        no_args_is_help=True,
+        pretty_exceptions_enable=False,
+    )
+    register_project_commands(
+        project_application,
+        session_provider=session_provider,
+    )
+    application.add_typer(project_application, name="project")
+    return application
+
+
+def _unconfigured_session() -> WorkaholicSession:
+    """Fail safely until Task 13 installs the local composition root.
+
+    Raises:
+        RuntimeError: Always; production composition is intentionally pending.
+
+    """
+    message = "The local Session composition root is not configured."
+    raise RuntimeError(message)
+
+
+app = create_app(_unconfigured_session)
 
 
 def main() -> None:

@@ -7,10 +7,12 @@
 
 ## Current implementation notice
 
-This document specifies the accepted v1 automation contract that future phases
-must implement and test. The current `0.0.0` package exposes only bootstrap help
-and version output. It does not yet implement JSON task commands or claim
-compatibility with this contract.
+This document specifies the accepted v1 automation contract through its Phase 8
+freeze. The current `0.0.0` development package implements the versioned
+envelopes and exposes `up`, `status`, and `project list` through an injected
+Session boundary. Its default executable is not yet composed with local storage,
+and Task commands are not yet exposed. No compatibility guarantee applies
+before `1.0.0`.
 
 ## Normative language
 
