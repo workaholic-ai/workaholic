@@ -193,7 +193,7 @@ class ContextResult(_ResultModel):
 
 
 class TaskPage(_ResultModel):
-    """One deterministic ascending page of Tasks."""
+    """One deterministic Project- or Instance-scoped ascending Task page."""
 
     tasks: tuple[Task, ...]
     next_cursor: str | None

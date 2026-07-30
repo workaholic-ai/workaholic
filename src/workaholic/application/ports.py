@@ -188,6 +188,18 @@ class QueryRepository(Protocol):
         """
         ...
 
+    def get_project_by_key(self, command: GetProjectByKey) -> Project:
+        """Read one authorized Project by immutable key.
+
+        Args:
+            command: Validated Instance, Subject, and key query.
+
+        Returns:
+            The matching authorized Project.
+
+        """
+        ...
+
     def list_tasks(self, command: ListTasks) -> TaskPage:
         """Read one deterministic Task page without mutating state.
 
@@ -196,6 +208,18 @@ class QueryRepository(Protocol):
 
         Returns:
             Tasks ordered by Project-local number.
+
+        """
+        ...
+
+    def list_tasks_for_instance(self, command: ListInstanceTasks) -> TaskPage:
+        """Read Tasks across authorized Projects in one Instance.
+
+        Args:
+            command: Validated Instance-scoped pagination query.
+
+        Returns:
+            Tasks ordered by Project key and Project-local number.
 
         """
         ...
@@ -221,27 +245,3 @@ class WorkaholicRepository(
     Protocol,
 ):
     """Persist cumulative operations through explicit semantic methods."""
-
-    def get_project_by_key(self, command: GetProjectByKey) -> Project:
-        """Read one authorized Project by immutable key.
-
-        Args:
-            command: Validated Instance, Subject, and key query.
-
-        Returns:
-            The matching authorized Project.
-
-        """
-        ...
-
-    def list_tasks_for_instance(self, command: ListInstanceTasks) -> TaskPage:
-        """Read Tasks across authorized Projects in one Instance.
-
-        Args:
-            command: Validated Instance-scoped pagination query.
-
-        Returns:
-            Tasks ordered by Project key and Project-local number.
-
-        """
-        ...

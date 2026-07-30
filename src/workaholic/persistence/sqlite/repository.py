@@ -18,7 +18,9 @@ if TYPE_CHECKING:
         BootstrapMutation,
         BootstrapResult,
         GetLocalStatus,
+        GetProjectByKey,
         GetTask,
+        ListInstanceTasks,
         ListProjects,
         ListTasks,
         ProjectCreationMutation,
@@ -126,6 +128,18 @@ class SQLiteRepository:
         """
         return sqlite_queries.list_projects(self._database_path, command)
 
+    def get_project_by_key(self, command: GetProjectByKey) -> Project:
+        """Read one authorized Project by immutable key.
+
+        Args:
+            command: Validated Instance-, Subject-, and key-bound query.
+
+        Returns:
+            Matching authorized Project.
+
+        """
+        return sqlite_queries.get_project_by_key(self._database_path, command)
+
     def list_tasks(self, command: ListTasks) -> TaskPage:
         """Read one deterministic Project-bound Task page.
 
@@ -137,6 +151,21 @@ class SQLiteRepository:
 
         """
         return sqlite_queries.list_tasks(self._database_path, command)
+
+    def list_tasks_for_instance(self, command: ListInstanceTasks) -> TaskPage:
+        """Read one Task page across authorized Projects in an Instance.
+
+        Args:
+            command: Validated Instance-scoped pagination query.
+
+        Returns:
+            Tasks ordered by Project key and Project-local number.
+
+        """
+        return sqlite_queries.list_tasks_for_instance(
+            self._database_path,
+            command,
+        )
 
     def get_task(self, command: GetTask) -> Task:
         """Read one Task by exact UID or stable Human key.

@@ -1,4 +1,4 @@
-"""Unit tests for read-only Phase 1 query application orchestration."""
+"""Unit tests for cumulative read-only query application orchestration."""
 
 from __future__ import annotations
 
@@ -11,7 +11,9 @@ from workaholic.application import (
     ApplicationError,
     ApplicationErrorCode,
     GetLocalStatus,
+    GetProjectByKey,
     GetTask,
+    ListInstanceTasks,
     ListProjects,
     ListTasks,
     QueryApplication,
@@ -161,7 +163,12 @@ class _RecordingRepository:
         task = _task()
         self.status_result: object = _status()
         self.projects_result: object = (_project(),)
+        self.project_result: object = _project()
         self.tasks_result: object = TaskPage(tasks=(task,), next_cursor=None)
+        self.instance_tasks_result: object = TaskPage(
+            tasks=(task,),
+            next_cursor=None,
+        )
         self.task_result: object = task
         self.commands: list[object] = []
 
@@ -175,10 +182,20 @@ class _RecordingRepository:
         self.commands.append(command)
         return self.projects_result
 
+    def get_project_by_key(self, command: GetProjectByKey) -> object:
+        """Record and return the configured Project output."""
+        self.commands.append(command)
+        return self.project_result
+
     def list_tasks(self, command: ListTasks) -> object:
         """Record and return the configured Task-page output."""
         self.commands.append(command)
         return self.tasks_result
+
+    def list_tasks_for_instance(self, command: ListInstanceTasks) -> object:
+        """Record and return the configured Instance Task-page output."""
+        self.commands.append(command)
+        return self.instance_tasks_result
 
     def get_task(self, command: GetTask) -> object:
         """Record and return the configured Task output."""
@@ -197,8 +214,16 @@ class _MissingGetTaskRepository:
         """Return an empty authorized Project list."""
         return ()
 
+    def get_project_by_key(self, _command: GetProjectByKey) -> Project:
+        """Return one valid authorized Project."""
+        return _project()
+
     def list_tasks(self, _command: ListTasks) -> TaskPage:
         """Return an empty Task page."""
+        return TaskPage(tasks=(), next_cursor=None)
+
+    def list_tasks_for_instance(self, _command: ListInstanceTasks) -> TaskPage:
+        """Return an empty Instance Task page."""
         return TaskPage(tasks=(), next_cursor=None)
 
 
@@ -215,8 +240,20 @@ def test_queries_delegate_exact_validated_commands() -> None:
         instance_id=InstanceId("ins_local"),
         subject_id=SubjectId("sub_local"),
     )
+    project_command = GetProjectByKey(
+        instance_id=InstanceId("ins_local"),
+        subject_id=SubjectId("sub_local"),
+        project_key="ACME",
+    )
     tasks_command = ListTasks(
+        profile="alpha",
         project_id=ProjectId("prj_acme"),
+        subject_id=SubjectId("sub_local"),
+        limit=25,
+    )
+    instance_tasks_command = ListInstanceTasks(
+        profile="alpha",
+        instance_id=InstanceId("ins_local"),
         subject_id=SubjectId("sub_local"),
         limit=25,
     )
@@ -228,12 +265,19 @@ def test_queries_delegate_exact_validated_commands() -> None:
 
     assert application.status(status_command) is repository.status_result
     assert application.list_projects(projects_command) is repository.projects_result
+    assert application.get_project_by_key(project_command) is repository.project_result
     assert application.list_tasks(tasks_command) is repository.tasks_result
+    assert (
+        application.list_tasks_for_instance(instance_tasks_command)
+        is repository.instance_tasks_result
+    )
     assert application.get_task(task_command) is repository.task_result
     assert repository.commands == [
         status_command,
         projects_command,
+        project_command,
         tasks_command,
+        instance_tasks_command,
         task_command,
     ]
 
@@ -254,7 +298,11 @@ def test_each_method_runtime_validates_its_command_type() -> None:
     invocations: tuple[Callable[[], object], ...] = (
         lambda: application.status(cast("GetLocalStatus", object())),
         lambda: application.list_projects(cast("ListProjects", object())),
+        lambda: application.get_project_by_key(cast("GetProjectByKey", object())),
         lambda: application.list_tasks(cast("ListTasks", object())),
+        lambda: application.list_tasks_for_instance(
+            cast("ListInstanceTasks", object())
+        ),
         lambda: application.get_task(cast("GetTask", object())),
     )
 
@@ -277,8 +325,17 @@ def test_invalid_repository_results_map_to_safe_internal_errors() -> None:
         instance_id=InstanceId("ins_local"),
         subject_id=SubjectId("sub_local"),
     )
+    project_command = GetProjectByKey(
+        instance_id=InstanceId("ins_local"),
+        subject_id=SubjectId("sub_local"),
+        project_key="ACME",
+    )
     tasks_command = ListTasks(
         project_id=ProjectId("prj_acme"),
+        subject_id=SubjectId("sub_local"),
+    )
+    instance_tasks_command = ListInstanceTasks(
+        instance_id=InstanceId("ins_local"),
         subject_id=SubjectId("sub_local"),
     )
     task_command = GetTask(
@@ -288,12 +345,16 @@ def test_invalid_repository_results_map_to_safe_internal_errors() -> None:
     )
     repository.status_result = object()
     repository.projects_result = [_project()]
+    repository.project_result = object()
     repository.tasks_result = object()
+    repository.instance_tasks_result = object()
     repository.task_result = object()
     invocations: tuple[Callable[[], object], ...] = (
         lambda: application.status(status_command),
         lambda: application.list_projects(projects_command),
+        lambda: application.get_project_by_key(project_command),
         lambda: application.list_tasks(tasks_command),
+        lambda: application.list_tasks_for_instance(instance_tasks_command),
         lambda: application.get_task(task_command),
     )
 
@@ -353,10 +414,12 @@ def test_type_correct_cross_selection_results_are_rejected() -> None:
         ),
     )
     repository.projects_result = (other_project,)
+    repository.project_result = other_project
     repository.tasks_result = TaskPage(
         tasks=(_other_task(),),
         next_cursor=None,
     )
+    repository.instance_tasks_result = object()
     repository.task_result = _task()
     invocations: tuple[Callable[[], object], ...] = (
         lambda: application.status(
@@ -372,9 +435,22 @@ def test_type_correct_cross_selection_results_are_rejected() -> None:
                 subject_id=SubjectId("sub_local"),
             )
         ),
+        lambda: application.get_project_by_key(
+            GetProjectByKey(
+                instance_id=InstanceId("ins_local"),
+                subject_id=SubjectId("sub_local"),
+                project_key="ACME",
+            )
+        ),
         lambda: application.list_tasks(
             ListTasks(
                 project_id=ProjectId("prj_acme"),
+                subject_id=SubjectId("sub_local"),
+            )
+        ),
+        lambda: application.list_tasks_for_instance(
+            ListInstanceTasks(
+                instance_id=InstanceId("ins_local"),
                 subject_id=SubjectId("sub_local"),
             )
         ),
