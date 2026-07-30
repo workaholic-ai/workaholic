@@ -7,10 +7,9 @@ machine-readable CLI as the agent interface.
 
 > [!WARNING]
 > Workaholic AI is pre-alpha foundation software at version `0.0.0`. The current
-> development revision exposes the complete local Project and Task command
-> surface, but its default executable is not yet connected to local storage. It
-> does not yet provide a durable Task workflow, Agent execution, authentication,
-> or a remote server.
+> development revision implements the local Project and persistent Task workflow
+> with embedded SQLite. Pre-release storage remains disposable. Agent execution,
+> authentication, remote servers, and distributed teams are not implemented.
 
 > [!IMPORTANT]
 > Python 3.14 is the only tested development runtime in Phase 0. There is no
@@ -63,11 +62,9 @@ paths and does not publish an artifact.
 
 ## Current CLI
 
-The CLI application factory accepts an explicit Session provider and exposes
-all six Phase 1 Project and Task operations. This intermediate revision is
-intended for source development and integration testing; invoking these
-operations through the default executable returns a redacted operational error
-until the embedded local composition is connected.
+The default executable composes a short-lived embedded `LocalSession`, exact
+current-directory context, and SQLite storage. It exposes all six Phase 1
+Project and Task operations without starting a daemon.
 
 | Invocation | Current behavior |
 | --- | --- |
@@ -75,12 +72,12 @@ until the embedded local composition is connected.
 | `uv run workaholic --help` | Prints command help |
 | `uv run workaholic --version` | Prints `workaholic 0.0.0` |
 | `uv run python -m workaholic --version` | Runs the same CLI as a Python module |
-| `uv run workaholic up --project-key ACME` | Parses local bootstrap input and delegates through an injected Session |
-| `uv run workaholic status` | Delegates exact-directory status through an injected Session |
-| `uv run workaholic project list` | Delegates the authorized Project list through an injected Session |
-| `uv run workaholic task add "First persistent task"` | Delegates attributable Task creation through an injected Session |
-| `uv run workaholic task list` | Delegates deterministic Task pagination through an injected Session |
-| `uv run workaholic task show ACME-1` | Delegates Task lookup by stable key or canonical UID through an injected Session |
+| `uv run workaholic up --project-key ACME` | Initializes or reopens local SQLite state and exact-directory context |
+| `uv run workaholic status` | Shows exact-directory local status |
+| `uv run workaholic project list` | Lists Projects authorized for the local operator |
+| `uv run workaholic task add "First persistent task"` | Creates one attributable persistent Task |
+| `uv run workaholic task list` | Lists Tasks with deterministic pagination |
+| `uv run workaholic task show ACME-1` | Shows a Task by stable key or canonical UID |
 
 All six commands accept `--json` and `--non-interactive`. The `up` and
 `task add` mutations also accept `--idempotency-key`; Task creation supports
@@ -88,7 +85,7 @@ All six commands accept `--json` and `--non-interactive`. The `up` and
 `--limit`. Their `workaholic.cli/v1` JSON envelopes and documented error exits
 are implemented.
 
-The intended local workflow is:
+The local workflow is:
 
 ```bash
 uv run workaholic up --project-key ACME
@@ -97,9 +94,10 @@ uv run workaholic task list
 uv run workaholic task show ACME-1
 ```
 
-This workflow is a command preview in the current intermediate revision, not
-yet an executable quick start. Use the tested foundation quick start above
-until local composition is connected.
+Set `WORKAHOLIC_DATA_DIR` to an absolute test-owned directory when isolating
+development or automation state. Without the override, Workaholic uses the
+platform user-data directory. Phase 1 reads `.workaholic.env` only from the
+exact current directory.
 
 ## Planned for v1 (not implemented)
 

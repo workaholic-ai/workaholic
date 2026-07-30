@@ -10,6 +10,7 @@ from workaholic.persistence.sqlite._bootstrap import (
     bootstrap_local_project as _bootstrap_local_project,
 )
 from workaholic.persistence.sqlite._tasks import create_task as _create_task
+from workaholic.persistence.sqlite.schema import initialize_empty_store
 
 if TYPE_CHECKING:
     from workaholic.application import (
@@ -68,6 +69,7 @@ class SQLitePhaseOneRepository:
             The committed local identity and Owner authorization graph.
 
         """
+        initialize_empty_store(self._database_path)
         return _bootstrap_local_project(self._database_path, mutation)
 
     def create_task(self, mutation: TaskCreationMutation) -> Task:

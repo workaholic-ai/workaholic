@@ -114,8 +114,8 @@ def test_acquire_session_rejects_non_callable_provider_directly() -> None:
         acquire_session(None)  # type: ignore[arg-type]
 
 
-def test_default_intermediate_app_fails_safely_without_composition() -> None:
-    """The uncomposed source entry point matches its public status notice."""
+def test_unconfigured_factory_app_fails_safely_without_composition() -> None:
+    """The bare CLI factory fixture fails safely without production composition."""
     result = _RUNNER.invoke(default_app, ["status", "--json", "--non-interactive"])
 
     detail = require_error(_completed(result), expected_code="INTERNAL_ERROR")

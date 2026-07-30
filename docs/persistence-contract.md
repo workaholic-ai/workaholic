@@ -7,9 +7,10 @@
 
 ## Current implementation notice
 
-This document specifies the persistence semantics later phases must implement
-and test. The current `0.0.0` package contains package boundaries only and does
-not yet provide a persistence adapter or persisted schema.
+This document specifies persistence semantics implemented incrementally across
+v1. The current `0.0.0` development package implements the Phase 1 SQLite
+adapter and disposable schema version `1`; JSON and PostgreSQL adapters and
+schema migration remain unavailable.
 
 ## Normative language
 

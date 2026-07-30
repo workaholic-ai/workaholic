@@ -14,7 +14,8 @@ from click import unstyle
 from typer.testing import CliRunner
 
 from workaholic.cli.main import app as cli_app
-from workaholic.cli.main import main as cli_entrypoint
+from workaholic.cli.main import main as uncomposed_cli_main
+from workaholic.composition import main as cli_entrypoint
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -118,17 +119,39 @@ def test_console_script_without_command_prints_help(
 def test_public_main_invokes_the_named_application(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The public entry point invokes Typer with the stable program name."""
+    """The public composition entry point invokes Typer with the stable name."""
     program_names: list[str] = []
 
     def fake_app(*, prog_name: str) -> None:
         """Record the program name passed across the CLI boundary."""
         program_names.append(prog_name)
 
+    def fake_create_app(_provider: object) -> object:
+        """Return the recording command application."""
+        return fake_app
+
+    composition = importlib.import_module("workaholic.composition")
+    monkeypatch.setattr(composition, "create_app", fake_create_app)
+
+    cli_entrypoint()
+
+    assert program_names == ["workaholic"]
+
+
+def test_uncomposed_cli_main_retains_named_factory_entry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The internal CLI factory entry remains a stable named wrapper."""
+    program_names: list[str] = []
+
+    def fake_app(*, prog_name: str) -> None:
+        """Record the program name passed to the bare factory app."""
+        program_names.append(prog_name)
+
     cli_module = importlib.import_module("workaholic.cli.main")
     monkeypatch.setattr(cli_module, "app", fake_app)
 
-    cli_entrypoint()
+    uncomposed_cli_main()
 
     assert program_names == ["workaholic"]
 

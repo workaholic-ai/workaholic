@@ -1,6 +1,6 @@
-"""Run Workaholic AI as a Python module."""
+"""Run the composed Workaholic AI CLI as a Python module."""
 
-from workaholic.cli.main import main
+from workaholic.composition import main
 
 if __name__ == "__main__":
     main()

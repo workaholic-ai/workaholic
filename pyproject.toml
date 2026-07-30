@@ -45,7 +45,7 @@ Issues = "https://github.com/workaholic-ai/workaholic/issues"
 Repository = "https://github.com/workaholic-ai/workaholic"
 
 [project.scripts]
-workaholic = "workaholic.cli.main:main"
+workaholic = "workaholic.composition:main"
 
 [dependency-groups]
 dev = [
@@ -136,6 +136,7 @@ name = "Domain and application dependency direction"
 type = "layers"
 containers = ["workaholic"]
 layers = [
+  "composition",
   "cli : tui : server : session : persistence : protocol : client : context",
   "application : auth",
   "domain",

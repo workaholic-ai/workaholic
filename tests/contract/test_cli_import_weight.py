@@ -27,6 +27,8 @@ _EXTERNAL_SERVER_PREFIXES = (
 )
 _PRODUCTION_FORBIDDEN_PREFIXES = (
     *_EXTERNAL_SERVER_PREFIXES,
+    "workaholic.client",
+    "workaholic.protocol",
     "workaholic.server",
 )
 
@@ -148,7 +150,15 @@ def _assert_import_is_light(
         raise AssertionError(message)
 
 
-@pytest.mark.parametrize("module_name", ["workaholic.cli", "workaholic.cli.main"])
+@pytest.mark.parametrize(
+    "module_name",
+    [
+        "workaholic.cli",
+        "workaholic.cli.main",
+        "workaholic.composition",
+        "workaholic.__main__",
+    ],
+)
 def test_normal_cli_import_does_not_load_server_or_postgres_dependencies(
     module_name: str,
     tmp_path: Path,

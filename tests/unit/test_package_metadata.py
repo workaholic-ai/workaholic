@@ -9,7 +9,7 @@ from typing import Any
 
 import pytest
 
-from workaholic.cli.main import main
+from workaholic.composition import main
 
 _DISTRIBUTION_NAME = "workaholic-ai"
 _PROJECT_ROOT = Path(__file__).parents[2]
@@ -48,7 +48,7 @@ def test_source_metadata_matches_foundation_decisions() -> None:
         "pydantic>=2.13.4,<2.14.0",
         "typer>=0.27.0,<0.28.0",
     ]
-    assert project["scripts"] == {"workaholic": "workaholic.cli.main:main"}
+    assert project["scripts"] == {"workaholic": "workaholic.composition:main"}
 
 
 def test_installed_metadata_matches_source_metadata() -> None:
@@ -90,7 +90,7 @@ def test_console_entry_point_loads_public_main() -> None:
     ]
 
     assert len(entry_points) == 1
-    assert entry_points[0].value == "workaholic.cli.main:main"
+    assert entry_points[0].value == "workaholic.composition:main"
     assert entry_points[0].load() is main
 
 

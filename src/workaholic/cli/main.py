@@ -115,10 +115,10 @@ def create_app(session_provider: SessionProvider) -> typer.Typer:
 
 
 def _unconfigured_session() -> WorkaholicSession:
-    """Fail safely until Task 13 installs the local composition root.
+    """Fail safely when the application factory has no composition root.
 
     Raises:
-        RuntimeError: Always; production composition is intentionally pending.
+        RuntimeError: Always; production entry points use ``composition.main``.
 
     """
     message = "The local Session composition root is not configured."
