@@ -33,14 +33,22 @@ checkout, and run:
 
 ```bash
 uv sync --frozen
+export WORKAHOLIC_DATA_DIR="$(mktemp -d "${TMPDIR:-/tmp}/workaholic-quickstart.XXXXXX")"
 uv run workaholic up --project-key ACME
 uv run workaholic task add "First persistent task"
 uv run workaholic task list
 ```
 
 The Task is stored in SQLite and receives the stable key `ACME-1`. Running
-`task list` from the same exact directory in a later terminal or process shows
-the same Task.
+`task list` from the same exact directory in another process shows the same
+Task. To return to this disposable example from a later terminal, export the
+same absolute `WORKAHOLIC_DATA_DIR` value first.
+
+The override keeps the quick start separate from any Instance previously
+created in the default user-data directory. `workaholic up` creates the
+Workspace's `.workaholic.env` itself. Do not copy `.env.example` to that path:
+`.env.example` documents trusted process variables and is not a Workspace
+context file.
 
 ## Version
 
@@ -65,6 +73,11 @@ absolute, test-owned directory before running `up`:
 ```bash
 export WORKAHOLIC_DATA_DIR=/absolute/path/to/disposable-workaholic-data
 ```
+
+The default data directory is shared across source checkouts for the same
+operating-system account. In Phase 1 it contains one Project, so running `up`
+with a different Project key against an existing default Instance fails with
+`PROJECT_KEY_CONFLICT` by design.
 
 The override selects trusted storage; `.workaholic.env` does not. The context
 file is written only in the exact directory where `up` runs, contains no

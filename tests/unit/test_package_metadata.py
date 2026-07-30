@@ -80,6 +80,8 @@ def test_data_directory_override_is_documented() -> None:
     """The trusted local data override is discoverable in the env template."""
     environment_example = (_PROJECT_ROOT / ".env.example").read_text(encoding="utf-8")
 
+    assert "Do not copy this file to .workaholic.env" in environment_example
+    assert "workaholic up creates" in environment_example
     assert environment_example.endswith("WORKAHOLIC_DATA_DIR=\n")
 
 
