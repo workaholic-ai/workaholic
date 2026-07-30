@@ -7,6 +7,7 @@ import typer
 
 from workaholic.cli.project import register_project_commands
 from workaholic.cli.status import register_status_command
+from workaholic.cli.task import register_task_commands
 from workaholic.cli.up import register_up_command
 
 if TYPE_CHECKING:
@@ -98,6 +99,18 @@ def create_app(session_provider: SessionProvider) -> typer.Typer:
         session_provider=session_provider,
     )
     application.add_typer(project_application, name="project")
+
+    task_application = typer.Typer(
+        help="Create and inspect persistent Tasks.",
+        add_completion=False,
+        no_args_is_help=True,
+        pretty_exceptions_enable=False,
+    )
+    register_task_commands(
+        task_application,
+        session_provider=session_provider,
+    )
+    application.add_typer(task_application, name="task")
     return application
 
 

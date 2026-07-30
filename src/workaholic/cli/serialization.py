@@ -5,6 +5,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from workaholic.cli.envelopes import normalize_json_value
+
 if TYPE_CHECKING:
     from workaholic.cli.envelopes import JsonValue
     from workaholic.domain import (
@@ -12,6 +14,7 @@ if TYPE_CHECKING:
         Project,
         ProjectGrant,
         Subject,
+        Task,
         WorkspaceBinding,
     )
 
@@ -67,6 +70,32 @@ def subject_data(
         "display_name": subject.display_name,
         "is_instance_admin": subject.is_instance_admin,
         "project_role": grant.role.value,
+    }
+
+
+def task_data(task: Task) -> dict[str, JsonValue]:
+    """Serialize one Task using the closed Phase 1 CLI shape.
+
+    Args:
+        task: Validated domain Task.
+
+    Returns:
+        Public Task data with all required fields.
+
+    """
+    return {
+        "uid": str(task.uid),
+        "project_id": str(task.project_id),
+        "number": task.number,
+        "key": task.key,
+        "title": task.title,
+        "objective": task.objective,
+        "state": task.state.value,
+        "priority": task.priority,
+        "version": task.version,
+        "created_by": str(task.created_by),
+        "created_at": normalize_json_value(task.created_at),
+        "updated_at": normalize_json_value(task.updated_at),
     }
 
 

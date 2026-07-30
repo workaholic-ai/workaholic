@@ -31,7 +31,7 @@ _PROJECT_ERRORS = (
     ApplicationErrorCode.STORAGE_UNAVAILABLE,
     ApplicationErrorCode.INTERNAL_ERROR,
 )
-_COMMAND_MODULES = ("up.py", "status.py", "project.py")
+_COMMAND_MODULES = ("up.py", "status.py", "project.py", "task.py")
 _FORBIDDEN_IMPORTS = (
     "workaholic.application",
     "workaholic.context",
