@@ -8,7 +8,7 @@ from pathlib import Path
 from types import MappingProxyType
 
 from workaholic.context.errors import ContextInvalidError, ProfileInvalidError
-from workaholic.domain import validate_profile_name
+from workaholic.domain import WorkspaceBinding, validate_profile_name
 
 _DATABASE_FILENAME = "local.db"
 
@@ -121,3 +121,34 @@ class ProfileRegistry:
 
         object.__setattr__(self, "default_profile", default_profile)
         object.__setattr__(self, "profiles", MappingProxyType(copied))
+
+
+@dataclass(frozen=True, slots=True)
+class DiscoveredWorkspace:
+    """Validated binding, source file, and contained physical Workspace root."""
+
+    binding: WorkspaceBinding
+    context_file: Path
+    workspace_root: Path
+
+    def __post_init__(self) -> None:
+        """Validate the complete discovery-result relationship."""
+        binding: object = self.binding
+        context_file: object = self.context_file
+        workspace_root: object = self.workspace_root
+        if not isinstance(binding, WorkspaceBinding):
+            raise ContextInvalidError
+        if not isinstance(context_file, Path) or not isinstance(
+            workspace_root,
+            Path,
+        ):
+            raise ContextInvalidError
+        if not context_file.is_absolute() or not workspace_root.is_absolute():
+            raise ContextInvalidError
+        if context_file.name != ".workaholic.env":
+            raise ContextInvalidError
+        context_directory = context_file.parent
+        if workspace_root != context_directory and (
+            context_directory not in workspace_root.parents
+        ):
+            raise ContextInvalidError

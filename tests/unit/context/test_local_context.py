@@ -19,6 +19,7 @@ from workaholic.context import (
     exclude_context_from_git,
     read_current_workspace_context,
     write_current_workspace_context,
+    write_workspace_context,
 )
 from workaholic.context import local as local_context
 from workaholic.domain import InstanceId, ProjectId, WorkspaceBinding
@@ -36,11 +37,18 @@ _CANONICAL_CONTEXT = (
 )
 
 
-def _binding(*, project_key: str = "ACME") -> WorkspaceBinding:
+def _binding(
+    *,
+    project_key: str = "ACME",
+    profile: str = "local",
+    workspace_root: str = ".",
+) -> WorkspaceBinding:
     """Build one valid local Workspace binding.
 
     Args:
         project_key: Project key override for conflict tests.
+        profile: Trusted profile name to serialize.
+        workspace_root: Relative Workspace root from the context directory.
 
     Returns:
         A valid exact-directory binding.
@@ -48,11 +56,11 @@ def _binding(*, project_key: str = "ACME") -> WorkspaceBinding:
     """
     return WorkspaceBinding(
         context_version=1,
-        profile="local",
+        profile=profile,
         instance_id=InstanceId("ins_local"),
         project_id=ProjectId("prj_acme"),
         project_key=project_key,
-        workspace_root=".",
+        workspace_root=workspace_root,
     )
 
 
@@ -91,7 +99,7 @@ def test_read_operating_system_failure_is_mapped_safely(
         message = "private filesystem failure"
         raise OSError(message)
 
-    monkeypatch.setattr(local_context, "_read_regular_file", fail_read)
+    monkeypatch.setattr(local_context, "_read_regular_file_snapshot", fail_read)
 
     with pytest.raises(ContextStorageError) as captured:
         read_current_workspace_context(tmp_path)
@@ -120,6 +128,20 @@ def test_write_is_canonical_private_and_round_trips(tmp_path: Path) -> None:
     assert context_path.read_bytes() == _CANONICAL_CONTEXT.encode()
     assert stat.S_IMODE(context_path.stat().st_mode) == 0o600
     assert read_current_workspace_context(tmp_path) == _binding()
+
+
+def test_phase_two_profile_and_relative_root_round_trip(tmp_path: Path) -> None:
+    """The strict format carries validated profile names and relative roots."""
+    workspace_root = tmp_path / "apps" / "api"
+    workspace_root.mkdir(parents=True)
+    binding = _binding(profile="team_1", workspace_root="apps/api")
+
+    context_path = write_workspace_context(tmp_path, binding)
+
+    assert read_current_workspace_context(tmp_path) == binding
+    assert context_path.read_text(encoding="utf-8").endswith(
+        "WORKAHOLIC_WORKSPACE_ROOT=apps/api\n"
+    )
 
 
 def test_equivalent_existing_context_is_not_rewritten(
@@ -234,10 +256,6 @@ def test_atomic_no_clobber_publish_preserves_existing_file(tmp_path: Path) -> No
         _CANONICAL_CONTEXT.replace(
             "WORKAHOLIC_CONTEXT_VERSION=1",
             "WORKAHOLIC_CONTEXT_VERSION=2",
-        ),
-        _CANONICAL_CONTEXT.replace(
-            "WORKAHOLIC_PROFILE=local",
-            "WORKAHOLIC_PROFILE=remote",
         ),
         _CANONICAL_CONTEXT.replace(
             "WORKAHOLIC_WORKSPACE_ROOT=.",
@@ -438,7 +456,7 @@ def test_writer_runtime_validates_the_binding_type(tmp_path: Path) -> None:
     ("field_name", "invalid_value"),
     [
         ("context_version", 2),
-        ("profile", "remote"),
+        ("profile", "INVALID"),
         ("workspace_root", ".."),
     ],
 )
@@ -453,6 +471,126 @@ def test_writer_defends_against_compromised_binding_instances(
 
     with pytest.raises(ContextInvalidError):
         write_current_workspace_context(tmp_path, binding)
+
+
+def test_replace_updates_only_a_valid_conflicting_context(tmp_path: Path) -> None:
+    """Explicit replacement atomically publishes a private validated binding."""
+    _write_text(
+        tmp_path,
+        _CANONICAL_CONTEXT.replace(
+            "WORKAHOLIC_PROJECT_KEY=ACME",
+            "WORKAHOLIC_PROJECT_KEY=OTHER",
+        ),
+    )
+
+    context_path = write_workspace_context(tmp_path, _binding(), replace=True)
+
+    assert read_current_workspace_context(tmp_path) == _binding()
+    assert stat.S_IMODE(context_path.stat().st_mode) == 0o600
+
+
+@pytest.mark.parametrize(
+    "existing_shape",
+    ["malformed", "symlink", "directory", "invalid-root"],
+)
+def test_replace_never_overwrites_unsafe_context(
+    existing_shape: str,
+    tmp_path: Path,
+) -> None:
+    """Replacement fails closed unless the existing file parsed safely."""
+    context_path = tmp_path / CONTEXT_FILENAME
+    if existing_shape == "malformed":
+        context_path.write_text("malformed", encoding="utf-8")
+    elif existing_shape == "symlink":
+        target = tmp_path / "target"
+        target.write_text(_CANONICAL_CONTEXT, encoding="utf-8")
+        context_path.symlink_to(target)
+    elif existing_shape == "invalid-root":
+        context_path.write_text(
+            _CANONICAL_CONTEXT.replace(
+                "WORKAHOLIC_WORKSPACE_ROOT=.",
+                "WORKAHOLIC_WORKSPACE_ROOT=missing",
+            ),
+            encoding="utf-8",
+        )
+    else:
+        context_path.mkdir()
+
+    with pytest.raises(ContextInvalidError):
+        write_workspace_context(tmp_path, _binding(), replace=True)
+
+    if existing_shape in {"malformed", "invalid-root"}:
+        assert context_path.is_file()
+    elif existing_shape == "directory":
+        assert context_path.is_dir()
+    else:
+        assert context_path.is_symlink()
+
+
+def test_concurrent_replacement_aborts_validated_update(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """A destination identity change after parsing is never overwritten."""
+    context_path = _write_text(
+        tmp_path,
+        _CANONICAL_CONTEXT.replace(
+            "WORKAHOLIC_PROJECT_KEY=ACME",
+            "WORKAHOLIC_PROJECT_KEY=OTHER",
+        ),
+    )
+    competing = _CANONICAL_CONTEXT.replace(
+        "WORKAHOLIC_PROJECT_KEY=ACME",
+        "WORKAHOLIC_PROJECT_KEY=THIRD",
+    )
+    original_check = local_context._require_unchanged_regular_file
+
+    def replace_before_check(path: Path, expected: os.stat_result) -> None:
+        """Install a competing inode immediately before the identity check."""
+        replacement = tmp_path / "competing"
+        replacement.write_text(competing, encoding="utf-8", newline="")
+        replacement.replace(path)
+        original_check(path, expected)
+
+    monkeypatch.setattr(
+        local_context,
+        "_require_unchanged_regular_file",
+        replace_before_check,
+    )
+
+    with pytest.raises(ContextInvalidError):
+        write_workspace_context(tmp_path, _binding(), replace=True)
+
+    assert context_path.read_text(encoding="utf-8") == competing
+    assert not any(
+        path.name.startswith(f".{CONTEXT_FILENAME}.") for path in tmp_path.iterdir()
+    )
+
+
+def test_writer_rejects_non_boolean_replace_and_escaping_root(
+    tmp_path: Path,
+) -> None:
+    """Runtime flags and physical root containment fail closed."""
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "linked").symlink_to(outside, target_is_directory=True)
+
+    with pytest.raises(ContextInvalidError):
+        write_workspace_context(
+            workspace,
+            _binding(workspace_root="linked"),
+            replace=False,
+        )
+    with pytest.raises(ContextInvalidError):
+        write_workspace_context(
+            workspace,
+            _binding(),
+            replace=cast("bool", 1),
+        )
+
+    assert not (workspace / CONTEXT_FILENAME).exists()
 
 
 def test_git_exclude_is_local_preserved_and_idempotent(tmp_path: Path) -> None:

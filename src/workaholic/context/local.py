@@ -1,4 +1,4 @@
-"""Strict exact-directory Workspace context parsing and durable writing."""
+"""Strict Workspace context parsing, discovery, and durable writing."""
 
 from __future__ import annotations
 
@@ -9,14 +9,17 @@ from contextlib import suppress
 from pathlib import Path
 
 from workaholic.context._files import (
+    RegularFileSnapshot,
     UnsafeDataFileError,
     read_bounded_regular_file,
+    read_bounded_regular_file_snapshot,
 )
 from workaholic.context.errors import (
     ContextInvalidError,
     ContextNotFoundError,
     ContextStorageError,
 )
+from workaholic.context.models import DiscoveredWorkspace
 from workaholic.domain import (
     InstanceId,
     ProjectId,
@@ -54,67 +57,139 @@ def read_current_workspace_context(directory: Path) -> WorkspaceBinding:
 
     """
     context_path = _context_path(directory)
-    try:
-        content = _read_regular_file(context_path, maximum=_CONTEXT_MAX_BYTES)
-    except FileNotFoundError as error:
-        raise ContextNotFoundError from error
-    except ContextInvalidError:
-        raise
-    except OSError as error:
-        message = "The Workspace context could not be read."
-        raise ContextStorageError(message) from error
+    binding, _metadata = _read_context_file(context_path)
+    return binding
+
+
+def discover_workspace_context(start: Path) -> DiscoveredWorkspace:
+    """Discover the nearest authoritative context through physical ancestors.
+
+    Args:
+        start: Existing directory from which canonical discovery begins.
+
+    Returns:
+        Validated binding, physical context source, and contained Workspace root.
+
+    Raises:
+        ContextNotFoundError: If no physical ancestor contains context.
+        ContextInvalidError: If the start, nearest context, or root is invalid.
+        ContextStorageError: If a context file or ancestor cannot be inspected.
+
+    """
+    current = _canonical_directory(start)
+    while True:
+        context_path = current / CONTEXT_FILENAME
+        try:
+            binding, metadata = _read_context_file(context_path)
+        except ContextNotFoundError:
+            parent = current.parent
+            if parent == current:
+                raise
+            current = parent
+            continue
+        workspace_root = _resolve_workspace_root(current, binding.workspace_root)
+        _require_unchanged_regular_file(context_path, metadata)
+        return DiscoveredWorkspace(
+            binding=binding,
+            context_file=context_path,
+            workspace_root=workspace_root,
+        )
+
+
+def write_workspace_context(
+    directory: Path,
+    binding: WorkspaceBinding,
+    *,
+    replace: bool = False,
+) -> Path:
+    """Atomically create or safely replace one strict Workspace context.
+
+    An equivalent valid file is an idempotent success. Replacement requires a
+    conflicting file to remain the same regular-file snapshot that was parsed.
+
+    Args:
+        directory: Existing Workspace directory receiving context.
+        binding: Validated relative-root binding to serialize.
+        replace: Whether a conflicting valid regular context may be replaced.
+
+    Returns:
+        Canonical physical path to the context file.
+
+    Raises:
+        ContextInvalidError: If input, context, root, or replacement is unsafe.
+        ContextStorageError: If a durable filesystem operation fails.
+
+    """
+    candidate_replace: object = replace
+    if type(candidate_replace) is not bool:
+        message = "Workspace context replace must be a boolean."
+        raise ContextInvalidError(message)
+    context_directory = _canonical_directory(directory)
+    validated_binding = _validated_binding(binding)
+    _resolve_workspace_root(context_directory, validated_binding.workspace_root)
+    context_path = context_directory / CONTEXT_FILENAME
 
     try:
-        text = content.decode("utf-8")
-    except UnicodeDecodeError as error:
-        message = "The Workspace context must be UTF-8."
-        raise ContextInvalidError(message) from error
-    return _parse_context(text)
+        existing, metadata = _read_context_file(context_path)
+    except ContextNotFoundError:
+        serialized = _serialize_context(validated_binding).encode("utf-8")
+        created = _atomic_write_bytes(
+            context_path,
+            serialized,
+            mode=0o600,
+            replace_existing=False,
+        )
+        if created:
+            return context_path
+        try:
+            raced_binding, _raced_metadata = _read_context_file(context_path)
+        except ContextNotFoundError as error:
+            message = "The Workspace context changed during creation."
+            raise ContextInvalidError(message) from error
+        _resolve_workspace_root(context_directory, raced_binding.workspace_root)
+        if raced_binding == validated_binding:
+            return context_path
+        message = "The current directory is already bound to different context."
+        raise ContextInvalidError(message) from None
+
+    _resolve_workspace_root(context_directory, existing.workspace_root)
+    if existing == validated_binding:
+        return context_path
+    if not replace:
+        message = "The current directory is already bound to different context."
+        raise ContextInvalidError(message)
+
+    _atomic_write_bytes(
+        context_path,
+        _serialize_context(validated_binding).encode("utf-8"),
+        mode=0o600,
+        expected_destination=metadata,
+    )
+    return context_path
 
 
 def write_current_workspace_context(
     directory: Path,
     context: WorkspaceBinding,
 ) -> Path:
-    """Atomically write one strict context file in the exact directory.
+    """Create one context in the supplied current directory without replacing.
 
-    Existing equivalent context is returned without a rewrite. Existing
-    conflicting or malformed context is never overwritten.
+    This cumulative compatibility entry point delegates to
+    :func:`write_workspace_context`.
 
     Args:
         directory: Existing Workspace directory.
         context: Validated logical binding to serialize.
 
     Returns:
-        The exact context-file path.
+        The canonical physical context-file path.
 
     Raises:
-        ContextInvalidError: If the target or binding violates Phase 1 rules.
+        ContextInvalidError: If the target or binding violates context rules.
         ContextStorageError: If the write cannot be completed durably.
 
     """
-    context_path = _context_path(directory)
-    _require_phase_one_binding(context)
-    if context_path.exists() or context_path.is_symlink():
-        existing = read_current_workspace_context(directory)
-        if existing != context:
-            message = "The current directory is already bound to different context."
-            raise ContextInvalidError(message)
-        return context_path
-
-    serialized = _serialize_context(context).encode("utf-8")
-    created = _atomic_write_bytes(
-        context_path,
-        serialized,
-        mode=0o600,
-        replace_existing=False,
-    )
-    if not created:
-        existing = read_current_workspace_context(directory)
-        if existing != context:
-            message = "The current directory is already bound to different context."
-            raise ContextInvalidError(message)
-    return context_path
+    return write_workspace_context(directory, context)
 
 
 def exclude_context_from_git(directory: Path) -> None:
@@ -230,6 +305,73 @@ def _require_directory(value: object) -> Path:
     return value
 
 
+def _canonical_directory(value: object) -> Path:
+    """Resolve one existing directory to its absolute physical path.
+
+    Args:
+        value: Candidate discovery or context-write directory.
+
+    Returns:
+        Existing canonical physical directory.
+
+    Raises:
+        ContextInvalidError: If the value does not resolve to a directory.
+        ContextStorageError: If operating-system inspection fails.
+
+    """
+    if not isinstance(value, Path):
+        message = "The Workspace directory must be a pathlib Path."
+        raise ContextInvalidError(message)
+    try:
+        directory = value.resolve(strict=True)
+        is_directory = directory.is_dir()
+    except (FileNotFoundError, NotADirectoryError, RuntimeError) as error:
+        message = "The Workspace directory must already exist."
+        raise ContextInvalidError(message) from error
+    except OSError as error:
+        message = "The Workspace directory is unavailable."
+        raise ContextStorageError(message) from error
+    if not is_directory:
+        message = "The Workspace directory must already exist."
+        raise ContextInvalidError(message)
+    return directory
+
+
+def _resolve_workspace_root(
+    context_directory: Path,
+    relative_root: str,
+) -> Path:
+    """Resolve and contain one binding root beneath its physical context.
+
+    Args:
+        context_directory: Canonical directory containing the context file.
+        relative_root: Domain-validated repository-relative Workspace root.
+
+    Returns:
+        Existing canonical physical Workspace directory.
+
+    Raises:
+        ContextInvalidError: If the root is missing, not a directory, or escapes.
+
+    """
+    candidate = context_directory.joinpath(*relative_root.split("/"))
+    try:
+        workspace_root = candidate.resolve(strict=True)
+        is_directory = workspace_root.is_dir()
+    except (OSError, RuntimeError) as error:
+        message = "The Workspace root from context is unavailable."
+        raise ContextInvalidError(message) from error
+    if not is_directory:
+        message = "The Workspace root from context must be a directory."
+        raise ContextInvalidError(message)
+    if workspace_root != context_directory and (
+        context_directory not in workspace_root.parents
+    ):
+        message = "The Workspace root must remain within its context directory."
+        raise ContextInvalidError(message)
+    return workspace_root
+
+
 def _require_safe_git_exclude(metadata: os.stat_result) -> None:
     """Require conventional Git exclude metadata to describe a regular file.
 
@@ -263,6 +405,69 @@ def _read_regular_file(path: Path, *, maximum: int) -> bytes:
     """
     try:
         return read_bounded_regular_file(path, maximum=maximum)
+    except UnsafeDataFileError as error:
+        message = "The Workspace context must be one bounded regular file."
+        raise ContextInvalidError(message) from error
+
+
+def _read_context_file(path: Path) -> tuple[WorkspaceBinding, os.stat_result]:
+    """Read and parse one exact context file with stable identity metadata.
+
+    Args:
+        path: Exact candidate context-file path.
+
+    Returns:
+        Validated binding and the metadata snapshot that supplied its bytes.
+
+    Raises:
+        ContextNotFoundError: If the exact file does not exist.
+        ContextInvalidError: If the file or contents are unsafe or malformed.
+        ContextStorageError: If the file cannot be inspected or read.
+
+    """
+    try:
+        snapshot = _read_regular_file_snapshot(
+            path,
+            maximum=_CONTEXT_MAX_BYTES,
+        )
+    except FileNotFoundError as error:
+        raise ContextNotFoundError from error
+    except ContextInvalidError:
+        raise
+    except OSError as error:
+        message = "The Workspace context could not be read."
+        raise ContextStorageError(message) from error
+
+    try:
+        text = snapshot.content.decode("utf-8")
+    except UnicodeDecodeError as error:
+        message = "The Workspace context must be UTF-8."
+        raise ContextInvalidError(message) from error
+    return _parse_context(text), snapshot.metadata
+
+
+def _read_regular_file_snapshot(
+    path: Path,
+    *,
+    maximum: int,
+) -> RegularFileSnapshot:
+    """Read a context file through the shared stable snapshot boundary.
+
+    Args:
+        path: Exact file path.
+        maximum: Maximum accepted byte count.
+
+    Returns:
+        Validated stable file snapshot.
+
+    Raises:
+        FileNotFoundError: If the path does not exist.
+        ContextInvalidError: If the path is unsafe, unstable, or oversized.
+        OSError: If the operating system cannot read or inspect the path.
+
+    """
+    try:
+        return read_bounded_regular_file_snapshot(path, maximum=maximum)
     except UnsafeDataFileError as error:
         message = "The Workspace context must be one bounded regular file."
         raise ContextInvalidError(message) from error
@@ -316,49 +521,48 @@ def _parse_context(text: str) -> WorkspaceBinding:
     if values["WORKAHOLIC_CONTEXT_VERSION"] != "1":
         message = "Workspace context version is unsupported."
         raise ContextInvalidError(message)
-    if values["WORKAHOLIC_PROFILE"] != "local":
-        message = "Workspace profile must be local in Phase 1."
-        raise ContextInvalidError(message)
-    if values["WORKAHOLIC_WORKSPACE_ROOT"] != ".":
-        message = "Workspace root must be the exact current directory in Phase 1."
-        raise ContextInvalidError(message)
     try:
         return WorkspaceBinding(
             context_version=1,
-            profile="local",
+            profile=values["WORKAHOLIC_PROFILE"],
             instance_id=InstanceId(values["WORKAHOLIC_INSTANCE_ID"]),
             project_id=ProjectId(values["WORKAHOLIC_PROJECT_ID"]),
             project_key=values["WORKAHOLIC_PROJECT_KEY"],
-            workspace_root=".",
+            workspace_root=values["WORKAHOLIC_WORKSPACE_ROOT"],
         )
     except ValueError as error:
         message = "Workspace context identifiers are invalid."
         raise ContextInvalidError(message) from error
 
 
-def _require_phase_one_binding(value: object) -> WorkspaceBinding:
-    """Validate a binding before serialization.
+def _validated_binding(value: object) -> WorkspaceBinding:
+    """Reconstruct and validate a binding before serialization.
 
     Args:
         value: Candidate binding.
 
     Returns:
-        The accepted Phase 1 binding.
+        A fresh validated cumulative binding.
 
     Raises:
-        ContextInvalidError: If the value is not exact-directory local context.
+        ContextInvalidError: If the value violates the cumulative context contract.
 
     """
     if not isinstance(value, WorkspaceBinding):
         message = "Workspace context must be a WorkspaceBinding."
         raise ContextInvalidError(message)
-    if value.context_version != 1 or value.profile != "local":
-        message = "Workspace context must use the Phase 1 local format."
-        raise ContextInvalidError(message)
-    if value.workspace_root != ".":
-        message = "Workspace root must be the exact current directory in Phase 1."
-        raise ContextInvalidError(message)
-    return value
+    try:
+        return WorkspaceBinding(
+            context_version=value.context_version,
+            profile=value.profile,
+            instance_id=value.instance_id,
+            project_id=value.project_id,
+            project_key=value.project_key,
+            workspace_root=value.workspace_root,
+        )
+    except ValueError as error:
+        message = "Workspace context binding is invalid."
+        raise ContextInvalidError(message) from error
 
 
 def _serialize_context(context: WorkspaceBinding) -> str:
@@ -373,11 +577,11 @@ def _serialize_context(context: WorkspaceBinding) -> str:
     """
     return (
         "WORKAHOLIC_CONTEXT_VERSION=1\n"
-        "WORKAHOLIC_PROFILE=local\n"
+        f"WORKAHOLIC_PROFILE={context.profile}\n"
         f"WORKAHOLIC_INSTANCE_ID={context.instance_id}\n"
         f"WORKAHOLIC_PROJECT_ID={context.project_id}\n"
         f"WORKAHOLIC_PROJECT_KEY={context.project_key}\n"
-        "WORKAHOLIC_WORKSPACE_ROOT=.\n"
+        f"WORKAHOLIC_WORKSPACE_ROOT={context.workspace_root}\n"
     )
 
 
@@ -387,6 +591,7 @@ def _atomic_write_bytes(
     *,
     mode: int,
     replace_existing: bool = True,
+    expected_destination: os.stat_result | None = None,
 ) -> bool:
     """Atomically publish one local file after flushing its contents.
 
@@ -395,6 +600,8 @@ def _atomic_write_bytes(
         content: Complete replacement bytes.
         mode: Permission bits for the replacement.
         replace_existing: Whether an existing destination may be replaced.
+        expected_destination: Validated destination snapshot required before
+            replacement.
 
     Returns:
         ``True`` after publication, or ``False`` when no-clobber publication
@@ -422,6 +629,8 @@ def _atomic_write_bytes(
                 os.close(descriptor)
             raise
         if replace_existing:
+            if expected_destination is not None:
+                _require_unchanged_regular_file(path, expected_destination)
             temporary_path.replace(path)
         else:
             try:
@@ -439,6 +648,37 @@ def _atomic_write_bytes(
             with suppress(OSError):
                 temporary_path.unlink(missing_ok=True)
     return True
+
+
+def _require_unchanged_regular_file(
+    path: Path,
+    expected: os.stat_result,
+) -> None:
+    """Require the destination to match its parsed regular-file snapshot.
+
+    Args:
+        path: Exact context path about to be atomically replaced.
+        expected: Metadata captured from the bytes that passed strict parsing.
+
+    Raises:
+        ContextInvalidError: If the destination is missing, unsafe, or changed.
+
+    """
+    try:
+        current = path.lstat()
+    except OSError as error:
+        message = "The Workspace context changed after it was read."
+        raise ContextInvalidError(message) from error
+    if (
+        stat.S_ISLNK(current.st_mode)
+        or not stat.S_ISREG(current.st_mode)
+        or not os.path.samestat(expected, current)
+        or expected.st_size != current.st_size
+        or expected.st_mtime_ns != current.st_mtime_ns
+        or expected.st_ctime_ns != current.st_ctime_ns
+    ):
+        message = "The Workspace context changed after it was read."
+        raise ContextInvalidError(message)
 
 
 def _fsync_directory(directory: Path) -> None:
