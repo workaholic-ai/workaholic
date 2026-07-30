@@ -142,6 +142,25 @@ class TaskRepository(Protocol):
         ...
 
 
+class ProjectRepository(Protocol):
+    """Persist atomic Project creation through one semantic operation."""
+
+    def create_project(
+        self,
+        mutation: ProjectCreationMutation,
+    ) -> ProjectCreationResult:
+        """Atomically create one Project and its creator Owner grant.
+
+        Args:
+            mutation: Validated Project creation mutation.
+
+        Returns:
+            The committed Project and grant.
+
+        """
+        ...
+
+
 class QueryRepository(Protocol):
     """Read existing local status, Projects, and Tasks without mutation."""
 
@@ -196,26 +215,12 @@ class QueryRepository(Protocol):
 
 class WorkaholicRepository(
     BootstrapRepository,
+    ProjectRepository,
     TaskRepository,
     QueryRepository,
     Protocol,
 ):
     """Persist cumulative operations through explicit semantic methods."""
-
-    def create_project(
-        self,
-        mutation: ProjectCreationMutation,
-    ) -> ProjectCreationResult:
-        """Atomically create one Project and its creator Owner grant.
-
-        Args:
-            mutation: Validated Project creation mutation.
-
-        Returns:
-            The committed Project and grant.
-
-        """
-        ...
 
     def get_project_by_key(self, command: GetProjectByKey) -> Project:
         """Read one authorized Project by immutable key.

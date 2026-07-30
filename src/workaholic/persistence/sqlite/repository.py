@@ -9,6 +9,7 @@ from workaholic.persistence.sqlite import _queries as sqlite_queries
 from workaholic.persistence.sqlite._bootstrap import (
     bootstrap_local_project as _bootstrap_local_project,
 )
+from workaholic.persistence.sqlite._projects import create_project as _create_project
 from workaholic.persistence.sqlite._tasks import create_task as _create_task
 from workaholic.persistence.sqlite.schema import initialize_empty_store
 
@@ -20,6 +21,8 @@ if TYPE_CHECKING:
         GetTask,
         ListProjects,
         ListTasks,
+        ProjectCreationMutation,
+        ProjectCreationResult,
         StatusResult,
         TaskCreationMutation,
         TaskPage,
@@ -83,6 +86,21 @@ class SQLiteRepository:
 
         """
         return _create_task(self._database_path, mutation)
+
+    def create_project(
+        self,
+        mutation: ProjectCreationMutation,
+    ) -> ProjectCreationResult:
+        """Atomically create one Project and grant its creator Owner access.
+
+        Args:
+            mutation: Validated Project creation mutation.
+
+        Returns:
+            The new or idempotently replayed Project and Owner grant.
+
+        """
+        return _create_project(self._database_path, mutation)
 
     def get_local_status(self, command: GetLocalStatus) -> StatusResult:
         """Read authorized local status without mutating storage.

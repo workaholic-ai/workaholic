@@ -35,10 +35,12 @@ from workaholic.application.ports import (
     BootstrapRepository,
     Clock,
     IdentifierFactory,
+    ProjectRepository,
     QueryRepository,
     TaskRepository,
     WorkaholicRepository,
 )
+from workaholic.application.projects import ProjectApplication
 from workaholic.application.queries import QueryApplication
 from workaholic.application.results import (
     BootstrapResult,
@@ -76,10 +78,12 @@ __all__ = [
     "ProfileInvalidError",
     "ProfileNotFoundError",
     "ProfileUnsupportedError",
+    "ProjectApplication",
     "ProjectCreationMutation",
     "ProjectCreationResult",
     "ProjectKeyConflictError",
     "ProjectNotFoundError",
+    "ProjectRepository",
     "QueryApplication",
     "QueryRepository",
     "StatusResult",
