@@ -207,6 +207,39 @@ class PermissionDeniedError(ApplicationError):
         )
 
 
+class InvalidInputError(ApplicationError):
+    """Report malformed validated-boundary input such as an opaque cursor."""
+
+    def __init__(self) -> None:
+        """Initialize the stable invalid-input failure."""
+        super().__init__(
+            ApplicationErrorCode.INVALID_INPUT,
+            "The supplied input is invalid.",
+        )
+
+
+class NotInitializedError(ApplicationError):
+    """Report a valid store without the referenced local identity state."""
+
+    def __init__(self) -> None:
+        """Initialize the stable missing-initialization failure."""
+        super().__init__(
+            ApplicationErrorCode.NOT_INITIALIZED,
+            "The referenced local Instance is not initialized.",
+        )
+
+
+class TaskNotFoundError(ApplicationError):
+    """Report that a scoped Task UID or Human key does not resolve."""
+
+    def __init__(self) -> None:
+        """Initialize the stable missing-Task failure."""
+        super().__init__(
+            ApplicationErrorCode.TASK_NOT_FOUND,
+            "The requested Task was not found in the selected Project.",
+        )
+
+
 def _validate_safe_message(value: object) -> str:
     """Validate one bounded message without terminal control characters.
 

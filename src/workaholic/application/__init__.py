@@ -16,10 +16,14 @@ from workaholic.application.errors import (
     ApplicationErrorCode,
     ExitCategory,
     IdempotencyConflictError,
+    InvalidInputError,
+    NotInitializedError,
     PermissionDeniedError,
     ProjectKeyConflictError,
+    TaskNotFoundError,
 )
 from workaholic.application.ports import Clock, IdentifierFactory, PhaseOneRepository
+from workaholic.application.queries import QueryApplication
 from workaholic.application.results import (
     BootstrapResult,
     StatusResult,
@@ -41,13 +45,17 @@ __all__ = [
     "GetTask",
     "IdempotencyConflictError",
     "IdentifierFactory",
+    "InvalidInputError",
     "ListProjects",
     "ListTasks",
+    "NotInitializedError",
     "PermissionDeniedError",
     "PhaseOneRepository",
     "ProjectKeyConflictError",
+    "QueryApplication",
     "StatusResult",
     "TaskApplication",
     "TaskCreationMutation",
+    "TaskNotFoundError",
     "TaskPage",
 ]

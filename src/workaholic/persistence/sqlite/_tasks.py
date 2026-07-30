@@ -14,24 +14,25 @@ from workaholic.application import (
 from workaholic.domain import (
     INITIAL_TASK_VERSION,
     JsonScalar,
-    ProjectId,
     ProjectRole,
-    SubjectId,
     SubjectKind,
     Task,
     TaskEvent,
     TaskEventId,
     TaskEventType,
-    TaskId,
     TaskState,
     build_task_key,
 )
 from workaholic.persistence.sqlite._records import (
     canonical_json,
-    parse_timestamp,
     require_integer,
     require_text,
     serialize_timestamp,
+)
+from workaholic.persistence.sqlite._task_records import (
+    TASK_FIELD_SET,
+    task_from_mapping,
+    task_mapping,
 )
 from workaholic.persistence.sqlite.connection import open_write_transaction
 from workaholic.persistence.sqlite.errors import StorageUnavailableError
@@ -43,21 +44,6 @@ if TYPE_CHECKING:
 
 _CREATE_TASK_OPERATION: Final = "task.create"
 _TASK_OUTCOME_KEYS: Final = frozenset(("event_id", "task"))
-_TASK_FIELDS: Final = (
-    "uid",
-    "project_id",
-    "number",
-    "key",
-    "title",
-    "objective",
-    "state",
-    "priority",
-    "version",
-    "created_by",
-    "created_at",
-    "updated_at",
-)
-_TASK_FIELD_SET: Final = frozenset(_TASK_FIELDS)
 
 
 def create_task(database_path: Path, mutation: TaskCreationMutation) -> Task:
@@ -398,7 +384,7 @@ def _record_idempotent_task(
     outcome = canonical_json(
         {
             "event_id": str(event.id),
-            "task": _task_mapping(task),
+            "task": task_mapping(task),
         }
     )
     connection.execute(
@@ -417,32 +403,6 @@ def _record_idempotent_task(
             serialize_timestamp(mutation.occurred_at),
         ),
     )
-
-
-def _task_mapping(task: Task) -> dict[str, object]:
-    """Serialize a Task result into its exact durable replay shape.
-
-    Args:
-        task: Validated Task result.
-
-    Returns:
-        JSON-compatible stable Task field mapping.
-
-    """
-    return {
-        "created_at": serialize_timestamp(task.created_at),
-        "created_by": str(task.created_by),
-        "key": task.key,
-        "number": task.number,
-        "objective": task.objective,
-        "priority": task.priority,
-        "project_id": str(task.project_id),
-        "state": task.state.value,
-        "title": task.title,
-        "uid": str(task.uid),
-        "updated_at": serialize_timestamp(task.updated_at),
-        "version": task.version,
-    }
 
 
 def _parse_task_outcome(value: str) -> tuple[TaskEventId, Task]:
@@ -465,33 +425,7 @@ def _parse_task_outcome(value: str) -> tuple[TaskEventId, Task]:
     task_data = decoded.get("task")
     if not isinstance(event_id, str) or not isinstance(task_data, dict):
         raise StorageUnavailableError
-    if set(task_data) != _TASK_FIELD_SET:
+    if set(task_data) != TASK_FIELD_SET:
         raise StorageUnavailableError
     task_mapping = cast("Mapping[str, object]", task_data)
-    return TaskEventId(event_id), _task_from_mapping(task_mapping)
-
-
-def _task_from_mapping(value: Mapping[str, object]) -> Task:
-    """Deserialize and validate one durable Task replay mapping.
-
-    Args:
-        value: Exact persisted Task field mapping.
-
-    Returns:
-        Validated immutable Task.
-
-    """
-    return Task(
-        uid=TaskId(require_text(value["uid"])),
-        project_id=ProjectId(require_text(value["project_id"])),
-        number=require_integer(value["number"]),
-        key=require_text(value["key"]),
-        title=require_text(value["title"]),
-        objective=require_text(value["objective"]),
-        state=TaskState(require_text(value["state"])),
-        priority=require_integer(value["priority"], minimum=0),
-        version=require_integer(value["version"]),
-        created_by=SubjectId(require_text(value["created_by"])),
-        created_at=parse_timestamp(value["created_at"]),
-        updated_at=parse_timestamp(value["updated_at"]),
-    )
+    return TaskEventId(event_id), task_from_mapping(task_mapping)
