@@ -8,6 +8,10 @@ import tempfile
 from contextlib import suppress
 from pathlib import Path
 
+from workaholic.context._files import (
+    UnsafeDataFileError,
+    read_bounded_regular_file,
+)
 from workaholic.context.errors import (
     ContextInvalidError,
     ContextNotFoundError,
@@ -257,27 +261,11 @@ def _read_regular_file(path: Path, *, maximum: int) -> bytes:
         OSError: If the operating system cannot read or inspect the path.
 
     """
-    initial = path.lstat()
-    if stat.S_ISLNK(initial.st_mode) or not stat.S_ISREG(initial.st_mode):
-        message = "The Workspace context must be a regular file."
-        raise ContextInvalidError(message)
-
-    flags = os.O_RDONLY
-    no_follow = getattr(os, "O_NOFOLLOW", 0)
-    descriptor = os.open(path, flags | no_follow)
     try:
-        opened = os.fstat(descriptor)
-        if not stat.S_ISREG(opened.st_mode) or not os.path.samestat(initial, opened):
-            message = "The Workspace context changed while opening."
-            raise ContextInvalidError(message)
-        with os.fdopen(descriptor, "rb", closefd=False) as stream:
-            content = stream.read(maximum + 1)
-    finally:
-        os.close(descriptor)
-    if len(content) > maximum:
-        message = "The Workspace context is too large."
-        raise ContextInvalidError(message)
-    return content
+        return read_bounded_regular_file(path, maximum=maximum)
+    except UnsafeDataFileError as error:
+        message = "The Workspace context must be one bounded regular file."
+        raise ContextInvalidError(message) from error
 
 
 def _parse_context(text: str) -> WorkspaceBinding:

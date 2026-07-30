@@ -2,7 +2,22 @@
 
 from __future__ import annotations
 
-from workaholic.application import ApplicationError, ApplicationErrorCode
+from workaholic.application import (
+    ApplicationError,
+    ApplicationErrorCode,
+    ProfileInvalidError,
+    ProfileNotFoundError,
+    ProfileUnsupportedError,
+)
+
+__all__ = [
+    "ContextInvalidError",
+    "ContextNotFoundError",
+    "ContextStorageError",
+    "ProfileInvalidError",
+    "ProfileNotFoundError",
+    "ProfileUnsupportedError",
+]
 
 
 class ContextNotFoundError(ApplicationError):
