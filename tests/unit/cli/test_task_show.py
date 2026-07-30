@@ -19,7 +19,11 @@ _TASK_SHOW_ERRORS = (
     ApplicationErrorCode.INVALID_INPUT,
     ApplicationErrorCode.CONTEXT_NOT_FOUND,
     ApplicationErrorCode.CONTEXT_INVALID,
+    ApplicationErrorCode.PROFILE_NOT_FOUND,
+    ApplicationErrorCode.PROFILE_INVALID,
+    ApplicationErrorCode.PROFILE_UNSUPPORTED,
     ApplicationErrorCode.NOT_INITIALIZED,
+    ApplicationErrorCode.PROJECT_NOT_FOUND,
     ApplicationErrorCode.TASK_NOT_FOUND,
     ApplicationErrorCode.PERMISSION_DENIED,
     ApplicationErrorCode.SCHEMA_UNSUPPORTED,
@@ -75,6 +79,27 @@ def test_task_show_json_accepts_stable_key_and_uid(selector: str) -> None:
     assert result.stderr == ""
 
 
+def test_task_show_forwards_explicit_project_override() -> None:
+    """Task lookup can explicitly select another same-Instance Project."""
+    session = RecordingSession()
+
+    result = _RUNNER.invoke(
+        create_app(SessionProviderSpy(session)),
+        [
+            "task",
+            "show",
+            "DOCS-1",
+            "--project",
+            "DOCS",
+            "--json",
+            "--non-interactive",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert session.task_get_requests == [TaskGetRequest(task="DOCS-1", project="DOCS")]
+
+
 def test_task_show_human_output_is_deterministic() -> None:
     """Default show rendering gives one concise stable Task summary."""
     result = _RUNNER.invoke(
@@ -87,15 +112,32 @@ def test_task_show_human_output_is_deterministic() -> None:
     assert result.stderr == ""
 
 
-@pytest.mark.parametrize("selector", ["", "x" * 257])
-def test_task_show_rejects_invalid_selector_before_session(selector: str) -> None:
+@pytest.mark.parametrize(
+    ("selector", "options"),
+    [
+        ("", ()),
+        ("x" * 257, ()),
+        ("ACME-1", ("--project", "invalid key")),
+    ],
+)
+def test_task_show_rejects_invalid_selector_before_session(
+    selector: str,
+    options: tuple[str, ...],
+) -> None:
     """A selector outside Session bounds cannot trigger context access."""
     session = RecordingSession()
     provider = SessionProviderSpy(session)
 
     result = _RUNNER.invoke(
         create_app(provider),
-        ["task", "show", selector, "--json", "--non-interactive"],
+        [
+            "task",
+            "show",
+            selector,
+            *options,
+            "--json",
+            "--non-interactive",
+        ],
     )
 
     detail = require_error(_completed(result), expected_code="INVALID_INPUT")
@@ -158,6 +200,7 @@ def test_task_group_help_and_show_non_interactive_are_side_effect_free(
         assert command in unstyle(group_help.stdout)
     assert show_help.exit_code == 0
     assert "TASK" in unstyle(show_help.stdout)
+    assert "--project" in unstyle(show_help.stdout)
     assert "--json" in unstyle(show_help.stdout)
     assert "--non-interactive" in unstyle(show_help.stdout)
     assert provider.call_count == 0

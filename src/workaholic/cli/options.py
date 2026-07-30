@@ -59,6 +59,16 @@ ProjectOption = Annotated[
     ),
 ]
 
+AllProjectsOption = Annotated[
+    bool,
+    typer.Option(
+        ...,
+        "--all-projects",
+        help="Select Tasks across every authorized Project.",
+        prompt=False,
+    ),
+]
+
 ReplaceOption = Annotated[
     bool,
     typer.Option(

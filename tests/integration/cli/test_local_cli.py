@@ -206,6 +206,356 @@ def test_local_cli_persists_complete_journey_across_fresh_processes(  # noqa: PL
     assert require_success(shown_by_uid) == {"task": created_task}
 
 
+def test_local_cli_selects_tasks_across_projects_and_rejects_scope_mismatch(  # noqa: PLR0915 - one public journey
+    tmp_path: Path,
+) -> None:
+    """Phase 2 Task selection remains explicit, ordered, and Instance-contained."""
+    acme_workspace = tmp_path / "acme"
+    docs_workspace = tmp_path / "Documentation Ω"
+    unbound_workspace = tmp_path / "unbound"
+    other_workspace = tmp_path / "other-instance"
+    for workspace in (
+        acme_workspace,
+        docs_workspace,
+        unbound_workspace,
+        other_workspace,
+    ):
+        workspace.mkdir()
+    data_directory = tmp_path / "data"
+    other_data_directory = tmp_path / "other-data"
+
+    up = _run_cli(
+        [
+            "up",
+            "--project-key",
+            "ACME",
+            "--project-name",
+            "Acme delivery",
+            "--json",
+            "--non-interactive",
+        ],
+        workspace=acme_workspace,
+        data_directory=data_directory,
+    )
+    up_data = require_object(require_success(up), context="Phase 2 up data")
+    assert (
+        require_object(
+            up_data["project"],
+            context="Phase 2 initial Project",
+        )["name"]
+        == "Acme delivery"
+    )
+
+    create_docs = _run_cli(
+        [
+            "project",
+            "create",
+            "--key",
+            "DOCS",
+            "--name",
+            "Documentation Ω",
+            "--idempotency-key",
+            "create-docs-1",
+            "--json",
+            "--non-interactive",
+        ],
+        workspace=acme_workspace,
+        data_directory=data_directory,
+    )
+    docs_data = require_object(
+        require_success(create_docs),
+        context="DOCS creation data",
+    )
+    docs_project = require_object(
+        docs_data["project"],
+        context="created DOCS Project",
+    )
+    assert docs_project["key"] == "DOCS"
+    assert docs_project["name"] == "Documentation Ω"
+
+    bind_docs = _run_cli(
+        [
+            "project",
+            "bind",
+            "DOCS",
+            "--json",
+            "--non-interactive",
+        ],
+        workspace=docs_workspace,
+        data_directory=data_directory,
+    )
+    bound_context = require_object(
+        require_success(bind_docs),
+        context="bound DOCS context",
+    )
+    assert bound_context["project"] == docs_project
+    assert bound_context["workspace_root"] == str(docs_workspace)
+
+    create_empty = _run_cli(
+        [
+            "project",
+            "create",
+            "--key",
+            "EMPTY",
+            "--name",
+            "Empty Project",
+            "--json",
+            "--non-interactive",
+        ],
+        workspace=acme_workspace,
+        data_directory=data_directory,
+    )
+    require_success(create_empty)
+
+    acme_add = _run_cli(
+        [
+            "task",
+            "add",
+            "Acme task",
+            "--json",
+            "--non-interactive",
+        ],
+        workspace=acme_workspace,
+        data_directory=data_directory,
+    )
+    acme_task = require_object(
+        require_object(
+            require_success(acme_add),
+            context="ACME add data",
+        )["task"],
+        context="ACME Task",
+    )
+    assert acme_task["key"] == "ACME-1"
+
+    docs_add = _run_cli(
+        [
+            "task",
+            "add",
+            "Bound documentation task",
+            "--json",
+            "--non-interactive",
+        ],
+        workspace=docs_workspace,
+        data_directory=data_directory,
+    )
+    docs_task_one = require_object(
+        require_object(
+            require_success(docs_add),
+            context="bound DOCS add data",
+        )["task"],
+        context="bound DOCS Task",
+    )
+    assert docs_task_one["key"] == "DOCS-1"
+
+    explicit_add = _run_cli(
+        [
+            "task",
+            "add",
+            "Context-free documentation task",
+            "--project",
+            "DOCS",
+            "--json",
+            "--non-interactive",
+        ],
+        workspace=unbound_workspace,
+        data_directory=data_directory,
+    )
+    docs_task_two = require_object(
+        require_object(
+            require_success(explicit_add),
+            context="explicit DOCS add data",
+        )["task"],
+        context="explicit DOCS Task",
+    )
+    assert docs_task_two["key"] == "DOCS-2"
+
+    default_list = _run_cli(
+        ["task", "list", "--json", "--non-interactive"],
+        workspace=acme_workspace,
+        data_directory=data_directory,
+    )
+    default_data = require_object(
+        require_success(default_list),
+        context="context-default Task page",
+    )
+    assert default_data == {"tasks": [acme_task], "next_cursor": None}
+
+    explicit_list = _run_cli(
+        [
+            "task",
+            "list",
+            "--project",
+            "DOCS",
+            "--json",
+            "--non-interactive",
+        ],
+        workspace=acme_workspace,
+        data_directory=data_directory,
+    )
+    explicit_data = require_object(
+        require_success(explicit_list),
+        context="explicit DOCS Task page",
+    )
+    assert explicit_data == {
+        "tasks": [docs_task_one, docs_task_two],
+        "next_cursor": None,
+    }
+
+    empty_list = _run_cli(
+        [
+            "task",
+            "list",
+            "--project",
+            "EMPTY",
+            "--json",
+            "--non-interactive",
+        ],
+        workspace=unbound_workspace,
+        data_directory=data_directory,
+    )
+    assert require_success(empty_list) == {
+        "tasks": [],
+        "next_cursor": None,
+    }
+
+    first_all_page = _run_cli(
+        [
+            "task",
+            "list",
+            "--all-projects",
+            "--limit",
+            "2",
+            "--json",
+            "--non-interactive",
+        ],
+        workspace=unbound_workspace,
+        data_directory=data_directory,
+    )
+    first_all_data = require_object(
+        require_success(first_all_page),
+        context="first all-Project Task page",
+    )
+    assert first_all_data["tasks"] == [acme_task, docs_task_one]
+    first_cursor = first_all_data["next_cursor"]
+    assert isinstance(first_cursor, str)
+    assert first_cursor.startswith("v2.")
+
+    second_all_page = _run_cli(
+        [
+            "task",
+            "list",
+            "--all-projects",
+            "--limit",
+            "2",
+            "--cursor",
+            first_cursor,
+            "--json",
+            "--non-interactive",
+        ],
+        workspace=unbound_workspace,
+        data_directory=data_directory,
+    )
+    assert require_success(second_all_page) == {
+        "tasks": [docs_task_two],
+        "next_cursor": None,
+    }
+
+    human_all = _run_cli(
+        ["task", "list", "--all-projects", "--non-interactive"],
+        workspace=unbound_workspace,
+        data_directory=data_directory,
+    )
+    assert [
+        line.split("\t", maxsplit=1)[0] for line in human_all.stdout.splitlines()
+    ] == ["ACME-1", "DOCS-1", "DOCS-2"]
+    assert human_all.stderr == ""
+
+    conflicting_scope = _run_cli(
+        [
+            "task",
+            "list",
+            "--project",
+            "DOCS",
+            "--all-projects",
+            "--json",
+            "--non-interactive",
+        ],
+        workspace=unbound_workspace,
+        data_directory=data_directory,
+    )
+    require_error(conflicting_scope, expected_code="INVALID_INPUT")
+    assert conflicting_scope.returncode == 2
+    assert conflicting_scope.stderr == ""
+
+    wrong_prefix = _run_cli(
+        [
+            "task",
+            "show",
+            "DOCS-1",
+            "--json",
+            "--non-interactive",
+        ],
+        workspace=acme_workspace,
+        data_directory=data_directory,
+    )
+    require_error(wrong_prefix, expected_code="TASK_NOT_FOUND")
+    assert wrong_prefix.returncode == 3
+
+    explicit_show = _run_cli(
+        [
+            "task",
+            "show",
+            "DOCS-1",
+            "--project",
+            "DOCS",
+            "--json",
+            "--non-interactive",
+        ],
+        workspace=acme_workspace,
+        data_directory=data_directory,
+    )
+    assert require_success(explicit_show) == {"task": docs_task_one}
+
+    wrong_cursor_scope = _run_cli(
+        [
+            "task",
+            "list",
+            "--project",
+            "DOCS",
+            "--cursor",
+            first_cursor,
+            "--json",
+            "--non-interactive",
+        ],
+        workspace=unbound_workspace,
+        data_directory=data_directory,
+    )
+    require_error(wrong_cursor_scope, expected_code="INVALID_INPUT")
+    assert wrong_cursor_scope.returncode == 2
+
+    other_up = _run_cli(
+        [
+            "up",
+            "--project-key",
+            "OTHER",
+            "--json",
+            "--non-interactive",
+        ],
+        workspace=other_workspace,
+        data_directory=other_data_directory,
+    )
+    require_success(other_up)
+
+    cross_instance_context = _run_cli(
+        ["status", "--json", "--non-interactive"],
+        workspace=acme_workspace,
+        data_directory=other_data_directory,
+    )
+    require_error(cross_instance_context, expected_code="CONTEXT_INVALID")
+    assert cross_instance_context.returncode == 3
+    assert cross_instance_context.stderr == ""
+
+
 def test_invalid_data_directory_fails_without_traceback(tmp_path: Path) -> None:
     """A relative trusted override becomes one safe profile error envelope."""
     workspace = tmp_path / "workspace"

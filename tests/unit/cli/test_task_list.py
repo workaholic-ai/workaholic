@@ -17,7 +17,7 @@ from workaholic.application import (
     TaskPage,
 )
 from workaholic.cli.main import create_app
-from workaholic.domain import TaskId
+from workaholic.domain import ProjectId, TaskId
 from workaholic.session import TaskListRequest
 
 _RUNNER = CliRunner()
@@ -25,7 +25,11 @@ _TASK_LIST_ERRORS = (
     ApplicationErrorCode.INVALID_INPUT,
     ApplicationErrorCode.CONTEXT_NOT_FOUND,
     ApplicationErrorCode.CONTEXT_INVALID,
+    ApplicationErrorCode.PROFILE_NOT_FOUND,
+    ApplicationErrorCode.PROFILE_INVALID,
+    ApplicationErrorCode.PROFILE_UNSUPPORTED,
     ApplicationErrorCode.NOT_INITIALIZED,
+    ApplicationErrorCode.PROJECT_NOT_FOUND,
     ApplicationErrorCode.PERMISSION_DENIED,
     ApplicationErrorCode.SCHEMA_UNSUPPORTED,
     ApplicationErrorCode.STORAGE_BUSY,
@@ -71,6 +75,8 @@ def test_task_list_json_preserves_order_pagination_and_request() -> None:
             "cursor-page-1",
             "--limit",
             "2",
+            "--project",
+            "DOCS",
             "--json",
             "--non-interactive",
         ],
@@ -89,7 +95,11 @@ def test_task_list_json_preserves_order_pagination_and_request() -> None:
     ]
     assert data["next_cursor"] == "cursor-page-2"
     assert session.task_list_requests == [
-        TaskListRequest(cursor="cursor-page-1", limit=2)
+        TaskListRequest(
+            cursor="cursor-page-1",
+            limit=2,
+            project="DOCS",
+        )
     ]
     assert provider.call_count == 1
     assert result.stderr == ""
@@ -110,6 +120,75 @@ def test_task_list_defaults_and_empty_json_are_explicit() -> None:
         "next_cursor": None,
     }
     assert session.task_list_requests == [TaskListRequest()]
+
+
+def test_task_list_all_projects_preserves_cross_project_order() -> None:
+    """All-Project output retains the Session's key-and-number ordering."""
+    acme_task = task()
+    docs_task = replace(
+        acme_task,
+        uid=TaskId("tsk_docs"),
+        project_id=ProjectId("prj_docs"),
+        number=1,
+        key="DOCS-1",
+        title="Documentation task",
+        objective="Documentation task",
+    )
+    session = RecordingSession()
+    session.task_page_result = TaskPage(
+        tasks=(acme_task, docs_task),
+        next_cursor="cursor-all-page-2",
+    )
+
+    result = _RUNNER.invoke(
+        create_app(SessionProviderSpy(session)),
+        [
+            "task",
+            "list",
+            "--all-projects",
+            "--limit",
+            "2",
+            "--json",
+            "--non-interactive",
+        ],
+    )
+
+    data = require_object(
+        require_success(_completed(result)),
+        context="all-project task-list data",
+    )
+    tasks = data["tasks"]
+    assert isinstance(tasks, list)
+    assert [item["key"] for item in tasks if isinstance(item, dict)] == [
+        "ACME-1",
+        "DOCS-1",
+    ]
+    assert data["next_cursor"] == "cursor-all-page-2"
+    assert session.task_list_requests == [TaskListRequest(all_projects=True, limit=2)]
+
+
+def test_task_list_rejects_conflicting_project_scope_before_session() -> None:
+    """One-Project and all-Project selectors are mutually exclusive."""
+    session = RecordingSession()
+    provider = SessionProviderSpy(session)
+
+    result = _RUNNER.invoke(
+        create_app(provider),
+        [
+            "task",
+            "list",
+            "--project",
+            "DOCS",
+            "--all-projects",
+            "--json",
+            "--non-interactive",
+        ],
+    )
+
+    detail = require_error(_completed(result), expected_code="INVALID_INPUT")
+    assert detail["message"] == "Task-list input is invalid."
+    assert provider.call_count == 0
+    assert session.task_list_requests == []
 
 
 def test_task_list_human_output_is_safe_and_reports_next_cursor() -> None:
@@ -216,7 +295,14 @@ def test_task_list_help_and_non_interactive_never_prompt(
     output = unstyle(help_result.stdout)
 
     assert help_result.exit_code == 0
-    for expected in ("--cursor", "--limit", "--json", "--non-interactive"):
+    for expected in (
+        "--project",
+        "--all-projects",
+        "--cursor",
+        "--limit",
+        "--json",
+        "--non-interactive",
+    ):
         assert expected in output
     assert provider.call_count == 0
 
