@@ -74,12 +74,27 @@ class BootstrapResult(_ResultModel):
 class StatusResult(_ResultModel):
     """Current embedded local status for one authorized Project."""
 
-    mode: Literal["local"] = "local"
-    schema_version: Literal[1] = 1
+    mode: Literal["embedded"] = "embedded"
+    profile: str = "local"
+    schema_version: Literal[2] = 2
     instance: Instance
     project: Project
     subject: Subject
     grant: ProjectGrant
+
+    @field_validator("profile", mode="before")
+    @classmethod
+    def _validate_profile(cls, value: object) -> str:
+        """Validate the trusted profile represented by status.
+
+        Args:
+            value: Candidate profile name.
+
+        Returns:
+            Validated trusted profile name.
+
+        """
+        return validate_profile_name(value)
 
     @model_validator(mode="after")
     def _validate_consistency(self) -> Self:

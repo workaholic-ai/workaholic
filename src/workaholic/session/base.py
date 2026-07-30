@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+from pathlib import Path
 from typing import TYPE_CHECKING, Protocol
 
-if TYPE_CHECKING:
-    from pathlib import Path
+from workaholic.domain import InstanceId, SubjectId, WorkspaceBinding
 
+if TYPE_CHECKING:
     from workaholic.application import (
         BootstrapResult,
         ContextResult,
@@ -16,10 +18,9 @@ if TYPE_CHECKING:
     )
     from workaholic.domain import (
         Project,
-        SubjectId,
         Task,
-        WorkspaceBinding,
     )
+    from workaholic.session.local import LocalRuntime
     from workaholic.session.models import (
         ContextRequest,
         ProjectBindRequest,
@@ -33,14 +34,69 @@ if TYPE_CHECKING:
     )
 
 
-class WorkspaceContextGateway(Protocol):
-    """Read and durably write exact-directory Workspace bindings."""
+@dataclass(frozen=True, slots=True)
+class LocalIdentity:
+    """Trusted Instance and bootstrap-Human identities selected from one runtime."""
 
-    def read_current(self) -> WorkspaceBinding:
-        """Read the exact current directory's Workspace binding.
+    instance_id: InstanceId
+    subject_id: SubjectId
+
+    def __post_init__(self) -> None:
+        """Validate both strongly typed identity values."""
+        instance_value: object = self.instance_id
+        subject_value: object = self.subject_id
+        if not isinstance(instance_value, InstanceId) or not isinstance(
+            subject_value, SubjectId
+        ):
+            message = "Local identity requires typed Instance and Subject IDs."
+            raise TypeError(message)
+
+
+@dataclass(frozen=True, slots=True)
+class WorkspaceContextSelection:
+    """Discovered binding plus canonical safe filesystem locations."""
+
+    binding: WorkspaceBinding
+    context_source: Path
+    workspace_root: Path
+
+    def __post_init__(self) -> None:
+        """Validate the discovered context and physical path relationship."""
+        binding_value: object = self.binding
+        context_source_value: object = self.context_source
+        workspace_root_value: object = self.workspace_root
+        if not isinstance(binding_value, WorkspaceBinding):
+            message = "Workspace selection requires a WorkspaceBinding."
+            raise TypeError(message)
+        if not isinstance(context_source_value, Path) or not isinstance(
+            workspace_root_value,
+            Path,
+        ):
+            message = "Workspace selection paths must be pathlib Paths."
+            raise TypeError(message)
+        if (
+            not self.context_source.is_absolute()
+            or not self.workspace_root.is_absolute()
+            or self.context_source.name != ".workaholic.env"
+        ):
+            message = "Workspace selection paths must be canonical and absolute."
+            raise ValueError(message)
+        context_directory = self.context_source.parent
+        if self.workspace_root != context_directory and (
+            context_directory not in self.workspace_root.parents
+        ):
+            message = "Workspace selection root must remain under its context."
+            raise ValueError(message)
+
+
+class WorkspaceContextGateway(Protocol):
+    """Discover and durably write Workspace bindings."""
+
+    def discover(self) -> WorkspaceContextSelection | None:
+        """Discover the nearest valid context through physical ancestors.
 
         Returns:
-            Validated current Workspace binding.
+            Nearest validated selection, or ``None`` when no context exists.
 
         """
         ...
@@ -73,6 +129,44 @@ class WorkspaceContextGateway(Protocol):
 
         Returns:
             Canonical physical context-file path.
+
+        """
+        ...
+
+
+class ProfileResolver(Protocol):
+    """Resolve one trusted profile name using configured precedence."""
+
+    def resolve(
+        self,
+        *,
+        explicit_profile: str | None,
+        discovered_profile: str | None,
+    ) -> str:
+        """Resolve one profile without accepting repository-controlled paths.
+
+        Args:
+            explicit_profile: Validated caller selector when supplied.
+            discovered_profile: Validated nearest-context selector when present.
+
+        Returns:
+            Trusted configured profile name.
+
+        """
+        ...
+
+
+class LocalRuntimeOpener(Protocol):
+    """Open one application runtime selected by trusted profile name."""
+
+    def open(self, profile: str) -> LocalRuntime:
+        """Open one profile-selected local application runtime.
+
+        Args:
+            profile: Trusted profile name returned by ProfileResolver.
+
+        Returns:
+            Runtime containing semantic services and local identity selection.
 
         """
         ...

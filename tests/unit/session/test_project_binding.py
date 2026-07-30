@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import cast
@@ -13,13 +14,17 @@ from workaholic.application import (
     ApplicationErrorCode,
     BootstrapLocalProjectInput,
     BootstrapResult,
+    CreateProjectInput,
     CreateTaskInput,
     GetLocalStatus,
     GetProjectByKey,
     GetTask,
+    ListInstanceTasks,
     ListProjects,
     ListTasks,
     PermissionDeniedError,
+    ProfileNotFoundError,
+    ProjectCreationResult,
     ProjectNotFoundError,
     StatusResult,
     TaskPage,
@@ -39,7 +44,13 @@ from workaholic.domain import (
     Task,
     WorkspaceBinding,
 )
-from workaholic.session import LocalSession, ProjectBindRequest
+from workaholic.session import (
+    LocalIdentity,
+    LocalRuntime,
+    LocalSession,
+    ProjectBindRequest,
+    WorkspaceContextSelection,
+)
 
 _NOW = datetime(2026, 7, 30, 16, 0, tzinfo=UTC)
 
@@ -93,17 +104,25 @@ def _subject() -> Subject:
     )
 
 
-def _status() -> StatusResult:
-    """Build authoritative status matching the current binding."""
-    project = _project()
+def _status(*, project: Project | None = None) -> StatusResult:
+    """Build authoritative status matching one selected Project.
+
+    Args:
+        project: Selected Project, defaulting to ACME.
+
+    Returns:
+        Authorized deterministic status.
+
+    """
+    selected_project = _project() if project is None else project
     subject = _subject()
     return StatusResult(
         instance=Instance(id=InstanceId("ins_local"), created_at=_NOW),
-        project=project,
+        project=selected_project,
         subject=subject,
         grant=ProjectGrant(
             subject_id=subject.id,
-            project_id=project.id,
+            project_id=selected_project.id,
             role=ProjectRole.OWNER,
         ),
     )
@@ -124,6 +143,15 @@ class _Context:
         """Return the configured current binding."""
         self.log.append("context.read")
         return cast("WorkspaceBinding", self.binding)
+
+    def discover(self) -> WorkspaceContextSelection:
+        """Return the configured nearest Workspace context."""
+        self.log.append("context.read")
+        return WorkspaceContextSelection(
+            binding=cast("WorkspaceBinding", self.binding),
+            context_source=Path("/current/.workaholic.env"),
+            workspace_root=Path("/current"),
+        )
 
     def write_current(self, _binding: WorkspaceBinding) -> Path:
         """Provide the unused bootstrap context operation."""
@@ -151,10 +179,13 @@ class _Actors:
         """Initialize the selected actor."""
         self.log = log
 
-    def select(self, _binding: WorkspaceBinding) -> SubjectId:
-        """Return the trusted local Subject."""
+    def select(self) -> LocalIdentity:
+        """Return the trusted local Instance and Subject."""
         self.log.append("actors.select")
-        return SubjectId("sub_local")
+        return LocalIdentity(
+            instance_id=InstanceId("ins_local"),
+            subject_id=SubjectId("sub_local"),
+        )
 
 
 class _Queries:
@@ -171,9 +202,11 @@ class _Queries:
         self.project_error: ApplicationError | None = None
         self.project_commands: list[GetProjectByKey] = []
 
-    def status(self, _command: GetLocalStatus) -> StatusResult:
-        """Return authoritative current status."""
+    def status(self, command: GetLocalStatus) -> StatusResult:
+        """Return authoritative status for the requested Project."""
         self.log.append("queries.status")
+        if command.project_id == ProjectId("prj_beta"):
+            return _status(project=_project(project_id="prj_beta", key="BETA"))
         return cast("StatusResult", self.status_result)
 
     def list_projects(self, _command: ListProjects) -> tuple[Project, ...]:
@@ -190,6 +223,10 @@ class _Queries:
 
     def list_tasks(self, _command: ListTasks) -> TaskPage:
         """Provide the unused Task-list capability."""
+        return TaskPage(tasks=(), next_cursor=None)
+
+    def list_tasks_for_instance(self, _command: ListInstanceTasks) -> TaskPage:
+        """Provide the unused all-Projects Task-list capability."""
         return TaskPage(tasks=(), next_cursor=None)
 
     def get_task(self, _command: GetTask) -> Task:
@@ -213,6 +250,43 @@ class _Tasks:
         pytest.fail("Project binding must not create a Task")
 
 
+class _Projects:
+    """Unused Project-creation application capability."""
+
+    def create(self, _command: CreateProjectInput) -> ProjectCreationResult:
+        """Fail if Project binding attempts Project creation."""
+        pytest.fail("Project binding must not create a Project")
+
+
+class _Profiles:
+    """Resolve one fixed trusted local profile."""
+
+    def resolve(
+        self,
+        *,
+        explicit_profile: str | None,
+        discovered_profile: str | None,
+    ) -> str:
+        """Select local or fail for an unknown explicit profile."""
+        selected = explicit_profile or discovered_profile or "local"
+        if selected != "local":
+            raise ProfileNotFoundError
+        return selected
+
+
+@dataclass(frozen=True, slots=True)
+class _Runtimes:
+    """Open one fixed trusted local runtime."""
+
+    runtime: LocalRuntime
+
+    def open(self, profile: str) -> LocalRuntime:
+        """Return the exact matching runtime."""
+        if profile != self.runtime.profile:
+            raise ProfileNotFoundError
+        return self.runtime
+
+
 def _session() -> tuple[LocalSession, _Context, _Queries, list[str]]:
     """Compose one Project-binding Session from strict fakes.
 
@@ -223,12 +297,18 @@ def _session() -> tuple[LocalSession, _Context, _Queries, list[str]]:
     log: list[str] = []
     context = _Context(log)
     queries = _Queries(log)
-    session = LocalSession(
-        context=context,
-        actors=_Actors(log),
+    runtime = LocalRuntime(
+        profile="local",
+        identity=_Actors(log),
         bootstrap=_Bootstrap(),
+        projects=_Projects(),
         queries=queries,
         tasks=_Tasks(),
+    )
+    session = LocalSession(
+        context=context,
+        profiles=_Profiles(),
+        runtimes=_Runtimes(runtime),
     )
     return session, context, queries, log
 
@@ -284,8 +364,8 @@ def test_bind_project_resolves_authority_before_durable_context_write() -> None:
     assert log == [
         "context.read",
         "actors.select",
-        "queries.status",
         "queries.get_project_by_key",
+        "queries.status",
         "context.bind",
     ]
 
@@ -310,10 +390,10 @@ def test_bind_project_rejects_profile_mismatch_before_lookup_or_write() -> None:
     with pytest.raises(ApplicationError) as captured:
         session.bind_project(ProjectBindRequest(project="BETA", profile="team"))
 
-    assert captured.value.code is ApplicationErrorCode.CONTEXT_INVALID
+    assert captured.value.code is ApplicationErrorCode.PROFILE_NOT_FOUND
     assert queries.project_commands == []
     assert context.bind_calls == []
-    assert log == ["context.read", "actors.select", "queries.status"]
+    assert log == ["context.read"]
 
 
 @pytest.mark.parametrize(

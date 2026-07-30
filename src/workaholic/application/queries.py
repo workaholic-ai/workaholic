@@ -68,7 +68,8 @@ class QueryApplication:
         if not isinstance(result, StatusResult):
             _raise_invalid_result("Status")
         if (
-            result.instance.id != candidate.instance_id
+            result.profile != candidate.profile
+            or result.instance.id != candidate.instance_id
             or result.project.id != candidate.project_id
             or result.subject.id != candidate.subject_id
         ):

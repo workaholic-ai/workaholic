@@ -600,8 +600,9 @@ def test_result_models_validate_consistent_bootstrap_and_status() -> None:
     )
 
     assert bootstrap.workspace.project_id == bootstrap.project.id
-    assert status.mode == "local"
-    assert status.schema_version == 1
+    assert status.mode == "embedded"
+    assert status.profile == "local"
+    assert status.schema_version == 2
 
 
 def test_phase_two_results_validate_creation_and_safe_context() -> None:

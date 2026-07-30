@@ -89,7 +89,7 @@ class ProjectBindRequest(_SessionRequest):
 
 
 class TaskCreateRequest(_SessionRequest):
-    """Request one Task in the Project selected by Workspace context."""
+    """Request one Task in an explicit or discovered Project."""
 
     title: str
     objective: str | None = None
@@ -99,7 +99,7 @@ class TaskCreateRequest(_SessionRequest):
 
 
 class TaskListRequest(_SessionRequest):
-    """Request one deterministic Task page in the selected Project."""
+    """Request one deterministic selected-Project or all-Projects Task page."""
 
     cursor: _Cursor | None = None
     limit: int = Field(default=100, ge=1, le=500)
@@ -124,7 +124,7 @@ class TaskListRequest(_SessionRequest):
 
 
 class TaskGetRequest(_SessionRequest):
-    """Request one selected-Project Task by canonical UID or Human key."""
+    """Request one explicit- or discovered-Project Task by UID or Human key."""
 
     task: _TaskSelector
     project: _ProjectKeyText | None = None

@@ -482,8 +482,9 @@ def test_status_and_project_listing_are_stable_after_reopen(tmp_path: Path) -> N
         lambda: repository.list_projects(projects_command),
     )
 
-    assert status.mode == "local"
-    assert status.schema_version == 1
+    assert status.mode == "embedded"
+    assert status.profile == "local"
+    assert status.schema_version == 2
     assert status.instance == bootstrap.instance
     assert status.project == bootstrap.project
     assert status.subject == bootstrap.subject

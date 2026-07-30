@@ -114,23 +114,26 @@ class PhaseOneSessionContract:
         assert restarted.get_task(TaskGetRequest(task=created.uid)) == created
         assert restarted.get_task(TaskGetRequest(task=created.key)) == created
 
-    def test_context_is_never_discovered_from_a_parent_directory(
+    def test_nearest_parent_context_is_discovered_without_child_write(
         self,
         session_factory: PhaseOneSessionFactory,
         tmp_path: Path,
     ) -> None:
-        """A child Workspace cannot inherit its parent's local selection."""
+        """A child inherits the nearest valid binding without copying context."""
         root = tmp_path / "data"
         parent = _workspace(tmp_path, "workspace")
         child = parent / "child"
         child.mkdir()
-        session_factory.create(root, parent).up(UpRequest(project_key="ACME"))
+        bootstrap = session_factory.create(root, parent).up(
+            UpRequest(project_key="ACME")
+        )
         child_session = session_factory.create(root, child)
 
-        with pytest.raises(ApplicationError) as captured:
-            child_session.status(StatusRequest())
+        status = child_session.status(StatusRequest())
 
-        assert captured.value.code is ApplicationErrorCode.CONTEXT_NOT_FOUND
+        assert status.instance == bootstrap.instance
+        assert status.project == bootstrap.project
+        assert status.subject == bootstrap.subject
         assert not (child / CONTEXT_FILENAME).exists()
 
     def test_malformed_context_is_rejected_without_fallback(

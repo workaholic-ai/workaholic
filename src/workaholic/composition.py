@@ -11,13 +11,17 @@ from typing import TYPE_CHECKING, Final
 
 from workaholic.application import (
     BootstrapApplication,
+    ProfileNotFoundError,
+    ProjectApplication,
     QueryApplication,
     TaskApplication,
 )
 from workaholic.cli.main import create_app
 from workaholic.context import (
     ContextInvalidError,
+    ContextNotFoundError,
     bind_workspace_context,
+    discover_workspace_context,
     exclude_context_from_git,
     read_current_workspace_context,
     resolve_local_data_paths,
@@ -36,12 +40,17 @@ from workaholic.persistence.sqlite import (
     SQLiteLocalActorSelector,
     SQLiteRepository,
 )
-from workaholic.session import LocalSession
+from workaholic.session import (
+    LocalIdentity,
+    LocalRuntime,
+    LocalSession,
+    WorkspaceContextSelection,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
 
-    from workaholic.session import TaskSession
+    from workaholic.session import WorkaholicSession
 
 _PROGRAM_NAME = "workaholic"
 _UUID7_VERSION = 7
@@ -59,6 +68,18 @@ class _ExactDirectoryWorkspaceContext:
     def read_current(self) -> WorkspaceBinding:
         """Read the exact current directory's context binding."""
         return read_current_workspace_context(self.directory)
+
+    def discover(self) -> WorkspaceContextSelection | None:
+        """Discover and adapt the nearest physical Workspace context."""
+        try:
+            discovered = discover_workspace_context(self.directory)
+        except ContextNotFoundError:
+            return None
+        return WorkspaceContextSelection(
+            binding=discovered.binding,
+            context_source=discovered.context_file,
+            workspace_root=discovered.workspace_root,
+        )
 
     def write_current(self, binding: WorkspaceBinding) -> Path:
         """Durably write context and exclude it from conventional local Git.
@@ -94,6 +115,75 @@ class _ExactDirectoryWorkspaceContext:
         """
         target = self.directory if directory is None else directory
         return bind_workspace_context(target, binding, replace=replace)
+
+
+class _FixedLocalProfileResolver:
+    """Resolve the built-in profile until Task 11 wires trusted registries."""
+
+    def resolve(
+        self,
+        *,
+        explicit_profile: str | None,
+        discovered_profile: str | None,
+    ) -> str:
+        """Resolve only the currently composed built-in local profile.
+
+        Args:
+            explicit_profile: Explicit caller selection when present.
+            discovered_profile: Nearest context profile when present.
+
+        Returns:
+            The built-in ``local`` profile name.
+
+        Raises:
+            ProfileNotFoundError: If selection requests another profile.
+
+        """
+        selected = (
+            explicit_profile if explicit_profile is not None else discovered_profile
+        )
+        if selected is not None and selected != "local":
+            raise ProfileNotFoundError
+        return "local"
+
+
+@dataclass(frozen=True, slots=True)
+class _SQLiteRuntimeIdentity:
+    """Adapt SQLite identity selection to the Session-owned result model."""
+
+    selector: SQLiteLocalActorSelector
+
+    def select(self) -> LocalIdentity:
+        """Return the exact initialized Instance and bootstrap Human."""
+        instance_id, subject_id = self.selector.select_local()
+        return LocalIdentity(
+            instance_id=instance_id,
+            subject_id=subject_id,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class _SingleRuntimeOpener:
+    """Open one precomposed built-in local runtime."""
+
+    runtime: LocalRuntime
+
+    def open(self, profile: str) -> LocalRuntime:
+        """Return the runtime only for its exact trusted profile.
+
+        Args:
+            profile: Trusted resolved profile name.
+
+        Returns:
+            Matching local runtime.
+
+        Raises:
+            ProfileNotFoundError: If the profile is not composed.
+
+        """
+        if profile != self.runtime.profile:
+            raise ProfileNotFoundError
+        return self.runtime
 
 
 class _UtcSystemClock:
@@ -136,7 +226,7 @@ def create_local_session(
     *,
     cwd: Path,
     environment: Mapping[str, str],
-) -> TaskSession:
+) -> WorkaholicSession:
     """Compose one short-lived embedded local Session.
 
     Session construction resolves trusted paths but performs no database or
@@ -158,12 +248,19 @@ def create_local_session(
     repository = SQLiteRepository(data_paths.database_path)
     clock = _UtcSystemClock()
     identifiers = _Uuid7IdentifierFactory()
-    return LocalSession(
-        context=_ExactDirectoryWorkspaceContext(directory),
-        actors=SQLiteLocalActorSelector(data_paths.database_path),
+    actor_selector = SQLiteLocalActorSelector(data_paths.database_path)
+    runtime = LocalRuntime(
+        profile="local",
+        identity=_SQLiteRuntimeIdentity(actor_selector),
         bootstrap=BootstrapApplication(repository, clock, identifiers),
+        projects=ProjectApplication(repository, clock, identifiers),
         queries=QueryApplication(repository),
         tasks=TaskApplication(repository, clock, identifiers),
+    )
+    return LocalSession(
+        context=_ExactDirectoryWorkspaceContext(directory),
+        profiles=_FixedLocalProfileResolver(),
+        runtimes=_SingleRuntimeOpener(runtime),
     )
 
 
@@ -173,7 +270,7 @@ def main() -> None:
     application(prog_name=_PROGRAM_NAME)
 
 
-def _create_process_session() -> TaskSession:
+def _create_process_session() -> WorkaholicSession:
     """Compose one Session from the current trusted process boundary."""
     return create_local_session(
         cwd=Path.cwd(),

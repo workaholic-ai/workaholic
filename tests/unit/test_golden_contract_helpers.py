@@ -7,6 +7,7 @@ from pathlib import Path
 from subprocess import CompletedProcess
 
 import pytest
+
 from tests.golden import (
     SubprocessGoldenJourneyRunner,
     require_error,

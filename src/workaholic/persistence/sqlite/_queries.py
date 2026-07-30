@@ -159,6 +159,7 @@ def get_local_status(
                 role=ProjectRole(require_text(row[14])),
             )
             return StatusResult(
+                profile=candidate.profile,
                 instance=instance,
                 project=project,
                 subject=subject,

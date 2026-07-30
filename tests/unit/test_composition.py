@@ -10,7 +10,7 @@ from typing import cast
 import pytest
 
 from workaholic import composition
-from workaholic.application import PermissionDeniedError
+from workaholic.application import NotInitializedError, PermissionDeniedError
 from workaholic.context import ContextInvalidError
 from workaholic.domain import (
     InstanceId,
@@ -23,7 +23,9 @@ from workaholic.domain import (
 )
 from workaholic.persistence.sqlite import (
     SQLiteLocalActorSelector,
+    StorageUnavailableError,
     initialize_empty_store,
+    open_write_transaction,
 )
 from workaholic.session import (
     LocalSession,
@@ -222,6 +224,13 @@ def test_sqlite_actor_selector_fails_closed_without_unique_human(
     """An initialized store without one active bootstrap Human is unauthorized."""
     database_path = tmp_path / "local.db"
     initialize_empty_store(database_path)
+    with open_write_transaction(database_path) as connection:
+        connection.execute(
+            """
+            INSERT INTO instances (id, created_at)
+            VALUES ('ins_missing', '2026-07-30T16:30:00.000000Z')
+            """
+        )
     selector = SQLiteLocalActorSelector(database_path)
     binding = WorkspaceBinding(
         context_version=1,
@@ -234,6 +243,30 @@ def test_sqlite_actor_selector_fails_closed_without_unique_human(
 
     with pytest.raises(PermissionDeniedError):
         selector.select(binding)
+
+
+def test_sqlite_identity_selection_requires_one_initialized_instance(
+    tmp_path: Path,
+) -> None:
+    """Empty and malformed multi-Instance stores fail with stable errors."""
+    database_path = tmp_path / "local.db"
+    initialize_empty_store(database_path)
+    selector = SQLiteLocalActorSelector(database_path)
+
+    with pytest.raises(NotInitializedError):
+        selector.select_local()
+
+    with open_write_transaction(database_path) as connection:
+        connection.executemany(
+            """
+            INSERT INTO instances (id, created_at)
+            VALUES (?, '2026-07-30T16:30:00.000000Z')
+            """,
+            (("ins_first",), ("ins_second",)),
+        )
+
+    with pytest.raises(StorageUnavailableError):
+        selector.select_local()
 
 
 def test_workspace_validation_maps_operating_system_failure(

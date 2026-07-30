@@ -57,8 +57,8 @@ def test_status_json_emits_exact_contract_and_forwards_request() -> None:
         context="status data",
     )
     assert data == {
-        "mode": "local",
-        "schema_version": 1,
+        "mode": "embedded",
+        "schema_version": 2,
         "instance": {"id": "ins_local"},
         "project": {"id": "prj_acme", "key": "ACME"},
         "subject": {

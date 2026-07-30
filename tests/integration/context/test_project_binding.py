@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import stat
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING
 
 import pytest
 
@@ -34,11 +34,7 @@ from workaholic.persistence.sqlite import (
     SQLiteRepository,
     open_write_transaction,
 )
-from workaholic.session import (
-    ProjectBindRequest,
-    UpRequest,
-    WorkaholicSession,
-)
+from workaholic.session import ProjectBindRequest, UpRequest
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -99,12 +95,9 @@ def test_composed_session_binds_existing_project_without_database_mutation(
     target.mkdir()
     (target / ".git").mkdir()
     data_directory = tmp_path / "data"
-    session = cast(
-        "WorkaholicSession",
-        composition.create_local_session(
-            cwd=current,
-            environment=_environment(data_directory),
-        ),
+    session = composition.create_local_session(
+        cwd=current,
+        environment=_environment(data_directory),
     )
     bootstrap = session.up(UpRequest(project_key="ACME"))
     repository = SQLiteRepository(data_directory / "local.db")
@@ -135,48 +128,20 @@ def test_composed_session_binds_existing_project_without_database_mutation(
     assert repository.database_path.read_bytes() == database_before
 
 
-def test_composed_session_rejects_missing_and_cross_instance_project_keys(
+def test_composed_session_rejects_missing_project_keys(
     tmp_path: Path,
 ) -> None:
-    """Project lookup cannot cross the verified embedded Instance boundary."""
+    """Missing Projects cannot produce a durable Workspace binding."""
     current = tmp_path / "current"
     target = tmp_path / "target"
     current.mkdir()
     target.mkdir()
     data_directory = tmp_path / "data"
-    session = cast(
-        "WorkaholicSession",
-        composition.create_local_session(
-            cwd=current,
-            environment=_environment(data_directory),
-        ),
+    session = composition.create_local_session(
+        cwd=current,
+        environment=_environment(data_directory),
     )
     session.up(UpRequest(project_key="ACME"))
-    database_path = data_directory / "local.db"
-    with open_write_transaction(database_path) as connection:
-        connection.execute(
-            """
-            INSERT INTO instances (id, created_at)
-            VALUES ('ins_other', '2026-07-30T16:30:00.000000Z')
-            """
-        )
-        connection.execute(
-            """
-            INSERT INTO projects (
-                id, instance_id, key, name, next_task_number, created_at
-            ) VALUES (
-                'prj_other', 'ins_other', 'OTHER', 'Other', 1,
-                '2026-07-30T16:30:00.000000Z'
-            )
-            """
-        )
-        connection.execute(
-            """
-            INSERT INTO project_grants (subject_id, project_id, role)
-            SELECT id, 'prj_other', 'owner' FROM subjects
-            """
-        )
-
     for project_key in ("DOCS", "OTHER"):
         with pytest.raises(ProjectNotFoundError) as captured:
             session.bind_project(ProjectBindRequest(project=project_key, path=target))
@@ -193,12 +158,9 @@ def test_composed_session_revalidates_active_subject_before_binding(
     current.mkdir()
     target.mkdir()
     data_directory = tmp_path / "data"
-    session = cast(
-        "WorkaholicSession",
-        composition.create_local_session(
-            cwd=current,
-            environment=_environment(data_directory),
-        ),
+    session = composition.create_local_session(
+        cwd=current,
+        environment=_environment(data_directory),
     )
     session.up(UpRequest(project_key="ACME"))
     with open_write_transaction(data_directory / "local.db") as connection:

@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from workaholic.application import PermissionDeniedError
-from workaholic.domain import SubjectId, WorkspaceBinding
+from workaholic.application import NotInitializedError, PermissionDeniedError
+from workaholic.domain import InstanceId, SubjectId, WorkspaceBinding
 from workaholic.persistence.sqlite.connection import open_read_connection
 from workaholic.persistence.sqlite.errors import StorageUnavailableError
 
@@ -52,8 +52,26 @@ class SQLiteLocalActorSelector:
         candidate_binding: object = binding
         if not isinstance(candidate_binding, WorkspaceBinding):
             raise PermissionDeniedError
+        _instance_id, subject_id = self.select_local()
+        return subject_id
+
+    def select_local(self) -> tuple[InstanceId, SubjectId]:
+        """Select the initialized Instance and sole active bootstrap Human.
+
+        Returns:
+            Exact trusted local Instance and Subject identities.
+
+        Raises:
+            NotInitializedError: If the profile has no initialized Instance.
+            PermissionDeniedError: If no unique active local Human exists.
+            StorageUnavailableError: If singleton identity state is malformed.
+
+        """
         with open_read_connection(self._database_path) as connection:
-            rows = connection.execute(
+            instance_rows = connection.execute(
+                "SELECT id FROM instances ORDER BY id LIMIT 2"
+            ).fetchall()
+            subject_rows = connection.execute(
                 """
                 SELECT id
                 FROM subjects
@@ -64,9 +82,16 @@ class SQLiteLocalActorSelector:
                 LIMIT 2
                 """
             ).fetchall()
-        if len(rows) != 1:
+        if not instance_rows:
+            raise NotInitializedError
+        if len(instance_rows) != 1:
+            raise StorageUnavailableError
+        if len(subject_rows) != 1:
             raise PermissionDeniedError
         try:
-            return SubjectId(rows[0][0])
+            return (
+                InstanceId(instance_rows[0][0]),
+                SubjectId(subject_rows[0][0]),
+            )
         except (IndexError, TypeError, ValueError) as error:
             raise StorageUnavailableError from error

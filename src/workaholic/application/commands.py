@@ -128,9 +128,24 @@ class BootstrapLocalProjectInput(_CommandModel):
 class GetLocalStatus(_CommandModel):
     """Read the selected local Instance, Project, and Subject status."""
 
+    profile: str = "local"
     instance_id: InstanceId
     project_id: ProjectId
     subject_id: SubjectId
+
+    @field_validator("profile", mode="before")
+    @classmethod
+    def _validate_profile(cls, value: object) -> str:
+        """Validate the trusted profile bound to status.
+
+        Args:
+            value: Candidate profile name.
+
+        Returns:
+            Validated trusted profile name.
+
+        """
+        return validate_profile_name(value)
 
 
 class ListProjects(_CommandModel):

@@ -7,11 +7,15 @@ from workaholic.application import (
 )
 from workaholic.session.base import (
     LocalActorSelector,
+    LocalIdentity,
+    LocalRuntimeOpener,
+    ProfileResolver,
     TaskSession,
     WorkaholicSession,
     WorkspaceContextGateway,
+    WorkspaceContextSelection,
 )
-from workaholic.session.local import LocalSession
+from workaholic.session.local import LocalRuntime, LocalSession
 from workaholic.session.models import (
     ContextRequest,
     ProjectBindRequest,
@@ -30,7 +34,11 @@ __all__ = [
     "ContextRequest",
     "ExitCategory",
     "LocalActorSelector",
+    "LocalIdentity",
+    "LocalRuntime",
+    "LocalRuntimeOpener",
     "LocalSession",
+    "ProfileResolver",
     "ProjectBindRequest",
     "ProjectCreateRequest",
     "ProjectListRequest",
@@ -42,4 +50,5 @@ __all__ = [
     "UpRequest",
     "WorkaholicSession",
     "WorkspaceContextGateway",
+    "WorkspaceContextSelection",
 ]
