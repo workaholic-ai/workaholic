@@ -11,6 +11,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal, Never, Protocol, TypeGuard
 
+from workaholic.domain import validate_profile_name
+
 if TYPE_CHECKING:
     from contextlib import AbstractContextManager
     from subprocess import CompletedProcess
@@ -24,7 +26,14 @@ type SubjectKind = Literal["human", "agent"]
 
 _CLI_SCHEMA = "workaholic.cli/v1"
 _CLI_TIMEOUT_SECONDS = 30
-_TRUSTED_CLI_ENVIRONMENT_KEYS = frozenset({"WORKAHOLIC_DATA_DIR"})
+_TRUSTED_CLI_ENVIRONMENT_KEYS = frozenset(
+    {
+        "WORKAHOLIC_CONFIG_DIR",
+        "WORKAHOLIC_DATA_DIR",
+        "WORKAHOLIC_PROFILE",
+    }
+)
+_UNTRUSTED_INHERITED_PYTHON_KEYS = frozenset({"PYTHONHOME", "PYTHONPATH"})
 
 
 class GoldenInstance(Protocol):
@@ -136,18 +145,27 @@ class SubprocessGoldenJourneyRunner:
     """Run supported journeys in fresh processes over isolated local state."""
 
     data_directory: Path
+    config_directory: Path
 
     def __post_init__(self) -> None:
-        """Validate the owned data root without creating it.
+        """Validate the owned configuration and data roots without creating them.
 
         Raises:
-            TypeError: If the data directory is not an absolute Path.
+            TypeError: If either directory is not an absolute Path.
+            ValueError: If both responsibilities resolve to the same directory.
 
         """
-        candidate: object = self.data_directory
-        if not isinstance(candidate, Path) or not candidate.is_absolute():
-            message = "Golden data_directory must be an absolute Path."
-            raise TypeError(message)
+        candidates: tuple[tuple[str, object], ...] = (
+            ("data_directory", self.data_directory),
+            ("config_directory", self.config_directory),
+        )
+        for name, candidate in candidates:
+            if not isinstance(candidate, Path) or not candidate.is_absolute():
+                message = f"Golden {name} must be an absolute Path."
+                raise TypeError(message)
+        if self.data_directory == self.config_directory:
+            message = "Golden configuration and data directories must be distinct."
+            raise ValueError(message)
 
     def cli(
         self,
@@ -179,6 +197,7 @@ class SubprocessGoldenJourneyRunner:
         validated_input = _validate_input_text(input_text)
         process_environment = _isolated_cli_environment(
             self.data_directory,
+            self.config_directory,
             environment,
         )
         return subprocess.run(
@@ -325,20 +344,23 @@ def _validate_input_text(value: object) -> str | None:
 
 def _isolated_cli_environment(
     data_directory: Path,
+    config_directory: Path,
     overrides: Mapping[str, str] | None,
 ) -> dict[str, str]:
-    """Build an environment that cannot select developer Workaholic state.
+    """Build an environment that cannot select developer state or import paths.
 
     Args:
         data_directory: Harness-owned trusted data directory.
+        config_directory: Harness-owned trusted configuration directory.
         overrides: Optional documented trusted overrides.
 
     Returns:
-        Process environment pinned to harness-owned storage.
+        Process environment pinned to harness-owned configuration and storage.
 
     Raises:
         TypeError: If overrides are not a string mapping.
-        ValueError: If an override is undocumented or changes the data root.
+        ValueError: If an override is undocumented, malformed, or changes an
+            owned root.
 
     """
     candidate_overrides: object = overrides
@@ -357,6 +379,14 @@ def _isolated_cli_environment(
     if undocumented:
         message = "Golden CLI environment contains an undocumented override."
         raise ValueError(message)
+
+    expected_config_directory = str(config_directory)
+    if supplied.get("WORKAHOLIC_CONFIG_DIR", expected_config_directory) != (
+        expected_config_directory
+    ):
+        message = "Golden CLI cannot override its harness-owned config directory."
+        raise ValueError(message)
+
     expected_data_directory = str(data_directory)
     if supplied.get("WORKAHOLIC_DATA_DIR", expected_data_directory) != (
         expected_data_directory
@@ -364,17 +394,29 @@ def _isolated_cli_environment(
         message = "Golden CLI cannot override its harness-owned data directory."
         raise ValueError(message)
 
+    selected_profile = supplied.get("WORKAHOLIC_PROFILE")
+    if selected_profile is not None:
+        try:
+            validate_profile_name(selected_profile)
+        except ValueError as error:
+            message = "Golden CLI profile override is invalid."
+            raise ValueError(message) from error
+
     environment = {
         key: value
         for key, value in os.environ.items()
         if not key.startswith("WORKAHOLIC_")
+        and key not in _UNTRUSTED_INHERITED_PYTHON_KEYS
     }
     environment.update(
         {
             "NO_COLOR": "1",
+            "WORKAHOLIC_CONFIG_DIR": expected_config_directory,
             "WORKAHOLIC_DATA_DIR": expected_data_directory,
         }
     )
+    if selected_profile is not None:
+        environment["WORKAHOLIC_PROFILE"] = selected_profile
     return environment
 
 
