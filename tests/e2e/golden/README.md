@@ -5,15 +5,16 @@ Workaholic AI becomes useful and, eventually, releasable. Each file is an
 executable pytest specification that uses only supported user-facing
 boundaries for domain operations.
 
-Phase 0 collects every journey but skips it explicitly. A skip may be removed
-only when its complete real implementation exists. A mock, in-memory stand-in,
-or fake product response is not sufficient.
+Phase 1 enables the solo journey through a fresh-process CLI harness and real
+SQLite persistence. The other five journeys remain explicitly skipped until
+their complete real implementations exist. A mock, in-memory stand-in, or fake
+product response is not sufficient.
 
 ## Journey inventory
 
 | Journey | Canonical specification | Enabling phase | Remove the skip when |
 | --- | --- | --- | --- |
-| Solo | [test_solo_journey.py](test_solo_journey.py) | Phase 1 | LocalSession, SQLite, initialization, task creation, and persistence across fresh CLI processes work |
+| Solo | [test_solo_journey.py](test_solo_journey.py) | Phase 1 | Enabled: LocalSession, SQLite, initialization, task creation, and persistence run across fresh CLI processes |
 | Multi-project | [test_multi_project_journey.py](test_multi_project_journey.py) | Phase 2 | Project binding, upward context discovery, and independent stable Project task keys work |
 | Agent | [test_agent_journey.py](test_agent_journey.py) | Phase 4 | Real local Agents can claim, heartbeat, submit, and receive `LEASE_LOST` after expiry through CLI JSON |
 | Team | [test_team_journey.py](test_team_journey.py) | Phase 6 | Two remote Humans and an Agent can use one authenticated server through RemoteSession |
@@ -34,13 +35,14 @@ Golden tests must:
 - assert the `workaholic.cli/v1` envelope for JSON-mode operations;
 - use isolated temporary state and tear down processes and services;
 - carry `e2e` and `golden` markers plus applicable resource markers;
-- use a phase-specific `skip` while blocked;
+- use a phase-specific `skip` while blocked and remove it only after the whole journey is real;
 - never use `xfail`.
 
-The shared `golden_runner` fixture intentionally fails in Phase 0 if a skip is
-removed before a real harness is implemented. Its typed protocol describes
-process and resource boundaries only; it does not fabricate production
-behavior.
+The shared `golden_runner` fixture pins every local CLI process to one
+pytest-owned data directory and strips inherited `WORKAHOLIC_*` selections.
+Phase 1 implements only real local CLI execution. Remote Instance
+orchestration, registry package selection, and `uvx` execution remain explicit
+unsupported harness operations while their journeys stay skipped.
 
 ## Markers and selection
 
@@ -67,6 +69,10 @@ Run all enabled golden journeys:
 ```bash
 uv run pytest -m golden
 ```
+
+This targeted command reports journey outcomes independently of the
+whole-suite coverage threshold. Unfiltered CI and pre-push runs continue to
+enforce at least 95 percent coverage.
 
 Unknown marker names are errors because pytest runs with `--strict-markers`.
 

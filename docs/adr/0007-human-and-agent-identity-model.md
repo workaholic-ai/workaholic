@@ -53,6 +53,21 @@ authorization even though the local filesystem remains part of the operating
 system trust boundary. RemoteSession authenticates every request. Every
 accepted mutation records authenticated Subject and request attribution.
 
+### Phase delivery boundary
+
+Phase 1 bootstrap creates one real enabled Human Subject named
+`Local operator`, marks that Subject as the Instance administrator, grants it
+the Owner role on the bootstrapped Project, and selects it as the sole
+LocalSession actor. Every accepted Phase 1 Task creation and `task_created`
+event records that Subject and a generated request identity.
+
+Because Phase 1 is an embedded single-user slice whose filesystem is inside
+the local trust boundary, it creates no bearer Token, stores no credential,
+and provides no identity-management commands. Phase 5 adds Tokens, secure
+credential storage, additional Human and Agent Subjects, and general
+ProjectGrant administration. Those additions extend the Phase 1 identity;
+they do not replace anonymous or placeholder bootstrap records.
+
 ## Alternatives considered
 
 ### Use one identity for all local activity
@@ -81,7 +96,9 @@ least-privilege requirements among Projects or Subjects.
 - Operators can revoke or disable one compromised Agent without rotating every
   Agent.
 - Bootstrap, Token lifecycle, credential storage, and ProjectGrant management
-  require explicit workflows.
+  beyond the initial Owner grant require explicit workflows.
+- Phase 1 preserves attribution without prematurely creating a bearer
+  credential inside an embedded local process.
 - Local and remote contract tests must apply the same authorization matrix.
 - Compromise remains effective within a Subject's legitimate grants until its
   Token expires or is revoked, so grants and lifetimes should stay narrow.

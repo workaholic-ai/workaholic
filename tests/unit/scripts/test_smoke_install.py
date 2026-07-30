@@ -11,7 +11,7 @@ import pytest
 
 _PROJECT_ROOT = Path(__file__).parents[3]
 _SMOKE_SCRIPT = _PROJECT_ROOT / "scripts" / "smoke-install.sh"
-_EXPECTED_VERSION = "0.0.0"
+_EXPECTED_VERSION = "0.1.0a1"
 
 
 def _write_executable(path: Path, source: str) -> None:
@@ -177,7 +177,7 @@ def test_smoke_script_installs_and_runs_wheel_outside_checkout(tmp_path: Path) -
 
     assert result.returncode == 0
     assert result.stdout == (
-        "Verified workaholic 0.0.0 from an isolated wheel install.\n"
+        "Verified workaholic 0.1.0a1 from an isolated wheel install.\n"
     )
     assert result.stderr == ""
     assert len(uv_calls) == 3
@@ -208,7 +208,7 @@ def test_smoke_script_requires_exactly_one_wheel_argument(
 
 def test_smoke_script_rejects_a_missing_wheel(tmp_path: Path) -> None:
     """A nonexistent artifact fails before creating an environment."""
-    missing_wheel = tmp_path / "workaholic_ai-0.0.0-py3-none-any.whl"
+    missing_wheel = tmp_path / "workaholic_ai-0.1.0a1-py3-none-any.whl"
 
     result, uv_calls, cli_cwd, remaining = _run_smoke_script(
         tmp_path,
@@ -265,7 +265,7 @@ def test_smoke_script_rejects_a_wrong_version_wheel(tmp_path: Path) -> None:
     )
 
     assert result.returncode == 65
-    assert "expected version 0.0.0, installed 9.9.9" in result.stderr
+    assert "expected version 0.1.0a1, installed 9.9.9" in result.stderr
     assert len(uv_calls) == 3
     assert cli_cwd is None
     assert remaining == ()

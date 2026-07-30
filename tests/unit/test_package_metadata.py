@@ -9,7 +9,8 @@ from typing import Any
 
 import pytest
 
-from workaholic.cli.main import main
+from workaholic import __version__
+from workaholic.composition import main
 
 _DISTRIBUTION_NAME = "workaholic-ai"
 _PROJECT_ROOT = Path(__file__).parents[2]
@@ -35,7 +36,8 @@ def test_source_metadata_matches_foundation_decisions() -> None:
     project = _project_metadata()
 
     assert project["name"] == _DISTRIBUTION_NAME
-    assert project["version"] == "0.0.0"
+    assert project["version"] == "0.1.0a1"
+    assert project["version"] == __version__
     assert project["readme"] == "README.md"
     assert project["requires-python"] == ">=3.14"
     assert project["license"] == "Apache-2.0"
@@ -43,8 +45,12 @@ def test_source_metadata_matches_foundation_decisions() -> None:
     assert project["authors"] == [
         {"name": "Pavels Gurskis", "email": "pg@ithesion.com"}
     ]
-    assert project["dependencies"] == ["typer>=0.27.0,<0.28.0"]
-    assert project["scripts"] == {"workaholic": "workaholic.cli.main:main"}
+    assert project["dependencies"] == [
+        "platformdirs>=4.11.0,<4.12.0",
+        "pydantic>=2.13.4,<2.14.0",
+        "typer>=0.27.0,<0.28.0",
+    ]
+    assert project["scripts"] == {"workaholic": "workaholic.composition:main"}
 
 
 def test_installed_metadata_matches_source_metadata() -> None:
@@ -61,8 +67,20 @@ def test_installed_metadata_matches_source_metadata() -> None:
     assert installed.get_all("License-File") == ["LICENSE"]
     assert installed["Author-email"] == ("Pavels Gurskis <pg@ithesion.com>")
     assert installed["Description-Content-Type"] == "text/markdown"
+    assert installed.get_all("Requires-Dist") == [
+        "platformdirs<4.12.0,>=4.11.0",
+        "pydantic<2.14.0,>=2.13.4",
+        "typer<0.28.0,>=0.27.0",
+    ]
     assert packaged_metadata is not None
     assert "# Workaholic AI" in packaged_metadata
+
+
+def test_data_directory_override_is_documented() -> None:
+    """The trusted local data override is discoverable in the env template."""
+    environment_example = (_PROJECT_ROOT / ".env.example").read_text(encoding="utf-8")
+
+    assert environment_example.endswith("WORKAHOLIC_DATA_DIR=\n")
 
 
 def test_console_entry_point_loads_public_main() -> None:
@@ -74,7 +92,7 @@ def test_console_entry_point_loads_public_main() -> None:
     ]
 
     assert len(entry_points) == 1
-    assert entry_points[0].value == "workaholic.cli.main:main"
+    assert entry_points[0].value == "workaholic.composition:main"
     assert entry_points[0].load() is main
 
 

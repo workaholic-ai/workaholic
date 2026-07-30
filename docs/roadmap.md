@@ -275,10 +275,13 @@ Implement:
 ```text
 Instance
 Project
+Subject
+ProjectGrant
 Task
 TaskEvent
 LocalSession
 SQLite persistence
+.workaholic.env in the exact current directory
 ```
 
 Tasks initially need:
@@ -297,7 +300,10 @@ created/updated timestamps
 creator
 ```
 
-Even at this stage, every mutation should append an event. Retrofitting audit events later would be unnecessarily risky.
+Every accepted Task mutation appends an attributable TaskEvent in the same
+transaction. Bootstrap creates Instance, Subject, ProjectGrant, and Project
+records directly; it does not fabricate TaskEvents for entities that are not
+Tasks.
 
 ## Commands
 
@@ -310,14 +316,27 @@ workaholic task list
 workaholic task show ACME-1
 ```
 
+All six commands accept `--json` and `--non-interactive`. `up` and `task add`
+also accept an optional `--idempotency-key`. Phase 1 establishes the versioned
+JSON envelopes, stable error identifiers, and exit-code categories documented
+in the [CLI automation contract](cli-contract.md); Phase 4 extends that
+contract with agent-execution commands.
+
 `workaholic up` should:
 
 1. Create the default local instance.
 2. Initialize SQLite.
-3. Create a local bootstrap operator.
-4. Create the project.
-5. Bind the current directory.
-6. Return without starting a daemon.
+3. Create one real local Human Subject on first use.
+4. Mark that Subject as the Instance administrator.
+5. Create the project and grant that Subject the Owner role.
+6. Write a strict `.workaholic.env` file in the exact current directory.
+7. Return without starting a daemon.
+
+Phase 1 does not create Tokens, use an operating-system credential store,
+search parent directories for context, or load configurable trusted profiles.
+Those capabilities arrive in Phases 5 and 2 respectively. The built-in
+`local` profile name in the Phase 1 context file selects the embedded local
+instance only.
 
 ## Architecture introduced
 
@@ -352,9 +371,12 @@ Required tests:
 * duplicate project-key rejection;
 * stable task lookup by UID and `ACME-1`;
 * task creation event;
-* optimistic task version increment;
+* initial task version `1`;
 * clean database initialization;
 * incompatible schema rejection.
+
+Version increments and stale-update rejection arrive with update commands in
+Phase 3.
 
 ## Exit gate
 
@@ -383,13 +405,15 @@ Make Workaholic AI natural to use across several repositories and agent workspac
 Implement:
 
 ```text
-.workaholic.env
-profile configuration
-upward context discovery
+upward `.workaholic.env` discovery
+configurable trusted profiles
 multiple projects per instance
 stable project-prefixed task IDs
 workspace-root resolution
 ```
+
+Phase 2 extends the strict context file written by Phase 1; it does not
+retroactively introduce that file.
 
 Example:
 
@@ -528,12 +552,16 @@ workaholic task events ACME-1
 
 Introduce now:
 
-* optimistic version checks;
-* request IDs;
-* mutation idempotency keys;
-* append-only typed events;
+* task version increments and stale-update rejection;
+* request attribution for the additional lifecycle commands;
+* idempotency keys for the additional mutation commands;
+* additional append-only typed events beyond `task_created`;
 * deterministic ready-task ordering;
-* injected clock abstraction for tests.
+* expanded injected-clock rules for lifecycle and readiness tests.
+
+Phase 1 already establishes optional idempotency for `up` and `task add`,
+generated request IDs, attributable `task_created` events, authoritative
+transaction timestamps, and initial Task version `1`.
 
 Typed events include:
 
@@ -569,7 +597,7 @@ A human operator can create a small dependency graph, block and unblock work, su
 
 ---
 
-# Phase 4 — Agent execution and JSON CLI contract
+# Phase 4 — Agent execution and extended JSON CLI contract
 
 ## Goal
 
@@ -644,7 +672,11 @@ workaholic task submit ACME-42 \
   --non-interactive
 ```
 
-## CLI automation contract
+## CLI automation contract extension
+
+Phase 4 extends the JSON, non-interactive, idempotency, error, and exit-code
+contract established for the Phase 1 commands. It does not retrofit automation
+support onto an interactive-only CLI.
 
 Every agent-facing command must guarantee:
 
@@ -697,21 +729,26 @@ This is the first agent-usable Workaholic AI release.
 
 ## Goal
 
-Replace implicit local trust with the finalized human and agent identity model.
+Extend the attributable local bootstrap identity into the finalized human and
+agent credential-management model.
 
 ## Scope
 
 Implement:
 
 ```text
-Subject
 Token
-ProjectGrant
-instance administrator
-project roles
+additional Human and Agent Subjects
+Viewer, Agent, and Operator ProjectGrants
 credential storage
-authorization policy
+identity-management commands
+full authorization policy
 ```
+
+Phase 1 already creates one real Human Subject, grants Instance-administrator
+status and the Owner role, and attributes Task mutations to that Subject.
+Phase 5 adds bearer Tokens, secure credential storage, additional identities,
+and general grant management. It does not replace anonymous bootstrap records.
 
 Subject kinds:
 

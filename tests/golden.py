@@ -3,12 +3,16 @@
 from __future__ import annotations
 
 import json
+import os
+import subprocess
+import sys
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
+from pathlib import Path
 from typing import TYPE_CHECKING, Literal, Never, Protocol, TypeGuard
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping, Sequence
     from contextlib import AbstractContextManager
-    from pathlib import Path
     from subprocess import CompletedProcess
 
 type JsonValue = (
@@ -19,6 +23,8 @@ type StorageBackend = Literal["json", "sqlite", "postgres"]
 type SubjectKind = Literal["human", "agent"]
 
 _CLI_SCHEMA = "workaholic.cli/v1"
+_CLI_TIMEOUT_SECONDS = 30
+_TRUSTED_CLI_ENVIRONMENT_KEYS = frozenset({"WORKAHOLIC_DATA_DIR"})
 
 
 class GoldenInstance(Protocol):
@@ -125,6 +131,253 @@ class GoldenJourneyRunner(Protocol):
         ...
 
 
+@dataclass(frozen=True, slots=True)
+class SubprocessGoldenJourneyRunner:
+    """Run supported journeys in fresh processes over isolated local state."""
+
+    data_directory: Path
+
+    def __post_init__(self) -> None:
+        """Validate the owned data root without creating it.
+
+        Raises:
+            TypeError: If the data directory is not an absolute Path.
+
+        """
+        candidate: object = self.data_directory
+        if not isinstance(candidate, Path) or not candidate.is_absolute():
+            message = "Golden data_directory must be an absolute Path."
+            raise TypeError(message)
+
+    def cli(
+        self,
+        arguments: Sequence[str],
+        *,
+        cwd: Path,
+        input_text: str | None = None,
+        environment: Mapping[str, str] | None = None,
+    ) -> subprocess.CompletedProcess[str]:
+        """Run one fresh installed-package CLI process.
+
+        Args:
+            arguments: Arguments after the ``workaholic`` executable.
+            cwd: Existing exact Workspace working directory.
+            input_text: Optional UTF-8 standard-input payload.
+            environment: Optional documented trusted environment overrides.
+
+        Returns:
+            Completed process with UTF-8 text streams.
+
+        Raises:
+            TypeError: If a boundary value has an unsupported runtime type.
+            ValueError: If an override is undocumented or escapes owned state.
+            subprocess.TimeoutExpired: If the CLI does not finish promptly.
+
+        """
+        validated_arguments = _validate_cli_arguments(arguments)
+        validated_cwd = _validate_cli_cwd(cwd)
+        validated_input = _validate_input_text(input_text)
+        process_environment = _isolated_cli_environment(
+            self.data_directory,
+            environment,
+        )
+        return subprocess.run(
+            [sys.executable, "-m", "workaholic", *validated_arguments],
+            check=False,
+            cwd=validated_cwd,
+            env=process_environment,
+            input=validated_input,
+            capture_output=True,
+            encoding="utf-8",
+            timeout=_CLI_TIMEOUT_SECONDS,
+        )
+
+    def instance(
+        self,
+        *,
+        backend: StorageBackend,
+        project_key: str,
+        remote: bool,
+        root: Path,
+        subjects: Mapping[str, SubjectKind],
+    ) -> AbstractContextManager[GoldenInstance]:
+        """Reject future Instance orchestration before its enabling phase.
+
+        Args:
+            backend: Requested persistence backend.
+            project_key: Requested initial Project key.
+            remote: Whether a real remote server is requested.
+            root: Requested isolated resource root.
+            subjects: Requested Subject inventory.
+
+        Raises:
+            NotImplementedError: Always in the Phase 1 harness.
+
+        """
+        del backend, project_key, remote, root, subjects
+        message = "Golden Instance orchestration is not implemented in Phase 1."
+        raise NotImplementedError(message)
+
+    def published_package_spec(self) -> str:
+        """Reject registry selection before release-candidate acceptance.
+
+        Raises:
+            NotImplementedError: Always in the Phase 1 harness.
+
+        """
+        message = "Published-package selection is not implemented in Phase 1."
+        raise NotImplementedError(message)
+
+    def uvx(
+        self,
+        package_spec: str,
+        arguments: Sequence[str],
+        *,
+        cwd: Path,
+        input_text: str | None = None,
+    ) -> subprocess.CompletedProcess[str]:
+        """Reject registry execution before release-candidate acceptance.
+
+        Args:
+            package_spec: Requested immutable registry package specifier.
+            arguments: Requested public CLI arguments.
+            cwd: Requested clean working directory.
+            input_text: Optional requested standard-input payload.
+
+        Raises:
+            NotImplementedError: Always in the Phase 1 harness.
+
+        """
+        del package_spec, arguments, cwd, input_text
+        message = "Golden uvx execution is not implemented in Phase 1."
+        raise NotImplementedError(message)
+
+
+def _validate_cli_arguments(value: object) -> tuple[str, ...]:
+    """Validate one immutable CLI argument sequence.
+
+    Args:
+        value: Candidate argument sequence.
+
+    Returns:
+        Copied tuple of CLI arguments.
+
+    Raises:
+        TypeError: If the sequence or any element is invalid.
+
+    """
+    if isinstance(value, str | bytes) or not isinstance(value, Sequence):
+        message = "Golden CLI arguments must be a sequence of strings."
+        raise TypeError(message)
+    arguments = tuple(value)
+    if not all(isinstance(argument, str) for argument in arguments):
+        message = "Golden CLI arguments must contain only strings."
+        raise TypeError(message)
+    return arguments
+
+
+def _validate_cli_cwd(value: object) -> Path:
+    """Validate one exact existing CLI working directory.
+
+    Args:
+        value: Candidate working directory.
+
+    Returns:
+        Validated absolute directory.
+
+    Raises:
+        TypeError: If the value is not an absolute Path.
+        ValueError: If the path is not an existing directory.
+
+    """
+    if not isinstance(value, Path) or not value.is_absolute():
+        message = "Golden CLI cwd must be an absolute Path."
+        raise TypeError(message)
+    try:
+        is_directory = value.is_dir()
+    except OSError as error:
+        message = "Golden CLI cwd is unavailable."
+        raise ValueError(message) from error
+    if not is_directory:
+        message = "Golden CLI cwd must be an existing directory."
+        raise ValueError(message)
+    return value
+
+
+def _validate_input_text(value: object) -> str | None:
+    """Validate optional CLI standard input without coercion.
+
+    Args:
+        value: Candidate input payload.
+
+    Returns:
+        Input string or ``None``.
+
+    Raises:
+        TypeError: If the payload is not text.
+
+    """
+    if value is not None and not isinstance(value, str):
+        message = "Golden CLI input_text must be a string or None."
+        raise TypeError(message)
+    return value
+
+
+def _isolated_cli_environment(
+    data_directory: Path,
+    overrides: Mapping[str, str] | None,
+) -> dict[str, str]:
+    """Build an environment that cannot select developer Workaholic state.
+
+    Args:
+        data_directory: Harness-owned trusted data directory.
+        overrides: Optional documented trusted overrides.
+
+    Returns:
+        Process environment pinned to harness-owned storage.
+
+    Raises:
+        TypeError: If overrides are not a string mapping.
+        ValueError: If an override is undocumented or changes the data root.
+
+    """
+    candidate_overrides: object = overrides
+    if candidate_overrides is None:
+        supplied: dict[str, str] = {}
+    elif not isinstance(candidate_overrides, Mapping) or not all(
+        isinstance(key, str) and isinstance(value, str)
+        for key, value in candidate_overrides.items()
+    ):
+        message = "Golden CLI environment overrides must map strings to strings."
+        raise TypeError(message)
+    else:
+        supplied = dict(candidate_overrides)
+
+    undocumented = supplied.keys() - _TRUSTED_CLI_ENVIRONMENT_KEYS
+    if undocumented:
+        message = "Golden CLI environment contains an undocumented override."
+        raise ValueError(message)
+    expected_data_directory = str(data_directory)
+    if supplied.get("WORKAHOLIC_DATA_DIR", expected_data_directory) != (
+        expected_data_directory
+    ):
+        message = "Golden CLI cannot override its harness-owned data directory."
+        raise ValueError(message)
+
+    environment = {
+        key: value
+        for key, value in os.environ.items()
+        if not key.startswith("WORKAHOLIC_")
+    }
+    environment.update(
+        {
+            "NO_COLOR": "1",
+            "WORKAHOLIC_DATA_DIR": expected_data_directory,
+        }
+    )
+    return environment
+
+
 def _reject_nonstandard_number(value: str) -> Never:
     """Reject JSON constants forbidden by the CLI contract.
 
@@ -217,8 +470,8 @@ def require_success(result: CompletedProcess[str]) -> JsonValue:
     if payload.get("ok") is not True:
         message = "CLI success envelope must set `ok` to true."
         raise AssertionError(message)
-    if "data" not in payload or "error" in payload:
-        message = "CLI success envelope must contain `data` and omit `error`."
+    if payload.keys() != {"schema", "ok", "data"}:
+        message = "CLI success envelope must contain exactly schema, ok, and data."
         raise AssertionError(message)
     return payload["data"]
 
@@ -253,8 +506,8 @@ def require_error(
     if payload.get("ok") is not False:
         message = "CLI error envelope must set `ok` to false."
         raise AssertionError(message)
-    if "data" in payload:
-        message = "CLI error envelope must omit `data`."
+    if payload.keys() != {"schema", "ok", "error"}:
+        message = "CLI error envelope must contain exactly schema, ok, and error."
         raise AssertionError(message)
 
     error = require_object(payload.get("error"), context="CLI error")

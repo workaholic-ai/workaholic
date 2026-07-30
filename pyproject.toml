@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "workaholic-ai"
-version = "0.0.0"
+version = "0.1.0a1"
 description = "CLI-first task coordination for human operators and autonomous agents."
 readme = "README.md"
 requires-python = ">=3.14"
@@ -34,6 +34,8 @@ classifiers = [
   "Topic :: Software Development",
 ]
 dependencies = [
+  "platformdirs>=4.11.0,<4.12.0",
+  "pydantic>=2.13.4,<2.14.0",
   "typer>=0.27.0,<0.28.0",
 ]
 
@@ -43,7 +45,7 @@ Issues = "https://github.com/workaholic-ai/workaholic/issues"
 Repository = "https://github.com/workaholic-ai/workaholic"
 
 [project.scripts]
-workaholic = "workaholic.cli.main:main"
+workaholic = "workaholic.composition:main"
 
 [dependency-groups]
 dev = [
@@ -134,6 +136,7 @@ name = "Domain and application dependency direction"
 type = "layers"
 containers = ["workaholic"]
 layers = [
+  "composition",
   "cli : tui : server : session : persistence : protocol : client : context",
   "application : auth",
   "domain",

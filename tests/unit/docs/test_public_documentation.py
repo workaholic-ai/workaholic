@@ -1,12 +1,17 @@
-"""Tests for the public Phase 0 documentation contracts."""
+"""Tests for public documentation and the Phase 1 quick start."""
 
 from __future__ import annotations
 
+import os
 import re
+import shlex
+import shutil
+import subprocess
 from importlib import metadata
 from pathlib import Path
 from urllib.parse import unquote, urlsplit
 
+import pytest
 from scripts.check_doc_links import (
     discover_markdown_files,
     validate_document_links,
@@ -18,6 +23,8 @@ _CONTRIBUTING = _PROJECT_ROOT / "CONTRIBUTING.md"
 _PULL_REQUEST_TEMPLATE = _PROJECT_ROOT / ".github" / "pull_request_template.md"
 _GLOSSARY = _PROJECT_ROOT / "docs" / "glossary.md"
 _ARCHITECTURE = _PROJECT_ROOT / "docs" / "architecture.md"
+_CLI_CONTRACT = _PROJECT_ROOT / "docs" / "cli-contract.md"
+_PERSISTENCE_CONTRACT = _PROJECT_ROOT / "docs" / "persistence-contract.md"
 _ROADMAP = _PROJECT_ROOT / "docs" / "roadmap.md"
 _THREAT_MODEL = _PROJECT_ROOT / "docs" / "threat-model.md"
 _PRODUCT_SCOPE = _PROJECT_ROOT / "docs" / "product-scope.md"
@@ -40,11 +47,9 @@ _VERSION_OUTPUT_PATTERN = re.compile(
     r"The version command prints:\n\n```text\n(?P<output>[^\n]+)\n```"
 )
 _EXPECTED_QUICK_START = """uv sync --frozen
-uv run pre-commit run --all-files
-uv run workaholic --version
-uv run pytest
-uv build
-scripts/smoke-install.sh dist/*.whl"""
+uv run workaholic up --project-key ACME
+uv run workaholic task add "First persistent task"
+uv run workaholic task list"""
 _REQUIRED_GLOSSARY_TERMS = frozenset(
     {
         "Agent",
@@ -144,14 +149,67 @@ def test_threat_model_covers_required_boundaries_and_attack_scenarios() -> None:
         assert boundary in threat_model
 
 
-def test_readme_quick_start_contains_only_executable_phase_zero_commands() -> None:
-    """The quick start remains an exact, executable Phase 0 command sequence."""
+def test_readme_quick_start_contains_only_phase_one_journey_commands() -> None:
+    """The quick start is the exact owner-approved local Task sequence."""
     readme = _README.read_text(encoding="utf-8")
     quick_start_match = _QUICK_START_PATTERN.search(readme)
 
     assert quick_start_match is not None
     bash_blocks = _BASH_BLOCK_PATTERN.findall(quick_start_match.group("section"))
     assert bash_blocks == [_EXPECTED_QUICK_START]
+
+
+@pytest.mark.requires_uv
+def test_readme_quick_start_executes_in_an_isolated_source_checkout(
+    tmp_path: Path,
+) -> None:
+    """Every documented quick-start command succeeds against isolated state."""
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    for filename in ("LICENSE", "README.md", "pyproject.toml", "uv.lock"):
+        shutil.copy2(_PROJECT_ROOT / filename, checkout / filename)
+    shutil.copytree(_PROJECT_ROOT / "src", checkout / "src")
+    data_directory = tmp_path / "data"
+    environment = os.environ.copy()
+    environment.update(
+        {
+            "NO_COLOR": "1",
+            "UV_CACHE_DIR": str(tmp_path / "uv-cache"),
+            "UV_LINK_MODE": "copy",
+            "UV_NO_PROGRESS": "1",
+            "WORKAHOLIC_DATA_DIR": str(data_directory),
+        }
+    )
+
+    results = [
+        subprocess.run(
+            shlex.split(command),
+            check=False,
+            cwd=checkout,
+            env=environment,
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        for command in _EXPECTED_QUICK_START.splitlines()
+    ]
+
+    failures = "\n\n".join(
+        f"{command}\nstdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+        for command, result in zip(
+            _EXPECTED_QUICK_START.splitlines(),
+            results,
+            strict=True,
+        )
+        if result.returncode != 0
+    )
+    assert [result.returncode for result in results] == [0, 0, 0, 0], failures
+    assert all("Traceback" not in result.stderr for result in results)
+    assert "ACME-1" in results[2].stdout
+    assert "First persistent task" in results[3].stdout
+    assert "ACME-1" in results[3].stdout
+    assert (checkout / ".workaholic.env").is_file()
+    assert (data_directory / "local.db").is_file()
 
 
 def test_readme_version_output_matches_installed_distribution() -> None:
@@ -165,7 +223,60 @@ def test_readme_version_output_matches_installed_distribution() -> None:
     )
 
 
-def test_phase_zero_scope_decisions_are_consistent_across_public_documents() -> None:
+def test_readme_publishes_the_phase_one_clean_state_gate() -> None:
+    """Public development guidance exposes the isolated aggregate command."""
+    readme = " ".join(_README.read_text(encoding="utf-8").split())
+
+    assert "## Phase 1 acceptance gate" in _README.read_text(encoding="utf-8")
+    assert "scripts/verify-phase-1.sh" in readme
+    for guarantee in (
+        "clean checkout",
+        "no active virtual environment",
+        "no pre-existing `.venv` or `dist`",
+        "temporary virtual environment",
+        "`WORKAHOLIC_DATA_DIR`",
+        "never uses the operator's default profile or database",
+    ):
+        assert guarantee in readme
+
+
+def test_phase_one_status_and_limitations_are_explicit() -> None:
+    """Public implementation notices distinguish Phase 1 from planned v1."""
+    readme = " ".join(_README.read_text(encoding="utf-8").split())
+    architecture = " ".join(_ARCHITECTURE.read_text(encoding="utf-8").split())
+    cli_contract = " ".join(_CLI_CONTRACT.read_text(encoding="utf-8").split())
+    persistence = " ".join(_PERSISTENCE_CONTRACT.read_text(encoding="utf-8").split())
+
+    for document in (readme, architecture, cli_contract, persistence):
+        assert "`0.1.0a1`" in document
+    for command in (
+        "workaholic up",
+        "workaholic status",
+        "workaholic project list",
+        "workaholic task add",
+        "workaholic task list",
+        "workaholic task show",
+    ):
+        assert command in readme
+    for unavailable in (
+        "upward context discovery",
+        "multiple active Projects",
+        "Agents",
+        "Tokens",
+        "RemoteSession",
+        "JSON or PostgreSQL persistence adapters",
+        "schema migration",
+    ):
+        assert unavailable in readme
+    assert "does not implement upward context discovery" in architecture
+    assert "does not discover context upward" in cli_contract
+    assert "JSON and PostgreSQL adapters and schema migration remain unavailable" in (
+        persistence
+    )
+    assert "unsupported alpha store is rejected unchanged" in persistence
+
+
+def test_foundation_scope_decisions_are_consistent_across_public_documents() -> None:
     """Tenancy, compatibility, and v1 sequencing retain one accepted answer."""
     readme = " ".join(_README.read_text(encoding="utf-8").split())
     scope = " ".join(_PRODUCT_SCOPE.read_text(encoding="utf-8").split())

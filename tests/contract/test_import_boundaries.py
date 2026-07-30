@@ -122,6 +122,7 @@ def test_import_contracts_are_exhaustive_and_have_no_ignored_edges() -> None:
     assert layer_contract["exhaustive"] is True
     assert layer_contract["exhaustive_ignores"] == ["__main__"]
     assert layer_contract["layers"] == [
+        "composition",
         "cli : tui : server : session : persistence : protocol : client : context",
         "application : auth",
         "domain",
