@@ -1,5 +1,10 @@
 """Transport-neutral Session interfaces, requests, and local implementation."""
 
+from workaholic.application import (
+    ApplicationError,
+    ApplicationErrorCode,
+    ExitCategory,
+)
 from workaholic.session.base import (
     LocalActorSelector,
     WorkaholicSession,
@@ -16,6 +21,9 @@ from workaholic.session.models import (
 )
 
 __all__ = [
+    "ApplicationError",
+    "ApplicationErrorCode",
+    "ExitCategory",
     "LocalActorSelector",
     "LocalSession",
     "ProjectListRequest",

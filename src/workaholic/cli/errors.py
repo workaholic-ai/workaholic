@@ -1,0 +1,74 @@
+"""Safe CLI failure normalization, rendering, and exit mapping."""
+
+from __future__ import annotations
+
+from typing import Never
+
+import typer
+
+from workaholic.cli.envelopes import JsonError, JsonErrorDetail
+from workaholic.session import (
+    ApplicationError,
+    ApplicationErrorCode,
+)
+
+_UNKNOWN_ERROR_MESSAGE = "An unexpected internal error occurred."
+
+
+def write_failure(error: Exception, *, json_mode: bool) -> Never:
+    """Write one safe failure and terminate with its stable exit category.
+
+    Known application errors retain their safe code, message, retryability, and
+    exit mapping. Unknown failures are fully redacted to ``INTERNAL_ERROR``;
+    their exception type and message are never rendered.
+
+    Args:
+        error: Known application failure or unexpected exception.
+        json_mode: Whether to emit the public automation envelope.
+
+    Raises:
+        TypeError: If ``json_mode`` is not a real boolean.
+        typer.Exit: Always, after rendering the safe failure.
+
+    """
+    candidate_json_mode: object = json_mode
+    if type(candidate_json_mode) is not bool:
+        message = "json_mode must be a boolean."
+        raise TypeError(message)
+    public_error = normalize_failure(error)
+    if candidate_json_mode:
+        envelope = JsonError(
+            error=JsonErrorDetail(
+                code=public_error.code.value,
+                message=public_error.safe_message,
+                retryable=public_error.retryable,
+            )
+        )
+        typer.echo(
+            envelope.model_dump_json(
+                by_alias=True,
+                exclude_none=False,
+                ensure_ascii=False,
+            )
+        )
+    else:
+        typer.echo(public_error.safe_message, err=True)
+    raise typer.Exit(code=int(public_error.exit_category))
+
+
+def normalize_failure(error: Exception) -> ApplicationError:
+    """Map one exception to a safe public application failure.
+
+    Args:
+        error: Candidate known or unexpected exception.
+
+    Returns:
+        Original typed application error or a redacted internal failure.
+
+    """
+    if isinstance(error, ApplicationError):
+        return error
+    return ApplicationError(
+        ApplicationErrorCode.INTERNAL_ERROR,
+        _UNKNOWN_ERROR_MESSAGE,
+    )
