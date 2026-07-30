@@ -83,6 +83,7 @@ def _project(*, key: str = "ACME", suffix: str = "acme") -> Project:
         id=ProjectId(f"prj_{suffix}"),
         instance_id=InstanceId("ins_local"),
         key=key,
+        name=key,
         created_at=_NOW,
     )
 
@@ -331,6 +332,7 @@ def test_type_correct_cross_selection_results_are_rejected() -> None:
         id=ProjectId("prj_other"),
         instance_id=other_instance.id,
         key="OTHER",
+        name="Other",
         created_at=_NOW,
     )
     other_subject = Subject(

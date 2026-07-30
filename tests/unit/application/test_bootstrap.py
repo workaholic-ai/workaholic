@@ -49,6 +49,7 @@ def _result() -> BootstrapResult:
         id=ProjectId("prj_acme"),
         instance_id=instance.id,
         key="ACME",
+        name="Acme",
         created_at=_NOW,
     )
     subject = Subject(

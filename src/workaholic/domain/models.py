@@ -1,4 +1,4 @@
-"""Immutable Phase 1 domain entities and enumerated values."""
+"""Immutable cumulative domain entities and enumerated values."""
 
 from __future__ import annotations
 
@@ -18,14 +18,17 @@ from workaholic.domain.identifiers import (
     TaskId,
 )
 from workaholic.domain.rules import (
+    normalize_project_name,
     normalize_task_objective,
     normalize_task_title,
     validate_json_scalar,
     validate_positive_integer,
+    validate_profile_name,
     validate_project_key,
     validate_task_key,
     validate_task_priority,
     validate_utc_timestamp,
+    validate_workspace_root,
 )
 
 # Pydantic application boundaries resolve domain annotations at runtime.
@@ -105,13 +108,15 @@ class Project:
     id: ProjectId
     instance_id: InstanceId
     key: str
+    name: str
     created_at: datetime
 
     def __post_init__(self) -> None:
-        """Validate the Project invariant set."""
+        """Validate and normalize the Project invariant set."""
         _require_instance(self.id, ProjectId, label="Project id")
         _require_instance(self.instance_id, InstanceId, label="Project instance_id")
         validate_project_key(self.key)
+        object.__setattr__(self, "name", normalize_project_name(self.name))
         validate_utc_timestamp(self.created_at, label="Project created_at")
 
 
@@ -150,13 +155,11 @@ class WorkspaceBinding:
     workspace_root: str
 
     def __post_init__(self) -> None:
-        """Validate the Phase 1 Workspace binding invariant set."""
+        """Validate and normalize the Workspace binding invariant set."""
         if type(self.context_version) is not int or self.context_version != 1:
             message = "Workspace context_version must be 1."
             raise DomainValidationError(message)
-        if self.profile != "local":
-            message = "Workspace profile must be 'local' in Phase 1."
-            raise DomainValidationError(message)
+        object.__setattr__(self, "profile", validate_profile_name(self.profile))
         _require_instance(
             self.instance_id,
             InstanceId,
@@ -168,13 +171,11 @@ class WorkspaceBinding:
             label="Workspace project_id",
         )
         validate_project_key(self.project_key)
-        workspace_root: object = self.workspace_root
-        if not isinstance(workspace_root, str) or not workspace_root:
-            message = "Workspace root must be a nonempty string."
-            raise DomainValidationError(message)
-        if "\x00" in workspace_root:
-            message = "Workspace root must not contain a null character."
-            raise DomainValidationError(message)
+        object.__setattr__(
+            self,
+            "workspace_root",
+            validate_workspace_root(self.workspace_root),
+        )
 
 
 @dataclass(frozen=True, slots=True)

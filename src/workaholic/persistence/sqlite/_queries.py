@@ -441,6 +441,8 @@ def _project_from_values(value: tuple[object, ...]) -> Project:
         id=ProjectId(require_text(value[0])),
         instance_id=InstanceId(require_text(value[1])),
         key=require_text(value[2]),
+        # Phase 1 rows predate display names; their initial name is the key.
+        name=require_text(value[2]),
         created_at=parse_timestamp(value[3]),
     )
 

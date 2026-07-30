@@ -407,6 +407,8 @@ def _load_bootstrap_graph(
         id=ProjectId(project_id),
         instance_id=InstanceId(require_text(project_rows[0][1])),
         key=require_text(project_rows[0][2]),
+        # Phase 1 rows predate display names; their initial name is the key.
+        name=require_text(project_rows[0][2]),
         created_at=parse_timestamp(project_rows[0][3]),
     )
     subject = Subject(

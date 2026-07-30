@@ -81,6 +81,7 @@ def project(
         id=ProjectId(identifier),
         instance_id=instance().id,
         key=key,
+        name=key,
         created_at=_NOW,
     )
 

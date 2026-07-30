@@ -106,6 +106,7 @@ def _project() -> Project:
         id=ProjectId("prj_acme"),
         instance_id=InstanceId("ins_local"),
         key="ACME",
+        name="Acme",
         created_at=_NOW,
     )
 
@@ -800,6 +801,7 @@ def test_type_correct_cross_selection_outputs_are_internal_errors() -> None:
         id=ProjectId("prj_beta"),
         instance_id=InstanceId("ins_other"),
         key="BETA",
+        name="Beta",
         created_at=_NOW,
     )
     queries.projects_result = (other_project,)

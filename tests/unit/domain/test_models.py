@@ -1,4 +1,4 @@
-"""Unit tests for immutable Phase 1 domain entities."""
+"""Unit tests for immutable cumulative domain entities."""
 
 from __future__ import annotations
 
@@ -79,6 +79,7 @@ def _project() -> Project:
         id=ProjectId("prj_acme"),
         instance_id=InstanceId("ins_local"),
         key="ACME",
+        name="Acme",
         created_at=_NOW,
     )
 
@@ -192,16 +193,21 @@ def test_subject_normalizes_name_and_validates_runtime_fields() -> None:
 
 def test_project_and_grant_validate_keys_types_and_roles() -> None:
     """Project and ProjectGrant constructors enforce identity and role categories."""
-    project = _project()
+    project = replace(_project(), name="  Cafe\u0301  ")
     grant = ProjectGrant(
         subject_id=_subject().id,
         project_id=project.id,
         role=ProjectRole.OWNER,
     )
 
+    assert project.name == "Café"
     assert grant.role is ProjectRole.OWNER
     with pytest.raises(DomainValidationError, match="Project key"):
         replace(project, key="acme")
+    with pytest.raises(DomainValidationError, match="Project name"):
+        replace(project, name="")
+    with pytest.raises(DomainValidationError, match="Project name"):
+        replace(project, name=True)  # type: ignore[arg-type]
     with pytest.raises(DomainValidationError, match="ProjectGrant role"):
         replace(grant, role="owner")  # type: ignore[arg-type]
 
@@ -228,10 +234,11 @@ def test_real_subject_and_grant_satisfy_owner_authorization_contract() -> None:
     [
         ("context_version", 2, "context_version"),
         ("context_version", True, "context_version"),
-        ("profile", "team", "profile"),
+        ("profile", "Team", "Profile name"),
         ("project_key", "acme", "Project key"),
         ("workspace_root", "", "Workspace root"),
         ("workspace_root", "bad\x00path", "null character"),
+        ("workspace_root", "../escape", "context directory"),
     ],
 )
 def test_workspace_binding_rejects_unsupported_phase_one_values(
@@ -239,7 +246,7 @@ def test_workspace_binding_rejects_unsupported_phase_one_values(
     value: object,
     message: str,
 ) -> None:
-    """Workspace bindings accept only safe, local Phase 1 context values."""
+    """Workspace bindings reject invalid versions, identities, and paths."""
     binding = WorkspaceBinding(
         context_version=1,
         profile="local",
@@ -251,6 +258,21 @@ def test_workspace_binding_rejects_unsupported_phase_one_values(
 
     with pytest.raises(DomainValidationError, match=message):
         replace(binding, **{field: value})  # type: ignore[arg-type]
+
+
+def test_workspace_binding_accepts_named_profile_and_normalizes_root() -> None:
+    """Phase 2 bindings hold validated profiles and portable relative roots."""
+    binding = WorkspaceBinding(
+        context_version=1,
+        profile="team_1",
+        instance_id=InstanceId("ins_local"),
+        project_id=ProjectId("prj_acme"),
+        project_key="ACME",
+        workspace_root="repo/./agents/../worker",
+    )
+
+    assert binding.profile == "team_1"
+    assert binding.workspace_root == "repo/worker"
 
 
 def test_task_normalizes_text_and_preserves_stable_identity() -> None:

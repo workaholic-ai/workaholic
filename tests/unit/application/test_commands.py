@@ -81,6 +81,7 @@ def _project(
         id=ProjectId(value),
         instance_id=instance_id or InstanceId("ins_local"),
         key=key,
+        name=key,
         created_at=_NOW,
     )
 
