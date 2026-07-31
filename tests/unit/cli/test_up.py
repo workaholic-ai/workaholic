@@ -23,6 +23,9 @@ _RUNNER = CliRunner()
 _UP_ERRORS = (
     ApplicationErrorCode.INVALID_INPUT,
     ApplicationErrorCode.CONTEXT_INVALID,
+    ApplicationErrorCode.PROFILE_NOT_FOUND,
+    ApplicationErrorCode.PROFILE_INVALID,
+    ApplicationErrorCode.PROFILE_UNSUPPORTED,
     ApplicationErrorCode.PROJECT_KEY_CONFLICT,
     ApplicationErrorCode.IDEMPOTENCY_CONFLICT,
     ApplicationErrorCode.PERMISSION_DENIED,
@@ -61,6 +64,10 @@ def test_up_json_emits_exact_contract_and_forwards_request(
             "up",
             "--project-key",
             "ACME",
+            "--project-name",
+            "Acme delivery",
+            "--profile",
+            "team",
             "--idempotency-key",
             "bootstrap-1",
             "--json",
@@ -77,7 +84,7 @@ def test_up_json_emits_exact_contract_and_forwards_request(
     )
     assert data == {
         "instance": {"id": "ins_local"},
-        "project": {"id": "prj_acme", "key": "ACME"},
+        "project": {"id": "prj_acme", "key": "ACME", "name": "ACME"},
         "subject": {
             "id": "sub_local",
             "kind": "human",
@@ -93,6 +100,8 @@ def test_up_json_emits_exact_contract_and_forwards_request(
     assert session.up_requests == [
         UpRequest(
             project_key="ACME",
+            project_name="Acme delivery",
+            profile="team",
             idempotency_key="bootstrap-1",
         )
     ]
@@ -189,6 +198,31 @@ def test_up_rejects_invalid_idempotency_key_before_session_acquisition(
     assert session.up_requests == []
 
 
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        ("--project-name", " "),
+        ("--profile", "../private"),
+    ],
+)
+def test_up_rejects_invalid_phase_two_options_before_session(
+    arguments: tuple[str, str],
+) -> None:
+    """Invalid names and profiles fail before acquiring mutable state."""
+    session = RecordingSession()
+    provider = SessionProviderSpy(session)
+
+    result = _RUNNER.invoke(
+        create_app(provider),
+        ["up", "--project-key", "ACME", *arguments, "--json"],
+    )
+
+    detail = require_error(_completed(result), expected_code="INVALID_INPUT")
+    assert detail["message"] == "Bootstrap input is invalid."
+    assert provider.call_count == 0
+    assert session.up_requests == []
+
+
 def test_workspace_serialization_runtime_validates_current_directory() -> None:
     """Direct callers cannot provide an unvalidated current-directory value."""
     binding = RecordingSession().up_result.workspace
@@ -212,6 +246,8 @@ def test_up_help_is_complete_without_acquiring_a_session() -> None:
     assert result.exit_code == 0
     assert "--project-key" in output
     assert "[required]" in output
+    assert "--project-name" in output
+    assert "--profile" in output
     assert "--idempotency-key" in output
     assert "--json" in output
     assert "--non-interactive" in output

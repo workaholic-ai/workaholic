@@ -28,7 +28,7 @@ from workaholic.domain import (
     TaskId,
 )
 from workaholic.persistence.sqlite import (
-    SQLitePhaseOneRepository,
+    SQLiteRepository,
     StorageUnavailableError,
     initialize_empty_store,
     open_read_connection,
@@ -44,7 +44,7 @@ _NOW = datetime(2026, 7, 30, 12, 15, 30, 654321, tzinfo=UTC)
 _CANONICAL_NOW = "2026-07-30T12:15:30.654321Z"
 
 
-def _repository(tmp_path: Path) -> SQLitePhaseOneRepository:
+def _repository(tmp_path: Path) -> SQLiteRepository:
     """Create an initialized and bootstrapped SQLite repository.
 
     Args:
@@ -56,7 +56,7 @@ def _repository(tmp_path: Path) -> SQLitePhaseOneRepository:
     """
     database_path = tmp_path / "local.db"
     initialize_empty_store(database_path)
-    repository = SQLitePhaseOneRepository(database_path)
+    repository = SQLiteRepository(database_path)
     repository.bootstrap_local_project(
         BootstrapMutation(
             instance_id=InstanceId("ins_local"),
@@ -145,7 +145,7 @@ def _remove_grant(connection: sqlite3.Connection) -> object:
 
 
 def _create_pair(
-    pair: tuple[SQLitePhaseOneRepository, TaskCreationMutation],
+    pair: tuple[SQLiteRepository, TaskCreationMutation],
 ) -> Task:
     """Create one Task through a repository/mutation concurrency pair.
 
@@ -411,9 +411,7 @@ def test_concurrent_creates_allocate_distinct_monotonic_numbers(
 ) -> None:
     """Separate connections serialize allocation without duplicate Human keys."""
     repository = _repository(tmp_path)
-    repositories = [
-        SQLitePhaseOneRepository(repository.database_path) for _ in range(10)
-    ]
+    repositories = [SQLiteRepository(repository.database_path) for _ in range(10)]
     mutations = [
         _mutation(str(index), title=f"Task {index}", objective=f"Task {index}")
         for index in range(10)
@@ -442,9 +440,7 @@ def test_concurrent_creates_allocate_distinct_monotonic_numbers(
 def test_concurrent_matching_idempotency_creates_one_task(tmp_path: Path) -> None:
     """Concurrent first uses of one caller key commit one logical mutation."""
     repository = _repository(tmp_path)
-    repositories = [
-        SQLitePhaseOneRepository(repository.database_path) for _ in range(4)
-    ]
+    repositories = [SQLiteRepository(repository.database_path) for _ in range(4)]
     mutations = [
         _mutation(str(index), idempotency_key="concurrent-task") for index in range(4)
     ]

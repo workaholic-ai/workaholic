@@ -20,7 +20,11 @@ _RUNNER = CliRunner()
 _STATUS_ERRORS = (
     ApplicationErrorCode.CONTEXT_NOT_FOUND,
     ApplicationErrorCode.CONTEXT_INVALID,
+    ApplicationErrorCode.PROFILE_NOT_FOUND,
+    ApplicationErrorCode.PROFILE_INVALID,
+    ApplicationErrorCode.PROFILE_UNSUPPORTED,
     ApplicationErrorCode.NOT_INITIALIZED,
+    ApplicationErrorCode.PROJECT_NOT_FOUND,
     ApplicationErrorCode.PERMISSION_DENIED,
     ApplicationErrorCode.SCHEMA_UNSUPPORTED,
     ApplicationErrorCode.STORAGE_BUSY,
@@ -46,7 +50,15 @@ def test_status_json_emits_exact_contract_and_forwards_request() -> None:
 
     result = _RUNNER.invoke(
         create_app(provider),
-        ["status", "--json", "--non-interactive"],
+        [
+            "status",
+            "--profile",
+            "team",
+            "--project",
+            "DOCS",
+            "--json",
+            "--non-interactive",
+        ],
         input=None,
     )
 
@@ -57,10 +69,11 @@ def test_status_json_emits_exact_contract_and_forwards_request() -> None:
         context="status data",
     )
     assert data == {
-        "mode": "local",
-        "schema_version": 1,
+        "mode": "embedded",
+        "profile": "local",
+        "schema_version": 2,
         "instance": {"id": "ins_local"},
-        "project": {"id": "prj_acme", "key": "ACME"},
+        "project": {"id": "prj_acme", "key": "ACME", "name": "ACME"},
         "subject": {
             "id": "sub_local",
             "kind": "human",
@@ -69,7 +82,7 @@ def test_status_json_emits_exact_contract_and_forwards_request() -> None:
             "project_role": "owner",
         },
     }
-    assert session.status_requests == [StatusRequest()]
+    assert session.status_requests == [StatusRequest(profile="team", project="DOCS")]
     assert provider.call_count == 1
 
 
@@ -106,6 +119,22 @@ def test_status_redacts_invalid_session_from_provider() -> None:
     detail = require_error(_completed(result), expected_code="INTERNAL_ERROR")
     assert detail["message"] == "An unexpected internal error occurred."
     assert result.stderr == ""
+
+
+def test_status_rejects_invalid_selector_before_session_acquisition() -> None:
+    """Malformed profile or Project selection returns a stable input failure."""
+    session = RecordingSession()
+    provider = SessionProviderSpy(session)
+
+    result = _RUNNER.invoke(
+        create_app(provider),
+        ["status", "--project", "invalid key", "--json"],
+    )
+
+    detail = require_error(_completed(result), expected_code="INVALID_INPUT")
+    assert detail["message"] == "Status input is invalid."
+    assert provider.call_count == 0
+    assert session.status_requests == []
 
 
 def test_acquire_session_rejects_non_callable_provider_directly() -> None:
@@ -155,6 +184,8 @@ def test_status_help_and_non_interactive_are_side_effect_free(
     assert help_result.exit_code == 0
     assert "--json" in unstyle(help_result.stdout)
     assert "--non-interactive" in unstyle(help_result.stdout)
+    assert "--profile" in unstyle(help_result.stdout)
+    assert "--project" in unstyle(help_result.stdout)
     assert provider.call_count == 0
 
     def fail_prompt(*_arguments: object, **_keywords: object) -> str:

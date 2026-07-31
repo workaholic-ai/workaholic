@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING, Annotated
 
 import typer
 
+from workaholic.cli.context import register_context_command
 from workaholic.cli.project import register_project_commands
 from workaholic.cli.status import register_status_command
 from workaholic.cli.task import register_task_commands
@@ -87,9 +88,10 @@ def create_app(session_provider: SessionProvider) -> typer.Typer:
     application.callback()(_root)
     register_up_command(application, session_provider=session_provider)
     register_status_command(application, session_provider=session_provider)
+    register_context_command(application, session_provider=session_provider)
 
     project_application = typer.Typer(
-        help="Inspect Projects authorized for the local operator.",
+        help="Create, bind, and inspect authorized Projects.",
         add_completion=False,
         no_args_is_help=True,
         pretty_exceptions_enable=False,

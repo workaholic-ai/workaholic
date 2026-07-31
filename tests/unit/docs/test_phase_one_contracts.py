@@ -119,7 +119,7 @@ def test_phase_one_bootstrap_uses_a_real_attributed_human_without_tokens() -> No
         assert "Owner" in document
         assert "Phase 5" in document
 
-    assert "Phase 1 does not create a Token" in architecture
+    assert "Phase 2 does not create a Token" in architecture
     assert "Phase 1 is an embedded single-user slice" in identity_adr
     assert "it creates no bearer Token" in identity_adr
     assert "Bootstrap does not persist a Token" in persistence

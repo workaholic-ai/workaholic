@@ -1,10 +1,12 @@
-"""Pure validation and authorization rules for the Phase 1 domain."""
+"""Pure validation and authorization rules for the cumulative domain."""
 
 from __future__ import annotations
 
 import math
 import re
+import unicodedata
 from datetime import datetime, timedelta
+from pathlib import PureWindowsPath
 from typing import Protocol, runtime_checkable
 
 from workaholic.domain.errors import (
@@ -14,6 +16,9 @@ from workaholic.domain.errors import (
 from workaholic.domain.identifiers import ProjectId, SubjectId
 
 PROJECT_KEY_PATTERN = re.compile(r"^[A-Z][A-Z0-9]{1,15}$")
+PROFILE_NAME_PATTERN = re.compile(r"^[a-z][a-z0-9_-]{0,31}$")
+PROJECT_NAME_MIN_LENGTH = 1
+PROJECT_NAME_MAX_LENGTH = 200
 TASK_TITLE_MIN_LENGTH = 1
 TASK_TITLE_MAX_LENGTH = 200
 TASK_OBJECTIVE_MIN_LENGTH = 1
@@ -76,6 +81,106 @@ def validate_project_key(value: object) -> str:
         message = "Project key must match [A-Z][A-Z0-9]{1,15}."
         raise DomainValidationError(message)
     return value
+
+
+def normalize_project_name(value: object) -> str:
+    """Normalize and validate a Project display name.
+
+    Unicode is normalized to NFC before applying the inclusive character
+    bounds so canonically equivalent input has one stable domain value.
+
+    Args:
+        value: Candidate Project display name.
+
+    Returns:
+        The trimmed, NFC-normalized display name.
+
+    Raises:
+        DomainValidationError: If the name is not a printable 1-200 character
+            string after normalization.
+
+    """
+    if not isinstance(value, str):
+        message = "Project name must be a string."
+        raise DomainValidationError(message)
+    normalized = unicodedata.normalize("NFC", value.strip())
+    if not (PROJECT_NAME_MIN_LENGTH <= len(normalized) <= PROJECT_NAME_MAX_LENGTH):
+        message = (
+            "Project name must contain 1 through 200 Unicode characters "
+            "after trimming and normalization."
+        )
+        raise DomainValidationError(message)
+    if not all(character.isprintable() for character in normalized):
+        message = "Project name must contain only printable characters."
+        raise DomainValidationError(message)
+    return normalized
+
+
+def validate_profile_name(value: object) -> str:
+    """Validate one trusted embedded profile name.
+
+    Args:
+        value: Candidate profile name.
+
+    Returns:
+        The validated lowercase ASCII profile name.
+
+    Raises:
+        DomainValidationError: If the value violates the Phase 2 grammar.
+
+    """
+    if not isinstance(value, str) or PROFILE_NAME_PATTERN.fullmatch(value) is None:
+        message = "Profile name must match [a-z][a-z0-9_-]{0,31}."
+        raise DomainValidationError(message)
+    return value
+
+
+def validate_workspace_root(value: object) -> str:
+    """Normalize one safe repository-relative Workspace root.
+
+    Both slash styles are treated as separators so a binding remains safe if
+    copied across operating systems. Lexical ``..`` components may remove a
+    preceding component but may never escape above the context directory.
+
+    Args:
+        value: Candidate relative Workspace root.
+
+    Returns:
+        A normalized slash-separated relative path, or ``"."`` for the
+        context directory itself.
+
+    Raises:
+        DomainValidationError: If the value is empty, absolute, unsafe, or
+            escapes its context directory lexically.
+
+    """
+    if not isinstance(value, str) or not value:
+        message = "Workspace root must be a nonempty string."
+        raise DomainValidationError(message)
+    if "\x00" in value:
+        message = "Workspace root must not contain a null character."
+        raise DomainValidationError(message)
+    if not all(character.isprintable() for character in value):
+        message = "Workspace root must contain only printable characters."
+        raise DomainValidationError(message)
+
+    windows_path = PureWindowsPath(value)
+    if value.startswith("/") or windows_path.drive or windows_path.root:
+        message = "Workspace root must be a relative path."
+        raise DomainValidationError(message)
+
+    components: list[str] = []
+    for component in value.replace("\\", "/").split("/"):
+        if component in ("", "."):
+            continue
+        if component == "..":
+            if not components:
+                message = "Workspace root must not escape its context directory."
+                raise DomainValidationError(message)
+            components.pop()
+            continue
+        components.append(component)
+    return "/".join(components) if components else "."
 
 
 def normalize_task_title(value: object) -> str:

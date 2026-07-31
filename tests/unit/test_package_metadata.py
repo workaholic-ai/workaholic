@@ -36,7 +36,7 @@ def test_source_metadata_matches_foundation_decisions() -> None:
     project = _project_metadata()
 
     assert project["name"] == _DISTRIBUTION_NAME
-    assert project["version"] == "0.1.0a1"
+    assert project["version"] == "0.2.0a1"
     assert project["version"] == __version__
     assert project["readme"] == "README.md"
     assert project["requires-python"] == ">=3.14"
@@ -76,13 +76,23 @@ def test_installed_metadata_matches_source_metadata() -> None:
     assert "# Workaholic AI" in packaged_metadata
 
 
-def test_data_directory_override_is_documented() -> None:
-    """The trusted local data override is discoverable in the env template."""
+def test_phase_two_profile_overrides_are_safely_documented() -> None:
+    """The env template documents only trusted embedded profile selectors."""
     environment_example = (_PROJECT_ROOT / ".env.example").read_text(encoding="utf-8")
 
     assert "Do not copy this file to .workaholic.env" in environment_example
     assert "workaholic up creates" in environment_example
+    assert "WORKAHOLIC_CONFIG_DIR=" in environment_example
+    assert "WORKAHOLIC_PROFILE=" in environment_example
     assert environment_example.endswith("WORKAHOLIC_DATA_DIR=\n")
+    for unsupported in (
+        "Remote URLs",
+        "credentials",
+        "Tokens",
+        "secret references",
+        "executable paths",
+    ):
+        assert unsupported in environment_example
 
 
 def test_console_entry_point_loads_public_main() -> None:

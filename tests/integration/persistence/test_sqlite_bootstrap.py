@@ -19,7 +19,7 @@ from workaholic.application import (
 )
 from workaholic.domain import InstanceId, ProjectId, RequestId, SubjectId
 from workaholic.persistence.sqlite import (
-    SQLitePhaseOneRepository,
+    SQLiteRepository,
     StorageUnavailableError,
     initialize_empty_store,
     open_read_connection,
@@ -40,6 +40,7 @@ def _mutation(
     suffix: str,
     *,
     project_key: str = "ACME",
+    project_name: str | None = None,
     idempotency_key: str | None = None,
     occurred_at: datetime = _NOW,
 ) -> BootstrapMutation:
@@ -48,6 +49,7 @@ def _mutation(
     Args:
         suffix: Opaque identifier suffix.
         project_key: Requested local Project key.
+        project_name: Optional initial Project display name.
         idempotency_key: Optional caller retry key.
         occurred_at: Authoritative transaction timestamp.
 
@@ -55,6 +57,7 @@ def _mutation(
         Validated semantic bootstrap mutation.
 
     """
+    selected_name = project_key if project_name is None else project_name
     return BootstrapMutation(
         instance_id=InstanceId(f"ins_{suffix}"),
         project_id=ProjectId(f"prj_{suffix}"),
@@ -62,6 +65,7 @@ def _mutation(
         request_id=RequestId(f"req_{suffix}"),
         occurred_at=occurred_at,
         project_key=project_key,
+        project_name=selected_name,
         idempotency_key=idempotency_key,
     )
 
@@ -129,7 +133,7 @@ def _delete_owner_grant(connection: sqlite3.Connection) -> object:
 
 
 def _bootstrap_pair(
-    pair: tuple[SQLitePhaseOneRepository, BootstrapMutation],
+    pair: tuple[SQLiteRepository, BootstrapMutation],
 ) -> BootstrapResult:
     """Execute one repository/mutation pair for concurrency tests.
 
@@ -150,7 +154,7 @@ def test_first_bootstrap_creates_exact_local_identity_without_secrets_or_events(
     """First bootstrap persists one attributable Owner graph and nothing extra."""
     database_path = tmp_path / "local.db"
     initialize_empty_store(database_path)
-    repository = SQLitePhaseOneRepository(database_path)
+    repository = SQLiteRepository(database_path)
     assert repository.database_path == database_path
 
     result = repository.bootstrap_local_project(_mutation("first"))
@@ -159,6 +163,7 @@ def test_first_bootstrap_creates_exact_local_identity_without_secrets_or_events(
     assert result.instance.created_at == _NOW
     assert str(result.project.id) == "prj_first"
     assert result.project.key == "ACME"
+    assert result.project.name == "ACME"
     assert result.project.created_at == _NOW
     assert str(result.subject.id) == "sub_first"
     assert result.subject.display_name == "Local operator"
@@ -192,11 +197,55 @@ def test_first_bootstrap_creates_exact_local_identity_without_secrets_or_events(
         assert not {"tokens", "credentials", "secrets"}.intersection(table_names)
 
 
+def test_bootstrap_persists_and_reloads_normalized_project_name(
+    tmp_path: Path,
+) -> None:
+    """The initial Project display name is durable and not derived on reads."""
+    database_path = tmp_path / "local.db"
+    initialize_empty_store(database_path)
+    repository = SQLiteRepository(database_path)
+
+    result = repository.bootstrap_local_project(
+        _mutation("first", project_name="  Acme Platform  ")
+    )
+    retried = repository.bootstrap_local_project(
+        _mutation("retry", project_name="Acme Platform")
+    )
+
+    assert result.project.name == "Acme Platform"
+    assert retried == result
+    with open_read_connection(database_path) as connection:
+        assert connection.execute("SELECT key, name FROM projects").fetchone() == (
+            "ACME",
+            "Acme Platform",
+        )
+
+
+def test_bootstrap_rejects_same_key_with_a_different_project_name(
+    tmp_path: Path,
+) -> None:
+    """An initialized Project key cannot silently acquire another name."""
+    database_path = tmp_path / "local.db"
+    initialize_empty_store(database_path)
+    repository = SQLiteRepository(database_path)
+    repository.bootstrap_local_project(_mutation("first", project_name="Acme Platform"))
+
+    with pytest.raises(ProjectKeyConflictError):
+        repository.bootstrap_local_project(
+            _mutation("retry", project_name="Different Name")
+        )
+
+    with open_read_connection(database_path) as connection:
+        assert connection.execute("SELECT name FROM projects").fetchone() == (
+            "Acme Platform",
+        )
+
+
 def test_retry_without_idempotency_returns_persisted_graph(tmp_path: Path) -> None:
     """Repeating the same Project key ignores new candidates and creates no rows."""
     database_path = tmp_path / "local.db"
     initialize_empty_store(database_path)
-    repository = SQLitePhaseOneRepository(database_path)
+    repository = SQLiteRepository(database_path)
     first = repository.bootstrap_local_project(_mutation("first"))
 
     retried = repository.bootstrap_local_project(
@@ -224,7 +273,7 @@ def test_matching_idempotency_replay_returns_original_durable_outcome(
     """A matching caller key replays the first outcome after candidate changes."""
     database_path = tmp_path / "local.db"
     initialize_empty_store(database_path)
-    repository = SQLitePhaseOneRepository(database_path)
+    repository = SQLiteRepository(database_path)
     first = repository.bootstrap_local_project(
         _mutation("first", idempotency_key="bootstrap-1")
     )
@@ -266,7 +315,7 @@ def test_conflicting_idempotency_reuse_rolls_back_without_new_state(
     """One caller key cannot be reused for another semantic Project request."""
     database_path = tmp_path / "local.db"
     initialize_empty_store(database_path)
-    repository = SQLitePhaseOneRepository(database_path)
+    repository = SQLiteRepository(database_path)
     repository.bootstrap_local_project(
         _mutation("first", idempotency_key="bootstrap-1")
     )
@@ -291,7 +340,7 @@ def test_second_project_key_is_rejected_without_idempotency_record(
     """The Phase 1 runtime never creates a second Project namespace."""
     database_path = tmp_path / "local.db"
     initialize_empty_store(database_path)
-    repository = SQLitePhaseOneRepository(database_path)
+    repository = SQLiteRepository(database_path)
     repository.bootstrap_local_project(_mutation("first"))
 
     with pytest.raises(ProjectKeyConflictError) as captured:
@@ -312,10 +361,10 @@ def test_restart_reads_the_same_persisted_bootstrap_result(tmp_path: Path) -> No
     """A new repository instance returns durable identities after process restart."""
     database_path = tmp_path / "local.db"
     initialize_empty_store(database_path)
-    first_repository = SQLitePhaseOneRepository(database_path)
+    first_repository = SQLiteRepository(database_path)
     first = first_repository.bootstrap_local_project(_mutation("first"))
 
-    restarted_repository = SQLitePhaseOneRepository(database_path)
+    restarted_repository = SQLiteRepository(database_path)
     restarted = restarted_repository.bootstrap_local_project(_mutation("restart"))
 
     assert restarted == first
@@ -328,7 +377,7 @@ def test_injected_insert_failure_rolls_back_the_complete_graph(
     """Failure after a partial insert exposes no Instance or related record."""
     database_path = tmp_path / "local.db"
     initialize_empty_store(database_path)
-    repository = SQLitePhaseOneRepository(database_path)
+    repository = SQLiteRepository(database_path)
 
     def fail_after_instance(
         connection: sqlite3.Connection,
@@ -362,7 +411,7 @@ def test_partial_preexisting_state_is_never_adopted(tmp_path: Path) -> None:
             "INSERT INTO instances (id, created_at) VALUES (?, ?)",
             ("ins_partial", _CANONICAL_NOW),
         )
-    repository = SQLitePhaseOneRepository(database_path)
+    repository = SQLiteRepository(database_path)
 
     with pytest.raises(StorageUnavailableError):
         repository.bootstrap_local_project(_mutation("first"))
@@ -375,16 +424,16 @@ def test_multiple_persisted_projects_are_rejected_as_corrupt(tmp_path: Path) -> 
     """The single-Project runtime never selects arbitrarily among two rows."""
     database_path = tmp_path / "local.db"
     initialize_empty_store(database_path)
-    repository = SQLitePhaseOneRepository(database_path)
+    repository = SQLiteRepository(database_path)
     repository.bootstrap_local_project(_mutation("first"))
     with open_write_transaction(database_path) as connection:
         connection.execute(
             """
             INSERT INTO projects (
-                id, instance_id, key, next_task_number, created_at
-            ) VALUES (?, ?, ?, ?, ?)
+                id, instance_id, key, name, next_task_number, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?)
             """,
-            ("prj_second", "ins_first", "OTHER", 1, _CANONICAL_NOW),
+            ("prj_second", "ins_first", "OTHER", "Other", 1, _CANONICAL_NOW),
         )
 
     with pytest.raises(StorageUnavailableError):
@@ -399,7 +448,7 @@ def test_ambiguous_identity_or_subject_state_is_never_selected(
     """Bootstrap rejects multiple Instances and multiple candidate Subjects."""
     database_path = tmp_path / "local.db"
     initialize_empty_store(database_path)
-    repository = SQLitePhaseOneRepository(database_path)
+    repository = SQLiteRepository(database_path)
     repository.bootstrap_local_project(_mutation("first"))
     with open_write_transaction(database_path) as connection:
         if extra_state == "instance":
@@ -452,7 +501,7 @@ def test_tampered_idempotency_outcome_is_never_replayed(
     """Replay verifies exact JSON shape and authoritative persisted identities."""
     database_path = tmp_path / "local.db"
     initialize_empty_store(database_path)
-    repository = SQLitePhaseOneRepository(database_path)
+    repository = SQLiteRepository(database_path)
     repository.bootstrap_local_project(
         _mutation("first", idempotency_key="bootstrap-1")
     )
@@ -472,7 +521,7 @@ def test_malformed_persisted_timestamp_is_redacted(tmp_path: Path) -> None:
     """A shape-valid but impossible timestamp maps to safe storage failure."""
     database_path = tmp_path / "local.db"
     initialize_empty_store(database_path)
-    repository = SQLitePhaseOneRepository(database_path)
+    repository = SQLiteRepository(database_path)
     repository.bootstrap_local_project(_mutation("first"))
     with open_write_transaction(database_path) as connection:
         connection.execute(
@@ -500,7 +549,7 @@ def test_disabled_or_non_owner_subject_cannot_be_selected(
     """Persisted authorization is revalidated on every bootstrap lookup."""
     database_path = tmp_path / "local.db"
     initialize_empty_store(database_path)
-    repository = SQLitePhaseOneRepository(database_path)
+    repository = SQLiteRepository(database_path)
     repository.bootstrap_local_project(_mutation("first"))
     with open_write_transaction(database_path) as connection:
         revoke(connection)
@@ -517,7 +566,7 @@ def test_concurrent_matching_bootstrap_creates_one_complete_graph(
     """Concurrent first uses serialize into one graph and one replay record."""
     database_path = tmp_path / "local.db"
     initialize_empty_store(database_path)
-    repositories = [SQLitePhaseOneRepository(database_path) for _ in range(4)]
+    repositories = [SQLiteRepository(database_path) for _ in range(4)]
     mutations = [
         _mutation(str(index), idempotency_key="concurrent-bootstrap")
         for index in range(4)
@@ -546,11 +595,11 @@ def test_concurrent_matching_bootstrap_creates_one_complete_graph(
 def test_repository_runtime_validates_inputs_and_configuration(tmp_path: Path) -> None:
     """Repository boundaries reject ambiguous paths and unvalidated mutations."""
     with pytest.raises(TypeError):
-        SQLitePhaseOneRepository(Path("relative.db"))
+        SQLiteRepository(Path("relative.db"))
 
     database_path = tmp_path / "local.db"
     initialize_empty_store(database_path)
-    repository = SQLitePhaseOneRepository(database_path)
+    repository = SQLiteRepository(database_path)
     with pytest.raises(StorageUnavailableError):
         repository.bootstrap_local_project(
             object(),  # type: ignore[arg-type]

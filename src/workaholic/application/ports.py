@@ -1,4 +1,4 @@
-"""Dependency-inversion ports owned by the Phase 1 application layer."""
+"""Dependency-inversion ports owned by the cumulative application layer."""
 
 from __future__ import annotations
 
@@ -10,13 +10,17 @@ if TYPE_CHECKING:
     from workaholic.application.commands import (
         BootstrapMutation,
         GetLocalStatus,
+        GetProjectByKey,
         GetTask,
+        ListInstanceTasks,
         ListProjects,
         ListTasks,
+        ProjectCreationMutation,
         TaskCreationMutation,
     )
     from workaholic.application.results import (
         BootstrapResult,
+        ProjectCreationResult,
         StatusResult,
         TaskPage,
     )
@@ -103,8 +107,8 @@ class IdentifierFactory(Protocol):
         ...
 
 
-class PhaseOneRepository(Protocol):
-    """Persist Phase 1 operations through semantic, atomic methods."""
+class BootstrapRepository(Protocol):
+    """Persist the atomic local bootstrap semantic operation."""
 
     def bootstrap_local_project(
         self,
@@ -121,6 +125,10 @@ class PhaseOneRepository(Protocol):
         """
         ...
 
+
+class TaskRepository(Protocol):
+    """Persist attributable Task mutations through semantic operations."""
+
     def create_task(self, mutation: TaskCreationMutation) -> Task:
         """Atomically allocate, create, and record one Task.
 
@@ -132,6 +140,29 @@ class PhaseOneRepository(Protocol):
 
         """
         ...
+
+
+class ProjectRepository(Protocol):
+    """Persist atomic Project creation through one semantic operation."""
+
+    def create_project(
+        self,
+        mutation: ProjectCreationMutation,
+    ) -> ProjectCreationResult:
+        """Atomically create one Project and its creator Owner grant.
+
+        Args:
+            mutation: Validated Project creation mutation.
+
+        Returns:
+            The committed Project and grant.
+
+        """
+        ...
+
+
+class QueryRepository(Protocol):
+    """Read existing local status, Projects, and Tasks without mutation."""
 
     def get_local_status(self, command: GetLocalStatus) -> StatusResult:
         """Read the selected local status without mutating state.
@@ -157,6 +188,18 @@ class PhaseOneRepository(Protocol):
         """
         ...
 
+    def get_project_by_key(self, command: GetProjectByKey) -> Project:
+        """Read one authorized Project by immutable key.
+
+        Args:
+            command: Validated Instance, Subject, and key query.
+
+        Returns:
+            The matching authorized Project.
+
+        """
+        ...
+
     def list_tasks(self, command: ListTasks) -> TaskPage:
         """Read one deterministic Task page without mutating state.
 
@@ -165,6 +208,18 @@ class PhaseOneRepository(Protocol):
 
         Returns:
             Tasks ordered by Project-local number.
+
+        """
+        ...
+
+    def list_tasks_for_instance(self, command: ListInstanceTasks) -> TaskPage:
+        """Read Tasks across authorized Projects in one Instance.
+
+        Args:
+            command: Validated Instance-scoped pagination query.
+
+        Returns:
+            Tasks ordered by Project key and Project-local number.
 
         """
         ...
@@ -180,3 +235,13 @@ class PhaseOneRepository(Protocol):
 
         """
         ...
+
+
+class WorkaholicRepository(
+    BootstrapRepository,
+    ProjectRepository,
+    TaskRepository,
+    QueryRepository,
+    Protocol,
+):
+    """Persist cumulative operations through explicit semantic methods."""

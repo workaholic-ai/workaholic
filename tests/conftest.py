@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from typing import TYPE_CHECKING, Protocol, cast
 
 import pytest
@@ -48,13 +49,64 @@ def pytest_configure(config: pytest.Config) -> None:
 
 @pytest.fixture
 def golden_runner(tmp_path: Path) -> GoldenJourneyRunner:
-    """Provide a fresh-process runner pinned to isolated local state.
+    """Provide a fresh-process runner pinned to two isolated embedded profiles.
 
     Args:
         tmp_path: Pytest-owned root unique to the current golden journey.
 
     Returns:
-        Phase 1 subprocess runner over an isolated trusted data directory.
+        Phase 2 subprocess runner over isolated trusted configuration and data.
 
     """
-    return SubprocessGoldenJourneyRunner(tmp_path / "golden-data")
+    data_directory = tmp_path / "golden-data"
+    config_directory = tmp_path / "golden-config"
+    _write_golden_profiles(
+        config_directory,
+        profiles={
+            "local": data_directory,
+            "isolated": tmp_path / "isolated-profile-data",
+        },
+    )
+    return SubprocessGoldenJourneyRunner(
+        data_directory=data_directory,
+        config_directory=config_directory,
+    )
+
+
+def _write_golden_profiles(
+    config_directory: Path,
+    *,
+    profiles: dict[str, Path],
+) -> None:
+    """Write the exact trusted embedded-profile registry used by golden tests.
+
+    Args:
+        config_directory: Pytest-owned configuration directory.
+        profiles: Profile names mapped to distinct pytest-owned data directories.
+
+    Raises:
+        ValueError: If the required default profile is absent or paths overlap.
+
+    """
+    if "local" not in profiles or len(set(profiles.values())) != len(profiles):
+        message = "Golden profiles require one distinct default local data path."
+        raise ValueError(message)
+
+    config_directory.mkdir(parents=True)
+    lines = [
+        "version = 1",
+        'default_profile = "local"',
+    ]
+    for name, data_directory in profiles.items():
+        lines.extend(
+            (
+                "",
+                f"[profiles.{name}]",
+                'mode = "embedded"',
+                f"data_directory = {json.dumps(str(data_directory))}",
+            )
+        )
+    (config_directory / "profiles.toml").write_text(
+        "\n".join(lines) + "\n",
+        encoding="utf-8",
+    )

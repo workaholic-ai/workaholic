@@ -13,14 +13,19 @@ _MAX_SAFE_MESSAGE_LENGTH = 500
 
 
 class ApplicationErrorCode(StrEnum):
-    """Machine-readable Phase 1 failure identifiers."""
+    """Machine-readable cumulative failure identifiers."""
 
     INVALID_INPUT = "INVALID_INPUT"
     CONTEXT_NOT_FOUND = "CONTEXT_NOT_FOUND"
     CONTEXT_INVALID = "CONTEXT_INVALID"
+    PROFILE_NOT_FOUND = "PROFILE_NOT_FOUND"
+    PROFILE_INVALID = "PROFILE_INVALID"
+    PROFILE_UNSUPPORTED = "PROFILE_UNSUPPORTED"
     NOT_INITIALIZED = "NOT_INITIALIZED"
+    PROJECT_NOT_FOUND = "PROJECT_NOT_FOUND"
     TASK_NOT_FOUND = "TASK_NOT_FOUND"
     PROJECT_KEY_CONFLICT = "PROJECT_KEY_CONFLICT"
+    WORKSPACE_BINDING_CONFLICT = "WORKSPACE_BINDING_CONFLICT"
     IDEMPOTENCY_CONFLICT = "IDEMPOTENCY_CONFLICT"
     PERMISSION_DENIED = "PERMISSION_DENIED"
     SCHEMA_UNSUPPORTED = "SCHEMA_UNSUPPORTED"
@@ -61,7 +66,23 @@ _ERROR_SPECS: Final = MappingProxyType(
             ExitCategory.MISSING,
             retryable=False,
         ),
+        ApplicationErrorCode.PROFILE_NOT_FOUND: _ErrorSpec(
+            ExitCategory.MISSING,
+            retryable=False,
+        ),
+        ApplicationErrorCode.PROFILE_INVALID: _ErrorSpec(
+            ExitCategory.MISSING,
+            retryable=False,
+        ),
+        ApplicationErrorCode.PROFILE_UNSUPPORTED: _ErrorSpec(
+            ExitCategory.MISSING,
+            retryable=False,
+        ),
         ApplicationErrorCode.NOT_INITIALIZED: _ErrorSpec(
+            ExitCategory.MISSING,
+            retryable=False,
+        ),
+        ApplicationErrorCode.PROJECT_NOT_FOUND: _ErrorSpec(
             ExitCategory.MISSING,
             retryable=False,
         ),
@@ -70,6 +91,10 @@ _ERROR_SPECS: Final = MappingProxyType(
             retryable=False,
         ),
         ApplicationErrorCode.PROJECT_KEY_CONFLICT: _ErrorSpec(
+            ExitCategory.CONFLICT,
+            retryable=False,
+        ),
+        ApplicationErrorCode.WORKSPACE_BINDING_CONFLICT: _ErrorSpec(
             ExitCategory.CONFLICT,
             retryable=False,
         ),
@@ -185,6 +210,39 @@ class ProjectKeyConflictError(ApplicationError):
         )
 
 
+class ProfileNotFoundError(ApplicationError):
+    """Report that the selected trusted profile does not exist."""
+
+    def __init__(self) -> None:
+        """Initialize the fixed missing-profile failure."""
+        super().__init__(
+            ApplicationErrorCode.PROFILE_NOT_FOUND,
+            "The selected profile was not found.",
+        )
+
+
+class ProfileInvalidError(ApplicationError):
+    """Report malformed or unsafe trusted profile configuration."""
+
+    def __init__(self) -> None:
+        """Initialize the fixed invalid-profile failure."""
+        super().__init__(
+            ApplicationErrorCode.PROFILE_INVALID,
+            "The trusted profile configuration is invalid.",
+        )
+
+
+class ProfileUnsupportedError(ApplicationError):
+    """Report an unsupported trusted profile version or mode."""
+
+    def __init__(self) -> None:
+        """Initialize the fixed unsupported-profile failure."""
+        super().__init__(
+            ApplicationErrorCode.PROFILE_UNSUPPORTED,
+            "The selected profile mode or configuration version is not supported.",
+        )
+
+
 class IdempotencyConflictError(ApplicationError):
     """Report reuse of one caller key for different semantic input."""
 
@@ -229,6 +287,17 @@ class NotInitializedError(ApplicationError):
         )
 
 
+class ProjectNotFoundError(ApplicationError):
+    """Report that an authorized Project key does not resolve."""
+
+    def __init__(self) -> None:
+        """Initialize the fixed missing-Project failure."""
+        super().__init__(
+            ApplicationErrorCode.PROJECT_NOT_FOUND,
+            "The selected Project was not found.",
+        )
+
+
 class TaskNotFoundError(ApplicationError):
     """Report that a scoped Task UID or Human key does not resolve."""
 
@@ -237,6 +306,20 @@ class TaskNotFoundError(ApplicationError):
         super().__init__(
             ApplicationErrorCode.TASK_NOT_FOUND,
             "The requested Task was not found in the selected Project.",
+        )
+
+
+class WorkspaceBindingConflictError(ApplicationError):
+    """Report a valid Workspace binding that requires explicit replacement."""
+
+    def __init__(self) -> None:
+        """Initialize the fixed Workspace-binding conflict failure."""
+        super().__init__(
+            ApplicationErrorCode.WORKSPACE_BINDING_CONFLICT,
+            (
+                "The Workspace is already bound to a different Project, "
+                "Instance, or profile."
+            ),
         )
 
 

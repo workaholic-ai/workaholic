@@ -1,4 +1,4 @@
-"""Read-only application orchestration for Phase 1 query use cases."""
+"""Read-only application orchestration for cumulative query use cases."""
 
 from __future__ import annotations
 
@@ -6,7 +6,9 @@ from typing import TYPE_CHECKING, Never, cast
 
 from workaholic.application.commands import (
     GetLocalStatus,
+    GetProjectByKey,
     GetTask,
+    ListInstanceTasks,
     ListProjects,
     ListTasks,
 )
@@ -19,17 +21,17 @@ from workaholic.application.results import StatusResult, TaskPage
 from workaholic.domain import Project, Task, TaskId
 
 if TYPE_CHECKING:
-    from workaholic.application.ports import PhaseOneRepository
+    from workaholic.application.ports import QueryRepository
 
 
 class QueryApplication:
     """Validate query boundaries and delegate read-only repository operations."""
 
-    def __init__(self, repository: PhaseOneRepository) -> None:
+    def __init__(self, repository: QueryRepository) -> None:
         """Initialize the query service with one semantic repository.
 
         Args:
-            repository: Phase 1 read persistence boundary.
+            repository: Read-only semantic persistence boundary.
 
         Raises:
             TypeError: If the dependency lacks a required query method.
@@ -38,7 +40,9 @@ class QueryApplication:
         for method_name in (
             "get_local_status",
             "list_projects",
+            "get_project_by_key",
             "list_tasks",
+            "list_tasks_for_instance",
             "get_task",
         ):
             _require_callable(repository, method_name)
@@ -64,7 +68,8 @@ class QueryApplication:
         if not isinstance(result, StatusResult):
             _raise_invalid_result("Status")
         if (
-            result.instance.id != candidate.instance_id
+            result.profile != candidate.profile
+            or result.instance.id != candidate.instance_id
             or result.project.id != candidate.project_id
             or result.subject.id != candidate.subject_id
         ):
@@ -104,6 +109,32 @@ class QueryApplication:
             _raise_invalid_result("Project query")
         return projects
 
+    def get_project_by_key(self, command: GetProjectByKey) -> Project:
+        """Return one authorized Project selected by immutable key.
+
+        Args:
+            command: Validated Instance-, Subject-, and key-bound lookup.
+
+        Returns:
+            Exact authorized Project.
+
+        Raises:
+            ApplicationError: If input or repository output violates its contract.
+
+        """
+        candidate: object = command
+        if not isinstance(candidate, GetProjectByKey):
+            raise InvalidInputError
+        result: object = self._repository.get_project_by_key(candidate)
+        if not isinstance(result, Project):
+            _raise_invalid_result("Project query")
+        if (
+            result.instance_id != candidate.instance_id
+            or result.key != candidate.project_key
+        ):
+            _raise_invalid_result("Project query")
+        return result
+
     def list_tasks(self, command: ListTasks) -> TaskPage:
         """Return one deterministic page of authorized Project Tasks.
 
@@ -124,6 +155,27 @@ class QueryApplication:
         if not isinstance(result, TaskPage):
             _raise_invalid_result("Task page")
         if any(task.project_id != candidate.project_id for task in result.tasks):
+            _raise_invalid_result("Task page")
+        return result
+
+    def list_tasks_for_instance(self, command: ListInstanceTasks) -> TaskPage:
+        """Return one deterministic Task page across authorized Projects.
+
+        Args:
+            command: Validated profile-, Instance-, and Subject-bound page query.
+
+        Returns:
+            Task page ordered by Project key and Project-local number.
+
+        Raises:
+            ApplicationError: If input or repository output violates its contract.
+
+        """
+        candidate: object = command
+        if not isinstance(candidate, ListInstanceTasks):
+            raise InvalidInputError
+        result: object = self._repository.list_tasks_for_instance(candidate)
+        if not isinstance(result, TaskPage):
             _raise_invalid_result("Task page")
         return result
 

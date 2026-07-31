@@ -1,4 +1,4 @@
-"""Unit tests for pure Phase 1 domain rules."""
+"""Unit tests for pure cumulative domain rules."""
 
 from __future__ import annotations
 
@@ -13,15 +13,18 @@ from workaholic.domain import (
     ProjectId,
     SubjectId,
     build_task_key,
+    normalize_project_name,
     normalize_task_objective,
     normalize_task_title,
     require_phase_one_owner,
     validate_json_scalar,
     validate_positive_integer,
+    validate_profile_name,
     validate_project_key,
     validate_task_key,
     validate_task_priority,
     validate_utc_timestamp,
+    validate_workspace_root,
 )
 
 _AWARE_NOW = datetime(2026, 7, 30, 10, 30, tzinfo=UTC)
@@ -84,6 +87,106 @@ def test_project_key_rejects_invalid_runtime_values(value: object) -> None:
     """Project key validation enforces the exact uppercase Phase 1 grammar."""
     with pytest.raises(DomainValidationError, match="Project key"):
         validate_project_key(value)
+
+
+def test_project_name_normalizes_unicode_before_enforcing_bounds() -> None:
+    """Project names trim text and collapse canonical Unicode equivalents."""
+    decomposed = "  Cafe\u0301  "
+
+    assert normalize_project_name(decomposed) == "Café"
+    assert normalize_project_name("e\u0301" * 200) == "é" * 200
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "",
+        "   ",
+        "x" * 201,
+        "line\nbreak",
+        None,
+        True,
+    ],
+)
+def test_project_name_rejects_invalid_runtime_values(value: object) -> None:
+    """Project names reject empty, oversized, unsafe, and non-string values."""
+    with pytest.raises(DomainValidationError, match="Project name"):
+        normalize_project_name(value)
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "a",
+        "local",
+        "team_1",
+        "agent-profile",
+        "a" + ("1" * 31),
+    ],
+)
+def test_profile_name_accepts_exact_phase_two_grammar(value: str) -> None:
+    """Profile names accept every documented lowercase ASCII boundary."""
+    assert validate_profile_name(value) == value
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "",
+        "1local",
+        "Local",
+        "local.profile",
+        "local profile",
+        "a" + ("1" * 32),
+        None,
+        False,
+    ],
+)
+def test_profile_name_rejects_invalid_runtime_values(value: object) -> None:
+    """Profile validation rejects coercion and every out-of-grammar value."""
+    with pytest.raises(DomainValidationError, match="Profile name"):
+        validate_profile_name(value)
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        (".", "."),
+        ("src/agents", "src/agents"),
+        ("src//./agents", "src/agents"),
+        ("src/../agents", "agents"),
+        ("src\\agents", "src/agents"),
+        ("src/..", "."),
+    ],
+)
+def test_workspace_root_normalizes_safe_relative_paths(
+    value: str,
+    expected: str,
+) -> None:
+    """Workspace roots have one portable lexical representation."""
+    assert validate_workspace_root(value) == expected
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "",
+        "/absolute",
+        "../escape",
+        "child/../../escape",
+        r"C:\absolute",
+        r"\rooted",
+        r"\\server\share",
+        "bad\x00path",
+        "bad\npath",
+        None,
+        True,
+    ],
+)
+def test_workspace_root_rejects_unsafe_runtime_values(value: object) -> None:
+    """Workspace roots reject absolute, escaping, unsafe, and coerced input."""
+    with pytest.raises(DomainValidationError, match="Workspace root"):
+        validate_workspace_root(value)
 
 
 def test_task_text_is_trimmed_and_counts_unicode_characters() -> None:

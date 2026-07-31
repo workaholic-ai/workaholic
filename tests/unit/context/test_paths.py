@@ -11,9 +11,127 @@ from workaholic.application import ApplicationErrorCode
 from workaholic.context import (
     ContextInvalidError,
     ContextStorageError,
+    LocalConfigPaths,
     LocalDataPaths,
+    resolve_local_config_paths,
     resolve_local_data_paths,
 )
+
+
+def test_default_config_path_uses_platformdirs_without_creating_it(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """The absent override delegates to the documented platform directory."""
+    expected = tmp_path / "platform-config"
+
+    def fake_user_config_path(appname: str, appauthor: str) -> Path:
+        """Return an isolated default while asserting the public identifiers."""
+        assert appname == "workaholic"
+        assert appauthor == "workaholic-ai"
+        return expected
+
+    monkeypatch.setattr(
+        "workaholic.context.paths.platformdirs.user_config_path",
+        fake_user_config_path,
+    )
+
+    paths = resolve_local_config_paths({})
+
+    assert paths == LocalConfigPaths(expected, expected / "profiles.toml")
+    assert not expected.exists()
+
+
+@pytest.mark.parametrize("environment", [{}, {"WORKAHOLIC_CONFIG_DIR": ""}])
+def test_missing_or_empty_config_override_uses_platform_default(
+    environment: dict[str, str],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Missing and empty configuration overrides have identical semantics."""
+    expected = tmp_path / "default-config"
+    monkeypatch.setattr(
+        "workaholic.context.paths.platformdirs.user_config_path",
+        lambda *_: expected,
+    )
+
+    assert resolve_local_config_paths(environment).config_directory == expected
+
+
+def test_absolute_config_override_is_used_without_creating_it(tmp_path: Path) -> None:
+    """An absolute trusted override determines the returned paths only."""
+    expected = tmp_path / "isolated" / "config"
+
+    paths = resolve_local_config_paths({"WORKAHOLIC_CONFIG_DIR": str(expected)})
+
+    assert paths.config_directory == expected
+    assert paths.profiles_file == expected / "profiles.toml"
+    assert not expected.exists()
+
+
+@pytest.mark.parametrize(
+    "environment",
+    [
+        {"WORKAHOLIC_CONFIG_DIR": "relative/config"},
+        {"WORKAHOLIC_CONFIG_DIR": "~/config"},
+        {"WORKAHOLIC_CONFIG_DIR": "\x00invalid"},
+        cast("dict[str, str]", {"WORKAHOLIC_CONFIG_DIR": 42}),
+    ],
+)
+def test_invalid_config_overrides_are_rejected(
+    environment: dict[str, str],
+) -> None:
+    """Relative, shell-expanded, null, and non-string overrides are invalid."""
+    with pytest.raises(ContextInvalidError) as captured:
+        resolve_local_config_paths(environment)
+
+    assert captured.value.code is ApplicationErrorCode.CONTEXT_INVALID
+
+
+def test_non_mapping_config_environment_is_rejected() -> None:
+    """Configuration resolution validates its environment at runtime."""
+    with pytest.raises(ContextInvalidError):
+        resolve_local_config_paths(cast("dict[str, str]", object()))
+
+
+def test_platform_config_directory_failure_is_a_safe_storage_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Platform lookup failures do not leak an implementation exception."""
+
+    def fail_lookup(*_arguments: object) -> Path:
+        """Simulate an unavailable operating-system configuration profile."""
+        message = "private platform failure"
+        raise OSError(message)
+
+    monkeypatch.setattr(
+        "workaholic.context.paths.platformdirs.user_config_path",
+        fail_lookup,
+    )
+
+    with pytest.raises(ContextStorageError) as captured:
+        resolve_local_config_paths({})
+
+    assert captured.value.code is ApplicationErrorCode.STORAGE_UNAVAILABLE
+    assert "private platform failure" not in captured.value.safe_message
+
+
+@pytest.mark.parametrize(
+    ("config_directory", "profiles_file"),
+    [
+        (Path("relative"), Path("relative/profiles.toml")),
+        (Path("/absolute"), Path("relative/profiles.toml")),
+        (Path("/absolute"), Path("/somewhere-else/profiles.toml")),
+        (cast("Path", "/absolute"), Path("/absolute/profiles.toml")),
+    ],
+)
+def test_local_config_paths_validate_types_and_relationship(
+    config_directory: Path,
+    profiles_file: Path,
+) -> None:
+    """The config value accepts absolute, internally consistent Paths only."""
+    with pytest.raises(ContextInvalidError):
+        LocalConfigPaths(config_directory, profiles_file)
 
 
 def test_default_data_path_uses_platformdirs_without_creating_it(

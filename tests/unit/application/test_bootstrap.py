@@ -32,7 +32,7 @@ from workaholic.domain import (
 )
 
 if TYPE_CHECKING:
-    from workaholic.application import PhaseOneRepository
+    from workaholic.application import BootstrapRepository
 
 _NOW = datetime(2026, 7, 30, 10, 30, tzinfo=UTC)
 
@@ -49,6 +49,7 @@ def _result() -> BootstrapResult:
         id=ProjectId("prj_acme"),
         instance_id=instance.id,
         key="ACME",
+        name="Acme",
         created_at=_NOW,
     )
     subject = Subject(
@@ -139,7 +140,7 @@ def test_up_builds_one_authoritative_semantic_mutation() -> None:
     expected = _result()
     recording = _RecordingRepository(expected)
     application = BootstrapApplication(
-        repository=cast("PhaseOneRepository", recording),
+        repository=cast("BootstrapRepository", recording),
         clock=_Clock(),
         identifiers=_Identifiers(),
     )
@@ -181,7 +182,7 @@ def test_constructor_runtime_validates_dependencies(
     """Missing dependency methods fail at composition time."""
     with pytest.raises(TypeError, match="Bootstrap"):
         BootstrapApplication(
-            repository=cast("PhaseOneRepository", repository),
+            repository=cast("BootstrapRepository", repository),
             clock=cast("_Clock", clock),
             identifiers=cast("_Identifiers", identifiers),
         )
@@ -190,7 +191,7 @@ def test_constructor_runtime_validates_dependencies(
 def test_up_runtime_validates_command_type() -> None:
     """The use case rejects bypasses of the validated command boundary."""
     application = BootstrapApplication(
-        repository=cast("PhaseOneRepository", _RecordingRepository(_result())),
+        repository=cast("BootstrapRepository", _RecordingRepository(_result())),
         clock=_Clock(),
         identifiers=_Identifiers(),
     )
@@ -212,7 +213,7 @@ def test_invalid_dependency_output_is_a_safe_internal_error() -> None:
             return _NOW.replace(tzinfo=None)
 
     application = BootstrapApplication(
-        repository=cast("PhaseOneRepository", _RecordingRepository(_result())),
+        repository=cast("BootstrapRepository", _RecordingRepository(_result())),
         clock=_InvalidClock(),
         identifiers=_Identifiers(),
     )
@@ -227,7 +228,7 @@ def test_invalid_dependency_output_is_a_safe_internal_error() -> None:
 def test_invalid_repository_result_is_a_safe_internal_error() -> None:
     """The application verifies persistence output at runtime."""
     application = BootstrapApplication(
-        repository=cast("PhaseOneRepository", _RecordingRepository(object())),
+        repository=cast("BootstrapRepository", _RecordingRepository(object())),
         clock=_Clock(),
         identifiers=_Identifiers(),
     )

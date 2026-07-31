@@ -9,6 +9,7 @@ from workaholic.persistence.sqlite import _queries as sqlite_queries
 from workaholic.persistence.sqlite._bootstrap import (
     bootstrap_local_project as _bootstrap_local_project,
 )
+from workaholic.persistence.sqlite._projects import create_project as _create_project
 from workaholic.persistence.sqlite._tasks import create_task as _create_task
 from workaholic.persistence.sqlite.schema import initialize_empty_store
 
@@ -17,9 +18,13 @@ if TYPE_CHECKING:
         BootstrapMutation,
         BootstrapResult,
         GetLocalStatus,
+        GetProjectByKey,
         GetTask,
+        ListInstanceTasks,
         ListProjects,
         ListTasks,
+        ProjectCreationMutation,
+        ProjectCreationResult,
         StatusResult,
         TaskCreationMutation,
         TaskPage,
@@ -27,14 +32,14 @@ if TYPE_CHECKING:
     from workaholic.domain import Project, Task
 
 
-class SQLitePhaseOneRepository:
-    """SQLite implementation of atomic Phase 1 semantic operations."""
+class SQLiteRepository:
+    """Cumulative SQLite implementation of atomic semantic operations."""
 
     def __init__(self, database_path: Path) -> None:
         """Bind the adapter to one absolute local database path.
 
         Args:
-            database_path: Absolute path to a schema-version-1 SQLite store.
+            database_path: Absolute path to a schema-version-2 SQLite store.
 
         Raises:
             TypeError: If the value is not an absolute Path.
@@ -84,6 +89,21 @@ class SQLitePhaseOneRepository:
         """
         return _create_task(self._database_path, mutation)
 
+    def create_project(
+        self,
+        mutation: ProjectCreationMutation,
+    ) -> ProjectCreationResult:
+        """Atomically create one Project and grant its creator Owner access.
+
+        Args:
+            mutation: Validated Project creation mutation.
+
+        Returns:
+            The new or idempotently replayed Project and Owner grant.
+
+        """
+        return _create_project(self._database_path, mutation)
+
     def get_local_status(self, command: GetLocalStatus) -> StatusResult:
         """Read authorized local status without mutating storage.
 
@@ -108,6 +128,18 @@ class SQLitePhaseOneRepository:
         """
         return sqlite_queries.list_projects(self._database_path, command)
 
+    def get_project_by_key(self, command: GetProjectByKey) -> Project:
+        """Read one authorized Project by immutable key.
+
+        Args:
+            command: Validated Instance-, Subject-, and key-bound query.
+
+        Returns:
+            Matching authorized Project.
+
+        """
+        return sqlite_queries.get_project_by_key(self._database_path, command)
+
     def list_tasks(self, command: ListTasks) -> TaskPage:
         """Read one deterministic Project-bound Task page.
 
@@ -119,6 +151,21 @@ class SQLitePhaseOneRepository:
 
         """
         return sqlite_queries.list_tasks(self._database_path, command)
+
+    def list_tasks_for_instance(self, command: ListInstanceTasks) -> TaskPage:
+        """Read one Task page across authorized Projects in an Instance.
+
+        Args:
+            command: Validated Instance-scoped pagination query.
+
+        Returns:
+            Tasks ordered by Project key and Project-local number.
+
+        """
+        return sqlite_queries.list_tasks_for_instance(
+            self._database_path,
+            command,
+        )
 
     def get_task(self, command: GetTask) -> Task:
         """Read one Task by exact UID or stable Human key.

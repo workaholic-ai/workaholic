@@ -1,4 +1,4 @@
-"""CLI commands for the Phase 1 persistent Task vertical slice."""
+"""CLI commands for persistent Project-scoped Tasks."""
 
 from __future__ import annotations
 
@@ -10,11 +10,13 @@ from pydantic import ValidationError
 
 from workaholic.cli.errors import write_failure, write_invalid_input
 from workaholic.cli.options import (  # noqa: TC001 - Typer resolves aliases
+    AllProjectsOption,
     CursorOption,
     IdempotencyKeyOption,
     JsonOption,
     LimitOption,
     NonInteractiveOption,
+    ProjectOption,
 )
 from workaholic.cli.rendering import write_success
 from workaholic.cli.runtime import SessionProvider, acquire_session
@@ -86,6 +88,7 @@ def register_task_commands(
         objective: ObjectiveOption = None,
         priority: PriorityOption = 50,
         idempotency_key: IdempotencyKeyOption = None,
+        project: ProjectOption = None,
         json_mode: JsonOption = False,  # noqa: FBT002 - Typer option
         non_interactive: NonInteractiveOption = False,  # noqa: FBT002
     ) -> None:
@@ -97,6 +100,7 @@ def register_task_commands(
                 objective=objective,
                 priority=priority,
                 idempotency_key=idempotency_key,
+                project=project,
             )
         except ValidationError:
             write_invalid_input(
@@ -114,7 +118,9 @@ def register_task_commands(
             write_failure(error, json_mode=json_mode)
 
     @application.command("list")
-    def list_tasks(
+    def list_tasks(  # noqa: PLR0913 - explicit public CLI option contract
+        project: ProjectOption = None,
+        all_projects: AllProjectsOption = False,  # noqa: FBT002 - Typer option
         cursor: CursorOption = None,
         limit: LimitOption = 100,
         json_mode: JsonOption = False,  # noqa: FBT002 - Typer option
@@ -123,7 +129,12 @@ def register_task_commands(
         """List one ascending page of Tasks in the selected Project."""
         del non_interactive
         try:
-            request = TaskListRequest(cursor=cursor, limit=limit)
+            request = TaskListRequest(
+                cursor=cursor,
+                limit=limit,
+                project=project,
+                all_projects=all_projects,
+            )
         except ValidationError:
             write_invalid_input(
                 "Task-list input is invalid.",
@@ -149,13 +160,14 @@ def register_task_commands(
     @application.command("show")
     def show_task(
         task: TaskSelectorArgument,
+        project: ProjectOption = None,
         json_mode: JsonOption = False,  # noqa: FBT002 - Typer option
         non_interactive: NonInteractiveOption = False,  # noqa: FBT002
     ) -> None:
         """Show one Task by canonical UID or stable Human key."""
         del non_interactive
         try:
-            request = TaskGetRequest(task=task)
+            request = TaskGetRequest(task=task, project=project)
         except ValidationError:
             write_invalid_input(
                 "Task selector is invalid.",

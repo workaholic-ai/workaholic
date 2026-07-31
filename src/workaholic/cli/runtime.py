@@ -12,7 +12,10 @@ type SessionProvider = Callable[[], WorkaholicSession]
 _SESSION_OPERATIONS = (
     "up",
     "status",
+    "context",
     "list_projects",
+    "create_project",
+    "bind_project",
     "create_task",
     "list_tasks",
     "get_task",
@@ -26,7 +29,7 @@ def acquire_session(provider: SessionProvider) -> WorkaholicSession:
         provider: Explicit Session factory supplied by the composition root.
 
     Returns:
-        Session implementing the complete Phase 1 presentation boundary.
+        Session implementing the complete cumulative presentation boundary.
 
     Raises:
         TypeError: If the provider or returned Session violates its contract.

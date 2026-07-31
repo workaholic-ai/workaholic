@@ -5,17 +5,18 @@ Workaholic AI becomes useful and, eventually, releasable. Each file is an
 executable pytest specification that uses only supported user-facing
 boundaries for domain operations.
 
-Phase 1 enables the solo journey through a fresh-process CLI harness and real
-SQLite persistence. The other five journeys remain explicitly skipped until
-their complete real implementations exist. A mock, in-memory stand-in, or fake
-product response is not sufficient.
+Phase 2 enables the solo and multi-project journeys through a fresh-process CLI
+harness, real SQLite persistence, isolated trusted profiles, and durable
+Workspace context discovery. The other four journeys remain explicitly skipped
+until their complete real implementations exist. A mock, in-memory stand-in, or
+fake product response is not sufficient.
 
 ## Journey inventory
 
 | Journey | Canonical specification | Enabling phase | Remove the skip when |
 | --- | --- | --- | --- |
 | Solo | [test_solo_journey.py](test_solo_journey.py) | Phase 1 | Enabled: LocalSession, SQLite, initialization, task creation, and persistence run across fresh CLI processes |
-| Multi-project | [test_multi_project_journey.py](test_multi_project_journey.py) | Phase 2 | Project binding, upward context discovery, and independent stable Project task keys work |
+| Multi-project | [test_multi_project_journey.py](test_multi_project_journey.py) | Phase 2 | Enabled: nested and repeated Project bindings, upward context discovery, independent stable Project task keys, all-Project reads, restart persistence, and isolated profiles run across fresh CLI processes |
 | Agent | [test_agent_journey.py](test_agent_journey.py) | Phase 4 | Real local Agents can claim, heartbeat, submit, and receive `LEASE_LOST` after expiry through CLI JSON |
 | Team | [test_team_journey.py](test_team_journey.py) | Phase 6 | Two remote Humans and an Agent can use one authenticated server through RemoteSession |
 | Backend parity | [test_backend_conformance_journey.py](test_backend_conformance_journey.py) | Phase 7 | JSON, SQLite, and PostgreSQL expose equivalent behavior through the same public CLI workflow |
@@ -38,11 +39,15 @@ Golden tests must:
 - use a phase-specific `skip` while blocked and remove it only after the whole journey is real;
 - never use `xfail`.
 
-The shared `golden_runner` fixture pins every local CLI process to one
-pytest-owned data directory and strips inherited `WORKAHOLIC_*` selections.
-Phase 1 implements only real local CLI execution. Remote Instance
-orchestration, registry package selection, and `uvx` execution remain explicit
-unsupported harness operations while their journeys stay skipped.
+The shared `golden_runner` fixture pins every local CLI process to
+pytest-owned configuration and data directories and strips inherited
+`WORKAHOLIC_*` selections and Python-path overrides. The runner accepts only
+the documented local `WORKAHOLIC_CONFIG_DIR`, `WORKAHOLIC_DATA_DIR`, and
+`WORKAHOLIC_PROFILE` selectors. Its owned directories cannot be redirected,
+and URL, Token, credential, Python-path, and arbitrary environment injection
+remain forbidden. Remote Instance orchestration, registry package selection,
+and `uvx` execution remain explicit unsupported harness operations while their
+journeys stay skipped.
 
 ## Markers and selection
 

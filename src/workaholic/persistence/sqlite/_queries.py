@@ -1,21 +1,25 @@
-"""Authorized, deterministic, and non-mutating Phase 1 SQLite queries."""
+"""Authorized, deterministic, and non-mutating cumulative SQLite queries."""
 
 from __future__ import annotations
 
 import base64
 import binascii
 import json
-from typing import TYPE_CHECKING, Final, cast
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Final, Literal, cast
 
 from workaholic.application import (
     ApplicationError,
     GetLocalStatus,
+    GetProjectByKey,
     GetTask,
     InvalidInputError,
+    ListInstanceTasks,
     ListProjects,
     ListTasks,
     NotInitializedError,
     PermissionDeniedError,
+    ProjectNotFoundError,
     StatusResult,
     TaskNotFoundError,
     TaskPage,
@@ -23,7 +27,6 @@ from workaholic.application import (
 from workaholic.domain import (
     Instance,
     InstanceId,
-    Project,
     ProjectGrant,
     ProjectId,
     ProjectRole,
@@ -32,10 +35,12 @@ from workaholic.domain import (
     SubjectKind,
     Task,
     TaskId,
+    validate_project_key,
 )
 from workaholic.persistence.sqlite._records import (
     canonical_json,
     parse_timestamp,
+    project_from_row,
     require_boolean,
     require_text,
 )
@@ -48,12 +53,45 @@ if TYPE_CHECKING:
     from collections.abc import Mapping
     from pathlib import Path
 
-_CURSOR_PREFIX: Final = "v1."
-_CURSOR_KEYS: Final = frozenset(("after", "project_id", "v"))
-_CURSOR_VERSION: Final = 1
+    from workaholic.domain import Project
+
+_CURSOR_PREFIX: Final = "v2."
+_CURSOR_KEYS: Final = frozenset(
+    (
+        "after",
+        "instance_id",
+        "profile",
+        "project_id",
+        "selection",
+        "subject_id",
+        "v",
+    )
+)
+_CURSOR_VERSION: Final = 2
 _MAX_SQLITE_INTEGER: Final = 9_223_372_036_854_775_807
-_PROJECT_FIELD_COUNT: Final = 4
 _SUBJECT_FIELD_COUNT: Final = 5
+_PROJECT_ORDERED_TASK_FIELD_COUNT: Final = 13
+_ALL_PROJECT_POSITION_FIELD_COUNT: Final = 2
+_Selection = Literal["project", "all_projects"]
+
+
+@dataclass(frozen=True, slots=True)
+class _CursorBinding:
+    """Authoritative selection identities bound into an opaque cursor."""
+
+    profile: str
+    instance_id: InstanceId
+    subject_id: SubjectId
+    selection: _Selection
+    project_id: ProjectId | None
+
+
+@dataclass(frozen=True, slots=True)
+class _CursorPosition:
+    """Last stable ordering position represented by an opaque cursor."""
+
+    project_key: str | None
+    task_number: int
 
 
 def get_local_status(
@@ -84,7 +122,7 @@ def get_local_status(
                 """
                 SELECT
                     i.id, i.created_at,
-                    p.id, p.instance_id, p.key, p.created_at,
+                    p.id, p.instance_id, p.key, p.name, p.created_at,
                     s.id, s.kind, s.display_name, s.enabled,
                     s.is_instance_admin,
                     g.subject_id, g.project_id, g.role
@@ -104,23 +142,24 @@ def get_local_status(
             if row is None:
                 raise NotInitializedError
             _require_owner_values(
-                kind=row[7],
-                enabled=row[9],
-                is_instance_admin=row[10],
-                role=row[13],
+                kind=row[8],
+                enabled=row[10],
+                is_instance_admin=row[11],
+                role=row[14],
             )
             instance = Instance(
                 id=InstanceId(require_text(row[0])),
                 created_at=parse_timestamp(row[1]),
             )
-            project = _project_from_values(row[2:6])
-            subject = _subject_from_values(row[6:11])
+            project = project_from_row(row[2:7])
+            subject = _subject_from_values(row[7:12])
             grant = ProjectGrant(
-                subject_id=SubjectId(require_text(row[11])),
-                project_id=ProjectId(require_text(row[12])),
-                role=ProjectRole(require_text(row[13])),
+                subject_id=SubjectId(require_text(row[12])),
+                project_id=ProjectId(require_text(row[13])),
+                role=ProjectRole(require_text(row[14])),
             )
             return StatusResult(
+                profile=candidate.profile,
                 instance=instance,
                 project=project,
                 subject=subject,
@@ -160,7 +199,7 @@ def list_projects(
             _require_active_subject(connection, candidate.subject_id)
             rows = connection.execute(
                 """
-                SELECT p.id, p.instance_id, p.key, p.created_at
+                SELECT p.id, p.instance_id, p.key, p.name, p.created_at
                 FROM projects AS p
                 JOIN project_grants AS g
                   ON g.project_id = p.id AND g.subject_id = ?
@@ -173,7 +212,61 @@ def list_projects(
                     ProjectRole.OWNER.value,
                 ),
             ).fetchall()
-            return tuple(_project_from_values(row) for row in rows)
+            return tuple(project_from_row(row) for row in rows)
+    except ApplicationError:
+        raise
+    except (IndexError, TypeError, ValueError) as error:
+        raise StorageUnavailableError from error
+
+
+def get_project_by_key(
+    database_path: Path,
+    command: GetProjectByKey,
+) -> Project:
+    """Read one authorized Project by immutable key.
+
+    Args:
+        database_path: Absolute path to the validated SQLite store.
+        command: Validated Instance-, Subject-, and key-bound lookup.
+
+    Returns:
+        Matching authorized Project.
+
+    Raises:
+        NotInitializedError: If the selected Instance does not exist.
+        PermissionDeniedError: If the selected Subject is unavailable or disabled.
+        ProjectNotFoundError: If no authorized Project has the selected key.
+        StorageUnavailableError: If persisted values violate their contracts.
+
+    """
+    candidate: object = command
+    if not isinstance(candidate, GetProjectByKey):
+        raise InvalidInputError
+    try:
+        with open_read_connection(database_path) as connection:
+            _require_instance(connection, candidate.instance_id)
+            _require_active_subject(connection, candidate.subject_id)
+            rows = connection.execute(
+                """
+                SELECT p.id, p.instance_id, p.key, p.name, p.created_at
+                FROM projects AS p
+                JOIN project_grants AS g
+                  ON g.project_id = p.id AND g.subject_id = ?
+                WHERE p.instance_id = ? AND p.key = ? AND g.role = ?
+                LIMIT 2
+                """,
+                (
+                    str(candidate.subject_id),
+                    str(candidate.instance_id),
+                    candidate.project_key,
+                    ProjectRole.OWNER.value,
+                ),
+            ).fetchall()
+            if not rows:
+                raise ProjectNotFoundError
+            if len(rows) != 1:
+                raise StorageUnavailableError
+            return project_from_row(rows[0])
     except ApplicationError:
         raise
     except (IndexError, TypeError, ValueError) as error:
@@ -202,14 +295,21 @@ def list_tasks(database_path: Path, command: ListTasks) -> TaskPage:
         raise InvalidInputError
     try:
         with open_read_connection(database_path) as connection:
-            _require_authorized_project(
+            project = _require_authorized_project(
                 connection,
                 project_id=candidate.project_id,
                 subject_id=candidate.subject_id,
             )
-            after = _decode_cursor(
+            binding = _CursorBinding(
+                profile=candidate.profile,
+                instance_id=project.instance_id,
+                subject_id=candidate.subject_id,
+                selection="project",
+                project_id=project.id,
+            )
+            position = _decode_cursor(
                 candidate.cursor,
-                expected_project_id=candidate.project_id,
+                binding=binding,
             )
             rows = connection.execute(
                 """
@@ -223,18 +323,117 @@ def list_tasks(database_path: Path, command: ListTasks) -> TaskPage:
                 """,
                 (
                     str(candidate.project_id),
-                    after,
+                    position.task_number,
                     candidate.limit + 1,
                 ),
             ).fetchall()
             has_more = len(rows) > candidate.limit
             selected_rows = rows[: candidate.limit]
-            tasks = tuple(task_from_row(row) for row in selected_rows)
+            tasks = tuple(
+                _require_task_project_key(
+                    task_from_row(row),
+                    project_key=project.key,
+                )
+                for row in selected_rows
+            )
             next_cursor = (
-                _encode_cursor(candidate.project_id, tasks[-1].number)
+                _encode_cursor(
+                    binding,
+                    _CursorPosition(
+                        project_key=None,
+                        task_number=tasks[-1].number,
+                    ),
+                )
                 if has_more
                 else None
             )
+            return TaskPage(tasks=tasks, next_cursor=next_cursor)
+    except ApplicationError:
+        raise
+    except (IndexError, TypeError, ValueError) as error:
+        raise StorageUnavailableError from error
+
+
+def list_tasks_for_instance(
+    database_path: Path,
+    command: ListInstanceTasks,
+) -> TaskPage:
+    """Read one stable page across authorized Projects in an Instance.
+
+    Args:
+        database_path: Absolute path to the validated SQLite store.
+        command: Validated profile-, Instance-, and Subject-bound query.
+
+    Returns:
+        Tasks ordered by Project key and Project-local number.
+
+    Raises:
+        InvalidInputError: If a cursor is malformed or cross-selection.
+        NotInitializedError: If the selected Instance does not exist.
+        PermissionDeniedError: If the selected Subject is unavailable or disabled.
+        StorageUnavailableError: If persisted values violate their contracts.
+
+    """
+    candidate: object = command
+    if not isinstance(candidate, ListInstanceTasks):
+        raise InvalidInputError
+    try:
+        with open_read_connection(database_path) as connection:
+            _require_instance(connection, candidate.instance_id)
+            _require_active_subject(connection, candidate.subject_id)
+            binding = _CursorBinding(
+                profile=candidate.profile,
+                instance_id=candidate.instance_id,
+                subject_id=candidate.subject_id,
+                selection="all_projects",
+                project_id=None,
+            )
+            position = _decode_cursor(candidate.cursor, binding=binding)
+            after_key = "" if position.project_key is None else position.project_key
+            rows = connection.execute(
+                """
+                SELECT
+                    p.key,
+                    t.uid, t.project_id, t.number, t.key, t.title, t.objective,
+                    t.state, t.priority, t.version, t.created_by, t.created_at,
+                    t.updated_at
+                FROM tasks AS t
+                JOIN projects AS p ON p.id = t.project_id
+                JOIN project_grants AS g
+                  ON g.project_id = p.id AND g.subject_id = ?
+                WHERE
+                    p.instance_id = ?
+                    AND g.role = ?
+                    AND (
+                        p.key > ?
+                        OR (p.key = ? AND t.number > ?)
+                    )
+                ORDER BY p.key ASC, t.number ASC
+                LIMIT ?
+                """,
+                (
+                    str(candidate.subject_id),
+                    str(candidate.instance_id),
+                    ProjectRole.OWNER.value,
+                    after_key,
+                    after_key,
+                    position.task_number,
+                    candidate.limit + 1,
+                ),
+            ).fetchall()
+            has_more = len(rows) > candidate.limit
+            selected_rows = rows[: candidate.limit]
+            tasks = tuple(_task_from_project_ordered_row(row) for row in selected_rows)
+            next_cursor = None
+            if has_more:
+                last_row = selected_rows[-1]
+                next_cursor = _encode_cursor(
+                    binding,
+                    _CursorPosition(
+                        project_key=require_text(last_row[0]),
+                        task_number=tasks[-1].number,
+                    ),
+                )
             return TaskPage(tasks=tasks, next_cursor=next_cursor)
     except ApplicationError:
         raise
@@ -264,7 +463,7 @@ def get_task(database_path: Path, command: GetTask) -> Task:
         raise InvalidInputError
     try:
         with open_read_connection(database_path) as connection:
-            _require_authorized_project(
+            project = _require_authorized_project(
                 connection,
                 project_id=candidate.project_id,
                 subject_id=candidate.subject_id,
@@ -294,7 +493,10 @@ def get_task(database_path: Path, command: GetTask) -> Task:
                 ).fetchone()
             if row is None:
                 raise TaskNotFoundError
-            return task_from_row(row)
+            return _require_task_project_key(
+                task_from_row(row),
+                project_key=project.key,
+            )
     except ApplicationError:
         raise
     except (IndexError, TypeError, ValueError) as error:
@@ -360,13 +562,16 @@ def _require_authorized_project(
     *,
     project_id: ProjectId,
     subject_id: SubjectId,
-) -> None:
-    """Require a selected Project and its active local Owner.
+) -> Project:
+    """Require and return a selected Project with its active local Owner.
 
     Args:
         connection: Active validated read snapshot.
         project_id: Selected Project identity.
         subject_id: Selected actor identity.
+
+    Returns:
+        Validated authorized Project.
 
     Raises:
         NotInitializedError: If the Project does not exist.
@@ -375,7 +580,9 @@ def _require_authorized_project(
     """
     row = connection.execute(
         """
-        SELECT s.kind, s.enabled, s.is_instance_admin, g.role
+        SELECT
+            p.id, p.instance_id, p.key, p.name, p.created_at,
+            s.kind, s.enabled, s.is_instance_admin, g.role
         FROM projects AS p
         LEFT JOIN subjects AS s ON s.id = ?
         LEFT JOIN project_grants AS g
@@ -387,11 +594,12 @@ def _require_authorized_project(
     if row is None:
         raise NotInitializedError
     _require_owner_values(
-        kind=row[0],
-        enabled=row[1],
-        is_instance_admin=row[2],
-        role=row[3],
+        kind=row[5],
+        enabled=row[6],
+        is_instance_admin=row[7],
+        role=row[8],
     )
+    return project_from_row(row[0:5])
 
 
 def _require_owner_values(
@@ -422,29 +630,6 @@ def _require_owner_values(
         raise PermissionDeniedError
 
 
-def _project_from_values(value: tuple[object, ...]) -> Project:
-    """Deserialize one Project row in the canonical selected-field order.
-
-    Args:
-        value: SQLite Project values.
-
-    Returns:
-        Validated Project.
-
-    Raises:
-        StorageUnavailableError: If the row has an unexpected shape.
-
-    """
-    if len(value) != _PROJECT_FIELD_COUNT:
-        raise StorageUnavailableError
-    return Project(
-        id=ProjectId(require_text(value[0])),
-        instance_id=InstanceId(require_text(value[1])),
-        key=require_text(value[2]),
-        created_at=parse_timestamp(value[3]),
-    )
-
-
 def _subject_from_values(value: tuple[object, ...]) -> Subject:
     """Deserialize one Subject row in the canonical selected-field order.
 
@@ -469,21 +654,74 @@ def _subject_from_values(value: tuple[object, ...]) -> Subject:
     )
 
 
-def _encode_cursor(project_id: ProjectId, after: int) -> str:
-    """Encode one canonical Project-bound pagination cursor.
+def _task_from_project_ordered_row(value: tuple[object, ...]) -> Task:
+    """Deserialize and cross-check one all-Projects ordered Task row.
 
     Args:
-        project_id: Project to which the cursor is bound.
-        after: Last Task number returned to the caller.
+        value: Project key followed by canonical Task fields.
+
+    Returns:
+        Validated Task whose key agrees with its Project ordering key.
+
+    Raises:
+        StorageUnavailableError: If row shape or cross-table values disagree.
+
+    """
+    if len(value) != _PROJECT_ORDERED_TASK_FIELD_COUNT:
+        raise StorageUnavailableError
+    project_key = require_text(value[0])
+    task = task_from_row(value[1:_PROJECT_ORDERED_TASK_FIELD_COUNT])
+    return _require_task_project_key(task, project_key=project_key)
+
+
+def _require_task_project_key(task: Task, *, project_key: str) -> Task:
+    """Require a persisted Task key to match its Project namespace.
+
+    Args:
+        task: Validated persisted Task.
+        project_key: Immutable key loaded from the owning Project row.
+
+    Returns:
+        The unchanged validated Task.
+
+    Raises:
+        StorageUnavailableError: If cross-table key fields disagree.
+
+    """
+    if task.key != f"{project_key}-{task.number}":
+        raise StorageUnavailableError
+    return task
+
+
+def _encode_cursor(
+    binding: _CursorBinding,
+    position: _CursorPosition,
+) -> str:
+    """Encode one canonical selection-bound pagination cursor.
+
+    Args:
+        binding: Authoritative profile and selection identities.
+        position: Last ordering position returned to the caller.
 
     Returns:
         Opaque URL-safe, unpadded, versioned cursor.
 
     """
+    after: object
+    if binding.selection == "project":
+        after = position.task_number
+    else:
+        after = [position.project_key, position.task_number]
     payload = canonical_json(
         {
             "after": after,
-            "project_id": str(project_id),
+            "instance_id": str(binding.instance_id),
+            "profile": binding.profile,
+            "project_id": (
+                None if binding.project_id is None else str(binding.project_id)
+            ),
+            "selection": binding.selection,
+            "subject_id": str(binding.subject_id),
             "v": _CURSOR_VERSION,
         }
     ).encode("utf-8")
@@ -494,48 +732,53 @@ def _encode_cursor(project_id: ProjectId, after: int) -> str:
 def _decode_cursor(
     cursor: str | None,
     *,
-    expected_project_id: ProjectId,
-) -> int:
-    """Decode and validate one canonical Project-bound cursor.
+    binding: _CursorBinding,
+) -> _CursorPosition:
+    """Decode and validate one canonical selection-bound cursor.
 
     Args:
         cursor: Optional opaque cursor supplied by a caller.
-        expected_project_id: Project selected by the current query.
+        binding: Authoritative identities selected by the current query.
 
     Returns:
-        Last returned Task number, or zero for the first page.
+        Last returned ordering position, or the initial position.
 
     Raises:
         InvalidInputError: If the cursor is malformed, noncanonical, or cross-Project.
 
     """
     if cursor is None:
-        return 0
+        return _CursorPosition(project_key=None, task_number=0)
     try:
-        after = _parse_cursor(cursor, expected_project_id=expected_project_id)
+        position = _parse_cursor(cursor, binding=binding)
     except (
         binascii.Error,
         json.JSONDecodeError,
         KeyError,
+        TypeError,
         UnicodeDecodeError,
         ValueError,
     ) as error:
         raise InvalidInputError from error
-    return after
+    return position
 
 
-def _parse_cursor(cursor: str, *, expected_project_id: ProjectId) -> int:
+def _parse_cursor(
+    cursor: str,
+    *,
+    binding: _CursorBinding,
+) -> _CursorPosition:
     """Parse one non-null cursor before its errors are mapped publicly.
 
     Args:
         cursor: Opaque caller cursor.
-        expected_project_id: Project selected by the current query.
+        binding: Authoritative identities selected by the current query.
 
     Returns:
-        Last returned Task number.
+        Last returned ordering position.
 
     Raises:
-        ValueError: If the cursor is malformed, noncanonical, or cross-Project.
+        ValueError: If the cursor is malformed, noncanonical, or cross-selection.
 
     """
     if not cursor.startswith(_CURSOR_PREFIX):
@@ -555,17 +798,91 @@ def _parse_cursor(cursor: str, *, expected_project_id: ProjectId) -> int:
     payload = cast("Mapping[str, object]", decoded)
     version = payload["v"]
     after = payload["after"]
+    profile = payload["profile"]
+    instance_value = payload["instance_id"]
+    subject_value = payload["subject_id"]
+    selection = payload["selection"]
     project_value = payload["project_id"]
     if (
         type(version) is not int
         or version != _CURSOR_VERSION
-        or type(after) is not int
-        or after < 1
-        or after > _MAX_SQLITE_INTEGER
-        or not isinstance(project_value, str)
+        or not isinstance(profile, str)
+        or profile != binding.profile
+        or not isinstance(instance_value, str)
+        or instance_value != str(binding.instance_id)
+        or not isinstance(subject_value, str)
+        or subject_value != str(binding.subject_id)
+        or not isinstance(selection, str)
+        or selection != binding.selection
     ):
         raise ValueError
-    project_id = ProjectId(project_value)
-    if project_id != expected_project_id or _encode_cursor(project_id, after) != cursor:
+    position = _parse_cursor_position(
+        after=after,
+        project_value=project_value,
+        binding=binding,
+    )
+    if _encode_cursor(binding, position) != cursor:
         raise ValueError
-    return after
+    return position
+
+
+def _parse_cursor_position(
+    *,
+    after: object,
+    project_value: object,
+    binding: _CursorBinding,
+) -> _CursorPosition:
+    """Validate selection-specific Project identity and ordering position.
+
+    Args:
+        after: Decoded selection-specific ordering value.
+        project_value: Decoded selected Project identity or null.
+        binding: Authoritative current-query identities.
+
+    Returns:
+        Validated ordering position.
+
+    Raises:
+        ValueError: If Project scope or position does not match the selection.
+
+    """
+    if binding.selection == "project":
+        if (
+            binding.project_id is None
+            or not isinstance(project_value, str)
+            or project_value != str(binding.project_id)
+        ):
+            raise ValueError
+        task_number = _require_cursor_task_number(after)
+        return _CursorPosition(project_key=None, task_number=task_number)
+    if binding.project_id is not None or project_value is not None:
+        raise ValueError
+    if not isinstance(after, list) or len(after) != _ALL_PROJECT_POSITION_FIELD_COUNT:
+        raise ValueError
+    project_key = after[0]
+    if not isinstance(project_key, str):
+        raise TypeError
+    validate_project_key(project_key)
+    task_number = _require_cursor_task_number(after[1])
+    return _CursorPosition(
+        project_key=project_key,
+        task_number=task_number,
+    )
+
+
+def _require_cursor_task_number(value: object) -> int:
+    """Require one positive SQLite-compatible Task number.
+
+    Args:
+        value: Candidate decoded ordering number.
+
+    Returns:
+        Validated positive integer.
+
+    Raises:
+        ValueError: If the number is boolean, nonpositive, or too large.
+
+    """
+    if type(value) is not int or value < 1 or value > _MAX_SQLITE_INTEGER:
+        raise ValueError
+    return value

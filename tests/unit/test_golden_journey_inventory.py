@@ -75,10 +75,7 @@ _EXPECTED_JOURNEYS = {
     "test_multi_project_journey.py": JourneyExpectation(
         test_name="test_each_working_directory_selects_its_bound_project",
         enabling_phase=2,
-        skip_reason=(
-            "Phase 2: missing project binding, context discovery, and stable "
-            "project task keys."
-        ),
+        skip_reason=None,
     ),
     "test_solo_journey.py": JourneyExpectation(
         test_name="test_solo_tasks_remain_visible_after_reopening_the_project",
@@ -260,6 +257,21 @@ def test_exactly_one_canonical_specification_exists_for_each_journey() -> None:
 
 def test_enabled_and_blocked_golden_specs_have_exact_markers() -> None:
     """Only future journeys carry phase-specific skips; none may xfail."""
+    assert (
+        sum(
+            expectation.skip_reason is None
+            for expectation in _EXPECTED_JOURNEYS.values()
+        )
+        == 2
+    )
+    assert (
+        sum(
+            expectation.skip_reason is not None
+            for expectation in _EXPECTED_JOURNEYS.values()
+        )
+        == 4
+    )
+
     for filename, expectation in _EXPECTED_JOURNEYS.items():
         module = _parse(_GOLDEN_DIRECTORY / filename)
         marker_uses = _module_markers(module)

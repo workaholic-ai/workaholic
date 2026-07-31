@@ -1,4 +1,4 @@
-"""Semantic Phase 1 repository operations backed by SQLite transactions."""
+"""Initial Project bootstrap operations backed by SQLite transactions."""
 
 from __future__ import annotations
 
@@ -16,7 +16,6 @@ from workaholic.application import (
 from workaholic.domain import (
     Instance,
     InstanceId,
-    Project,
     ProjectGrant,
     ProjectId,
     ProjectRole,
@@ -28,6 +27,7 @@ from workaholic.domain import (
 from workaholic.persistence.sqlite._records import (
     canonical_json,
     parse_timestamp,
+    project_from_row,
     require_boolean,
     require_text,
     serialize_timestamp,
@@ -69,7 +69,10 @@ def bootstrap_local_project(
     candidate_mutation: object = mutation
     if not isinstance(candidate_mutation, BootstrapMutation):
         raise StorageUnavailableError
-    fingerprint = _bootstrap_fingerprint(candidate_mutation.project_key)
+    fingerprint = _bootstrap_fingerprint(
+        candidate_mutation.project_key,
+        candidate_mutation.project_name,
+    )
     try:
         with open_write_transaction(database_path) as connection:
             return _bootstrap_in_transaction(
@@ -114,13 +117,17 @@ def _bootstrap_in_transaction(
         return replay
 
     project_rows = connection.execute(
-        "SELECT id, key FROM projects ORDER BY id LIMIT 2"
+        "SELECT id, key, name FROM projects ORDER BY id LIMIT 2"
     ).fetchall()
     if project_rows:
         if len(project_rows) != 1:
             raise StorageUnavailableError
         persisted_key = require_text(project_rows[0][1])
-        if persisted_key != mutation.project_key:
+        persisted_name = require_text(project_rows[0][2])
+        if (
+            persisted_key != mutation.project_key
+            or persisted_name != mutation.project_name
+        ):
             raise ProjectKeyConflictError
         result = _load_bootstrap_graph(
             connection,
@@ -144,17 +151,23 @@ def _bootstrap_in_transaction(
     return result
 
 
-def _bootstrap_fingerprint(project_key: str) -> str:
+def _bootstrap_fingerprint(project_key: str, project_name: str) -> str:
     """Build a stable fingerprint from caller-controlled semantic input only.
 
     Args:
         project_key: Validated immutable Project key.
+        project_name: Validated normalized Project display name.
 
     Returns:
         Lowercase SHA-256 hexadecimal digest.
 
     """
-    encoded = canonical_json({"project_key": project_key}).encode("utf-8")
+    encoded = canonical_json(
+        {
+            "project_key": project_key,
+            "project_name": project_name,
+        }
+    ).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()
 
 
@@ -308,13 +321,14 @@ def _insert_bootstrap_graph(
     connection.execute(
         """
         INSERT INTO projects (
-            id, instance_id, key, next_task_number, created_at
-        ) VALUES (?, ?, ?, ?, ?)
+            id, instance_id, key, name, next_task_number, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?)
         """,
         (
             str(mutation.project_id),
             str(mutation.instance_id),
             mutation.project_key,
+            mutation.project_name,
             1,
             timestamp,
         ),
@@ -356,7 +370,7 @@ def _load_bootstrap_graph(
     ).fetchall()
     project_rows = connection.execute(
         """
-        SELECT id, instance_id, key, created_at
+        SELECT id, instance_id, key, name, created_at
         FROM projects
         ORDER BY id
         LIMIT 2
@@ -403,12 +417,7 @@ def _load_bootstrap_graph(
         id=InstanceId(require_text(instance_rows[0][0])),
         created_at=parse_timestamp(instance_rows[0][1]),
     )
-    project = Project(
-        id=ProjectId(project_id),
-        instance_id=InstanceId(require_text(project_rows[0][1])),
-        key=require_text(project_rows[0][2]),
-        created_at=parse_timestamp(project_rows[0][3]),
-    )
+    project = project_from_row(project_rows[0])
     subject = Subject(
         id=SubjectId(subject_id),
         kind=SubjectKind(require_text(subject_rows[0][1])),

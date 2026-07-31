@@ -3,9 +3,16 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import TYPE_CHECKING
 
-from workaholic.application import BootstrapResult, StatusResult, TaskPage
+from workaholic.application import (
+    BootstrapResult,
+    ContextResult,
+    ProjectCreationResult,
+    StatusResult,
+    TaskPage,
+)
 from workaholic.domain import (
     Instance,
     InstanceId,
@@ -24,6 +31,9 @@ from workaholic.domain import (
 
 if TYPE_CHECKING:
     from workaholic.session import (
+        ContextRequest,
+        ProjectBindRequest,
+        ProjectCreateRequest,
         ProjectListRequest,
         StatusRequest,
         TaskCreateRequest,
@@ -65,12 +75,14 @@ def subject() -> Subject:
 def project(
     *,
     key: str = "ACME",
+    name: str | None = None,
     identifier: str = "prj_acme",
 ) -> Project:
     """Build one deterministic CLI-test Project.
 
     Args:
         key: Immutable Project key.
+        name: Optional Human-readable Project name.
         identifier: Canonical Project identifier text.
 
     Returns:
@@ -81,6 +93,7 @@ def project(
         id=ProjectId(identifier),
         instance_id=instance().id,
         key=key,
+        name=key if name is None else name,
         created_at=_NOW,
     )
 
@@ -143,6 +156,56 @@ def status_result() -> StatusResult:
     )
 
 
+def context_result(
+    *,
+    selected_project: Project | None = None,
+    profile: str = "local",
+    workspace_root: Path | None = Path("/work/acme"),
+) -> ContextResult:
+    """Build one internally consistent effective-context result.
+
+    Args:
+        selected_project: Optional Project selected by the result.
+        profile: Trusted profile name.
+        workspace_root: Optional absolute Workspace root.
+
+    Returns:
+        Validated deterministic effective-context result.
+
+    """
+    effective_project = project() if selected_project is None else selected_project
+    context_source = (
+        None if workspace_root is None else workspace_root / ".workaholic.env"
+    )
+    return ContextResult(
+        profile=profile,
+        instance=instance(),
+        project=effective_project,
+        subject=subject(),
+        grant=grant(effective_project),
+        workspace_root=workspace_root,
+        context_source=context_source,
+    )
+
+
+def project_creation_result() -> ProjectCreationResult:
+    """Build one internally consistent Project-creation result.
+
+    Returns:
+        Validated deterministic Project and Owner grant.
+
+    """
+    created_project = project(
+        key="DOCS",
+        name="Documentation",
+        identifier="prj_docs",
+    )
+    return ProjectCreationResult(
+        project=created_project,
+        grant=grant(created_project),
+    )
+
+
 def task() -> Task:
     """Build one deterministic CLI-test Task.
 
@@ -167,21 +230,27 @@ def task() -> Task:
 
 
 class RecordingSession:
-    """Configurable explicit fake for the complete Phase 1 Session boundary."""
+    """Configurable explicit fake for the cumulative Session boundary."""
 
     def __init__(self) -> None:
         """Initialize deterministic results, failures, and call logs."""
         first_task = task()
         self.up_result = bootstrap_result()
         self.status_result = status_result()
+        self.context_result = context_result()
         self.projects_result: tuple[Project, ...] = (project(),)
+        self.project_creation_result = project_creation_result()
+        self.project_binding_result = context_result()
         self.create_task_result = first_task
         self.task_page_result = TaskPage(tasks=(first_task,), next_cursor=None)
         self.get_task_result = first_task
         self.failures: dict[str, Exception] = {}
         self.up_requests: list[UpRequest] = []
         self.status_requests: list[StatusRequest] = []
+        self.context_requests: list[ContextRequest] = []
         self.project_list_requests: list[ProjectListRequest] = []
+        self.project_create_requests: list[ProjectCreateRequest] = []
+        self.project_bind_requests: list[ProjectBindRequest] = []
         self.task_create_requests: list[TaskCreateRequest] = []
         self.task_list_requests: list[TaskListRequest] = []
         self.task_get_requests: list[TaskGetRequest] = []
@@ -198,6 +267,12 @@ class RecordingSession:
         self._raise_failure("status")
         return self.status_result
 
+    def context(self, request: ContextRequest) -> ContextResult:
+        """Record and answer one effective-context request."""
+        self.context_requests.append(request)
+        self._raise_failure("context")
+        return self.context_result
+
     def list_projects(
         self,
         request: ProjectListRequest,
@@ -206,6 +281,21 @@ class RecordingSession:
         self.project_list_requests.append(request)
         self._raise_failure("list_projects")
         return self.projects_result
+
+    def create_project(
+        self,
+        request: ProjectCreateRequest,
+    ) -> ProjectCreationResult:
+        """Record and answer one Project-create request."""
+        self.project_create_requests.append(request)
+        self._raise_failure("create_project")
+        return self.project_creation_result
+
+    def bind_project(self, request: ProjectBindRequest) -> ContextResult:
+        """Record and answer one Project-bind request."""
+        self.project_bind_requests.append(request)
+        self._raise_failure("bind_project")
+        return self.project_binding_result
 
     def create_task(self, request: TaskCreateRequest) -> Task:
         """Record and answer one Task-create request."""

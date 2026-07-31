@@ -13,3 +13,9 @@ The fixtures are excluded from mypy because unresolved, shadowed, and
 deliberately misplaced imports are their test data. They remain covered by
 Python parsing, Ruff, and the contract tests that execute them. No production
 package is excluded from typing or Import Linter.
+
+Persistence and Session conformance state is generated at runtime through the
+typed factories in `tests.contract.phase_one` and `tests.contract.phase_two`.
+Do not add backend snapshots, database files, profile files, credentials, or
+operator-specific paths here; those would make shared behavioral expectations
+adapter- or machine-dependent.

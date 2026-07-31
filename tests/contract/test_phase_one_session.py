@@ -24,7 +24,7 @@ if TYPE_CHECKING:
 
     from tests.contract.phase_one import PhaseOneSessionFactory
 
-    from workaholic.session import WorkaholicSession
+    from workaholic.session import TaskSession
 
 pytestmark = pytest.mark.contract
 
@@ -33,7 +33,7 @@ pytestmark = pytest.mark.contract
 class _LocalSessionFactory:
     """Construct production embedded Sessions for the shared contract."""
 
-    def create(self, root: Path, workspace: Path) -> WorkaholicSession:
+    def create(self, root: Path, workspace: Path) -> TaskSession:
         """Construct a LocalSession without invoking an operation.
 
         Args:
@@ -46,7 +46,10 @@ class _LocalSessionFactory:
         """
         return create_local_session(
             cwd=workspace,
-            environment={"WORKAHOLIC_DATA_DIR": str(root)},
+            environment={
+                "WORKAHOLIC_CONFIG_DIR": str(root.parent / "config"),
+                "WORKAHOLIC_DATA_DIR": str(root),
+            },
         )
 
 
@@ -114,23 +117,26 @@ class PhaseOneSessionContract:
         assert restarted.get_task(TaskGetRequest(task=created.uid)) == created
         assert restarted.get_task(TaskGetRequest(task=created.key)) == created
 
-    def test_context_is_never_discovered_from_a_parent_directory(
+    def test_nearest_parent_context_is_discovered_without_child_write(
         self,
         session_factory: PhaseOneSessionFactory,
         tmp_path: Path,
     ) -> None:
-        """A child Workspace cannot inherit its parent's local selection."""
+        """A child inherits the nearest valid binding without copying context."""
         root = tmp_path / "data"
         parent = _workspace(tmp_path, "workspace")
         child = parent / "child"
         child.mkdir()
-        session_factory.create(root, parent).up(UpRequest(project_key="ACME"))
+        bootstrap = session_factory.create(root, parent).up(
+            UpRequest(project_key="ACME")
+        )
         child_session = session_factory.create(root, child)
 
-        with pytest.raises(ApplicationError) as captured:
-            child_session.status(StatusRequest())
+        status = child_session.status(StatusRequest())
 
-        assert captured.value.code is ApplicationErrorCode.CONTEXT_NOT_FOUND
+        assert status.instance == bootstrap.instance
+        assert status.project == bootstrap.project
+        assert status.subject == bootstrap.subject
         assert not (child / CONTEXT_FILENAME).exists()
 
     def test_malformed_context_is_rejected_without_fallback(
@@ -278,7 +284,7 @@ def _workspace(tmp_path: Path, name: str) -> Path:
 
 
 def _invoke_invalid_operation(
-    session: WorkaholicSession,
+    session: TaskSession,
     operation: str,
 ) -> object:
     """Invoke one deliberately invalid Session operation.
@@ -296,7 +302,7 @@ def _invoke_invalid_operation(
 
     """
     if operation == "up":
-        return session.up(UpRequest(project_key="lowercase"))
+        return session.up(UpRequest.model_construct(project_key="lowercase"))
     if operation == "task_add":
         return session.create_task(TaskCreateRequest(title="   "))
     if operation == "task_list":

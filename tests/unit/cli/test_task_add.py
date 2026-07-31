@@ -20,7 +20,11 @@ _TASK_ADD_ERRORS = (
     ApplicationErrorCode.INVALID_INPUT,
     ApplicationErrorCode.CONTEXT_NOT_FOUND,
     ApplicationErrorCode.CONTEXT_INVALID,
+    ApplicationErrorCode.PROFILE_NOT_FOUND,
+    ApplicationErrorCode.PROFILE_INVALID,
+    ApplicationErrorCode.PROFILE_UNSUPPORTED,
     ApplicationErrorCode.NOT_INITIALIZED,
+    ApplicationErrorCode.PROJECT_NOT_FOUND,
     ApplicationErrorCode.IDEMPOTENCY_CONFLICT,
     ApplicationErrorCode.PERMISSION_DENIED,
     ApplicationErrorCode.SCHEMA_UNSUPPORTED,
@@ -107,6 +111,8 @@ def test_task_add_forwards_unicode_objective_priority_and_idempotency() -> None:
             "0",
             "--idempotency-key",
             "task-1",
+            "--project",
+            "DOCS",
             "--json",
         ],
     )
@@ -125,6 +131,7 @@ def test_task_add_forwards_unicode_objective_priority_and_idempotency() -> None:
             objective="Ship the Ž release",
             priority=0,
             idempotency_key="task-1",
+            project="DOCS",
         )
     ]
 
@@ -156,6 +163,7 @@ def test_task_add_human_summary_escapes_control_characters() -> None:
         (("--priority", "101"), "Task-create input is invalid."),
         (("--idempotency-key", ""), "Task-create input is invalid."),
         (("--idempotency-key", "x" * 129), "Task-create input is invalid."),
+        (("--project", "invalid key"), "Task-create input is invalid."),
     ],
 )
 def test_task_add_rejects_request_boundary_values_before_session(
@@ -276,6 +284,7 @@ def test_task_add_help_and_non_interactive_never_acquire_input(
         "--objective",
         "--priority",
         "--idempotency-key",
+        "--project",
         "--json",
         "--non-interactive",
     ):

@@ -1,4 +1,4 @@
-"""Unit tests for stable Phase 1 application errors."""
+"""Unit tests for stable cumulative application errors."""
 
 from __future__ import annotations
 
@@ -8,6 +8,11 @@ from workaholic.application import (
     ApplicationError,
     ApplicationErrorCode,
     ExitCategory,
+    ProfileInvalidError,
+    ProfileNotFoundError,
+    ProfileUnsupportedError,
+    ProjectNotFoundError,
+    WorkspaceBindingConflictError,
 )
 from workaholic.domain import DomainValidationError
 
@@ -15,9 +20,17 @@ _EXPECTED_ERROR_SEMANTICS = {
     ApplicationErrorCode.INVALID_INPUT: (ExitCategory.INPUT_USAGE, False),
     ApplicationErrorCode.CONTEXT_NOT_FOUND: (ExitCategory.MISSING, False),
     ApplicationErrorCode.CONTEXT_INVALID: (ExitCategory.MISSING, False),
+    ApplicationErrorCode.PROFILE_NOT_FOUND: (ExitCategory.MISSING, False),
+    ApplicationErrorCode.PROFILE_INVALID: (ExitCategory.MISSING, False),
+    ApplicationErrorCode.PROFILE_UNSUPPORTED: (ExitCategory.MISSING, False),
     ApplicationErrorCode.NOT_INITIALIZED: (ExitCategory.MISSING, False),
+    ApplicationErrorCode.PROJECT_NOT_FOUND: (ExitCategory.MISSING, False),
     ApplicationErrorCode.TASK_NOT_FOUND: (ExitCategory.MISSING, False),
     ApplicationErrorCode.PROJECT_KEY_CONFLICT: (ExitCategory.CONFLICT, False),
+    ApplicationErrorCode.WORKSPACE_BINDING_CONFLICT: (
+        ExitCategory.CONFLICT,
+        False,
+    ),
     ApplicationErrorCode.IDEMPOTENCY_CONFLICT: (ExitCategory.CONFLICT, False),
     ApplicationErrorCode.PERMISSION_DENIED: (ExitCategory.AUTHORIZATION, False),
     ApplicationErrorCode.SCHEMA_UNSUPPORTED: (ExitCategory.OPERATIONAL, False),
@@ -28,7 +41,7 @@ _EXPECTED_ERROR_SEMANTICS = {
 
 
 def test_every_documented_error_has_fixed_exit_and_retry_semantics() -> None:
-    """Every Phase 1 code maps to exactly one documented public behavior."""
+    """Every public code maps to exactly one documented behavior."""
     assert set(ApplicationErrorCode) == set(_EXPECTED_ERROR_SEMANTICS)
 
     for code, (exit_category, retryable) in _EXPECTED_ERROR_SEMANTICS.items():
@@ -39,6 +52,45 @@ def test_every_documented_error_has_fixed_exit_and_retry_semantics() -> None:
         assert error.retryable is retryable
         assert error.safe_message == str(error)
         assert error.args == (error.safe_message,)
+
+
+def test_phase_two_errors_have_exact_safe_public_messages() -> None:
+    """Phase 2 failures cannot disclose configuration or storage details."""
+    expected = (
+        (
+            ProfileNotFoundError(),
+            ApplicationErrorCode.PROFILE_NOT_FOUND,
+            "The selected profile was not found.",
+        ),
+        (
+            ProfileInvalidError(),
+            ApplicationErrorCode.PROFILE_INVALID,
+            "The trusted profile configuration is invalid.",
+        ),
+        (
+            ProfileUnsupportedError(),
+            ApplicationErrorCode.PROFILE_UNSUPPORTED,
+            ("The selected profile mode or configuration version is not supported."),
+        ),
+        (
+            ProjectNotFoundError(),
+            ApplicationErrorCode.PROJECT_NOT_FOUND,
+            "The selected Project was not found.",
+        ),
+        (
+            WorkspaceBindingConflictError(),
+            ApplicationErrorCode.WORKSPACE_BINDING_CONFLICT,
+            (
+                "The Workspace is already bound to a different Project, "
+                "Instance, or profile."
+            ),
+        ),
+    )
+
+    for error, code, message in expected:
+        assert error.code is code
+        assert error.safe_message == message
+        assert not error.retryable
 
 
 @pytest.mark.parametrize(

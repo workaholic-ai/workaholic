@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
@@ -16,13 +17,18 @@ from workaholic.application import (
     ApplicationErrorCode,
     BootstrapLocalProjectInput,
     BootstrapResult,
+    CreateProjectInput,
     CreateTaskInput,
     GetLocalStatus,
+    GetProjectByKey,
     GetTask,
     IdempotencyConflictError,
+    ListInstanceTasks,
     ListProjects,
     ListTasks,
     PermissionDeniedError,
+    ProfileNotFoundError,
+    ProjectCreationResult,
     StatusResult,
     TaskPage,
 )
@@ -42,7 +48,8 @@ from workaholic.domain import (
     WorkspaceBinding,
 )
 from workaholic.session import (
-    LocalActorSelector,
+    LocalIdentity,
+    LocalRuntime,
     LocalSession,
     ProjectListRequest,
     StatusRequest,
@@ -51,16 +58,11 @@ from workaholic.session import (
     TaskListRequest,
     UpRequest,
     WorkspaceContextGateway,
+    WorkspaceContextSelection,
 )
 
 if TYPE_CHECKING:
     from collections.abc import Callable
-
-    from workaholic.application import (
-        BootstrapApplication,
-        QueryApplication,
-        TaskApplication,
-    )
 
 _NOW = datetime(2026, 7, 30, 15, 0, tzinfo=UTC)
 
@@ -106,6 +108,7 @@ def _project() -> Project:
         id=ProjectId("prj_acme"),
         instance_id=InstanceId("ins_local"),
         key="ACME",
+        name="ACME",
         created_at=_NOW,
     )
 
@@ -239,6 +242,8 @@ class _Context:
         self.write_errors: list[ApplicationError] = []
         self.write_result: object = Path("/workspace/.workaholic.env")
         self.written: list[WorkspaceBinding] = []
+        self.bind_result: object = Path("/workspace/.workaholic.env")
+        self.bound: list[tuple[Path | None, WorkspaceBinding, bool]] = []
 
     def read_current(self) -> WorkspaceBinding:
         """Record and return or fail the configured context read."""
@@ -246,6 +251,17 @@ class _Context:
         if self.read_error is not None:
             raise self.read_error
         return self.binding
+
+    def discover(self) -> WorkspaceContextSelection:
+        """Record and return or fail the configured upward discovery."""
+        self.log.append("context.read")
+        if self.read_error is not None:
+            raise self.read_error
+        return WorkspaceContextSelection(
+            binding=self.binding,
+            context_source=Path("/workspace/.workaholic.env"),
+            workspace_root=Path("/workspace"),
+        )
 
     def write_current(self, binding: WorkspaceBinding) -> Path:
         """Record and return or fail one configured context write."""
@@ -255,6 +271,18 @@ class _Context:
             raise self.write_errors.pop(0)
         return cast("Path", self.write_result)
 
+    def bind(
+        self,
+        directory: Path | None,
+        binding: WorkspaceBinding,
+        *,
+        replace: bool,
+    ) -> Path:
+        """Record one explicit Project binding."""
+        self.log.append("context.bind")
+        self.bound.append((directory, binding, replace))
+        return cast("Path", self.bind_result)
+
 
 class _Actors:
     """Recording trusted local actor selector fake."""
@@ -262,14 +290,15 @@ class _Actors:
     def __init__(self, log: list[str]) -> None:
         """Initialize the selected Subject and recordings."""
         self.log = log
-        self.result: object = SubjectId("sub_local")
-        self.bindings: list[WorkspaceBinding] = []
+        self.result: object = LocalIdentity(
+            instance_id=InstanceId("ins_local"),
+            subject_id=SubjectId("sub_local"),
+        )
 
-    def select(self, binding: WorkspaceBinding) -> SubjectId:
+    def select(self) -> LocalIdentity:
         """Record selection and return the configured identity."""
         self.log.append("actors.select")
-        self.bindings.append(binding)
-        return cast("SubjectId", self.result)
+        return cast("LocalIdentity", self.result)
 
 
 class _Bootstrap:
@@ -299,15 +328,19 @@ class _Queries:
         self.log = log
         self.status_result: object = _status_result()
         self.projects_result: object = (_project(),)
+        self.project_result: object = _project()
         self.tasks_result: object = TaskPage(tasks=(_task(),), next_cursor=None)
         self.task_result: object = _task()
         self.status_error: ApplicationError | None = None
         self.projects_error: ApplicationError | None = None
+        self.project_error: ApplicationError | None = None
         self.tasks_error: ApplicationError | None = None
         self.task_error: ApplicationError | None = None
         self.status_commands: list[GetLocalStatus] = []
         self.project_commands: list[ListProjects] = []
+        self.project_get_commands: list[GetProjectByKey] = []
         self.task_list_commands: list[ListTasks] = []
+        self.instance_task_list_commands: list[ListInstanceTasks] = []
         self.task_get_commands: list[GetTask] = []
 
     def status(self, command: GetLocalStatus) -> StatusResult:
@@ -326,10 +359,26 @@ class _Queries:
             raise self.projects_error
         return cast("tuple[Project, ...]", self.projects_result)
 
+    def get_project_by_key(self, command: GetProjectByKey) -> Project:
+        """Record and return or fail one Project lookup."""
+        self.log.append("queries.get_project_by_key")
+        self.project_get_commands.append(command)
+        if self.project_error is not None:
+            raise self.project_error
+        return cast("Project", self.project_result)
+
     def list_tasks(self, command: ListTasks) -> TaskPage:
         """Record and return or fail one Task page query."""
         self.log.append("queries.list_tasks")
         self.task_list_commands.append(command)
+        if self.tasks_error is not None:
+            raise self.tasks_error
+        return cast("TaskPage", self.tasks_result)
+
+    def list_tasks_for_instance(self, command: ListInstanceTasks) -> TaskPage:
+        """Record and return or fail one all-Projects Task page query."""
+        self.log.append("queries.list_tasks_for_instance")
+        self.instance_task_list_commands.append(command)
         if self.tasks_error is not None:
             raise self.tasks_error
         return cast("TaskPage", self.tasks_result)
@@ -360,6 +409,43 @@ class _Tasks:
         if self.error is not None:
             raise self.error
         return cast("Task", self.result)
+
+
+class _Projects:
+    """Unused Project-creation application capability."""
+
+    def create(self, _command: CreateProjectInput) -> ProjectCreationResult:
+        """Fail if an established-session test attempts Project creation."""
+        pytest.fail("This test must not create a Project")
+
+
+class _Profiles:
+    """Resolve the explicit or discovered profile against one trusted runtime."""
+
+    def resolve(
+        self,
+        *,
+        explicit_profile: str | None,
+        discovered_profile: str | None,
+    ) -> str:
+        """Return the selected local profile or fail closed."""
+        selected = explicit_profile or discovered_profile or "local"
+        if selected != "local":
+            raise ProfileNotFoundError
+        return selected
+
+
+@dataclass(frozen=True, slots=True)
+class _Runtimes:
+    """Open one pre-composed local runtime."""
+
+    runtime: LocalRuntime
+
+    def open(self, profile: str) -> LocalRuntime:
+        """Return the runtime only for its exact trusted profile."""
+        if profile != self.runtime.profile:
+            raise ProfileNotFoundError
+        return self.runtime
 
 
 def _dependencies() -> tuple[
@@ -407,12 +493,18 @@ def _session(
         Configured LocalSession.
 
     """
-    return LocalSession(
-        context=context,
-        actors=actors,
+    runtime = LocalRuntime(
+        profile="local",
+        identity=actors,
         bootstrap=bootstrap,
+        projects=_Projects(),
         queries=queries,
         tasks=tasks,
+    )
+    return LocalSession(
+        context=context,
+        profiles=_Profiles(),
+        runtimes=_Runtimes(runtime),
     )
 
 
@@ -432,8 +524,7 @@ def test_up_commits_before_writing_exact_context() -> None:
         )
     ]
     assert context.written == [result.workspace]
-    assert log == ["bootstrap.up", "context.write"]
-    assert actors.bindings == []
+    assert log == ["context.read", "bootstrap.up", "context.write"]
 
 
 def test_bootstrap_failure_never_attempts_context_write() -> None:
@@ -450,7 +541,7 @@ def test_bootstrap_failure_never_attempts_context_write() -> None:
         session.up(UpRequest(project_key="ACME"))
 
     assert captured.value is failure
-    assert log == ["bootstrap.up"]
+    assert log == ["context.read", "bootstrap.up"]
     assert context.written == []
 
 
@@ -483,8 +574,10 @@ def test_context_failure_can_be_retried_after_durable_bootstrap() -> None:
     ]
     assert context.written == [result.workspace, result.workspace]
     assert log == [
+        "context.read",
         "bootstrap.up",
         "context.write",
+        "context.read",
         "bootstrap.up",
         "context.write",
     ]
@@ -516,7 +609,7 @@ def test_successful_operations_supply_verified_subject_and_context() -> None:
         project_id=ProjectId("prj_acme"),
         subject_id=SubjectId("sub_local"),
     )
-    assert queries.status_commands == [expected_status] * 5
+    assert queries.status_commands == [expected_status] * 4
     assert queries.project_commands == [
         ListProjects(
             instance_id=InstanceId("ins_local"),
@@ -547,7 +640,6 @@ def test_successful_operations_supply_verified_subject_and_context() -> None:
             task="ACME-1",
         )
     ]
-    assert actors.bindings == [_binding()] * 5
     assert context.written == []
     assert log == [
         "context.read",
@@ -555,7 +647,6 @@ def test_successful_operations_supply_verified_subject_and_context() -> None:
         "queries.status",
         "context.read",
         "actors.select",
-        "queries.status",
         "queries.list_projects",
         "context.read",
         "actors.select",
@@ -595,7 +686,6 @@ def test_context_failure_precedes_actor_and_application_invocation() -> None:
             invoke()
         assert captured.value is failure
         assert log == ["context.read"]
-    assert actors.bindings == []
     assert queries.status_commands == []
     assert tasks.commands == []
 
@@ -675,7 +765,7 @@ def test_malformed_user_values_map_to_invalid_input_after_context() -> None:
     log, context, actors, bootstrap, queries, tasks = _dependencies()
     session = _session(context, actors, bootstrap, queries, tasks)
     invalid_operations: tuple[Callable[[], object], ...] = (
-        lambda: session.up(UpRequest(project_key="bad")),
+        lambda: session.up(UpRequest.model_construct(project_key="bad")),
         lambda: session.create_task(TaskCreateRequest(title="   ")),
         lambda: session.list_tasks(TaskListRequest(cursor=" ")),
         lambda: session.get_task(TaskGetRequest(task="not-a-task")),
@@ -690,6 +780,7 @@ def test_malformed_user_values_map_to_invalid_input_after_context() -> None:
     assert queries.task_list_commands == []
     assert queries.task_get_commands == []
     assert log == [
+        "context.read",
         "context.read",
         "actors.select",
         "queries.status",
@@ -724,23 +815,29 @@ def test_runtime_request_type_validation_precedes_all_dependencies() -> None:
 
 @pytest.mark.parametrize(
     "dependency_index",
-    range(5),
+    range(3),
 )
 def test_constructor_runtime_validates_every_dependency(
     dependency_index: int,
 ) -> None:
     """Missing dependency operations fail at composition time."""
     _log, context, actors, bootstrap, queries, tasks = _dependencies()
-    dependencies: list[object] = [context, actors, bootstrap, queries, tasks]
+    runtime = LocalRuntime(
+        profile="local",
+        identity=actors,
+        bootstrap=bootstrap,
+        projects=_Projects(),
+        queries=queries,
+        tasks=tasks,
+    )
+    dependencies: list[object] = [context, _Profiles(), _Runtimes(runtime)]
     dependencies[dependency_index] = object()
 
     with pytest.raises(TypeError, match="LocalSession"):
         LocalSession(
             context=cast("WorkspaceContextGateway", dependencies[0]),
-            actors=cast("LocalActorSelector", dependencies[1]),
-            bootstrap=cast("BootstrapApplication", dependencies[2]),
-            queries=cast("QueryApplication", dependencies[3]),
-            tasks=cast("TaskApplication", dependencies[4]),
+            profiles=cast("_Profiles", dependencies[1]),
+            runtimes=cast("_Runtimes", dependencies[2]),
         )
 
 
@@ -761,7 +858,10 @@ def test_invalid_dependency_outputs_are_safe_internal_errors() -> None:
         session.status(StatusRequest())
     assert actor_error.value.code is ApplicationErrorCode.INTERNAL_ERROR
 
-    actors.result = SubjectId("sub_local")
+    actors.result = LocalIdentity(
+        instance_id=InstanceId("ins_local"),
+        subject_id=SubjectId("sub_local"),
+    )
     queries.status_result = object()
     with pytest.raises(ApplicationError) as status_error:
         session.status(StatusRequest())
@@ -800,6 +900,7 @@ def test_type_correct_cross_selection_outputs_are_internal_errors() -> None:
         id=ProjectId("prj_beta"),
         instance_id=InstanceId("ins_other"),
         key="BETA",
+        name="Beta",
         created_at=_NOW,
     )
     queries.projects_result = (other_project,)
@@ -846,17 +947,38 @@ def test_invalid_context_gateway_output_is_context_invalid() -> None:
             """Return a deliberately invalid context value."""
             return object()
 
+        def discover(self) -> object:
+            """Return a deliberately invalid discovery value."""
+            return object()
+
         def write_current(self, _binding: WorkspaceBinding) -> Path:
             """Return a valid unused context path."""
             return Path("/workspace/.workaholic.env")
 
+        def bind(
+            self,
+            _directory: Path | None,
+            _binding: WorkspaceBinding,
+            *,
+            replace: bool,
+        ) -> Path:
+            """Return a valid unused explicit context path."""
+            assert type(replace) is bool
+            return Path("/workspace/.workaholic.env")
+
     log, _context, actors, bootstrap, queries, tasks = _dependencies()
-    session = LocalSession(
-        context=cast("WorkspaceContextGateway", _InvalidContext()),
-        actors=actors,
+    runtime = LocalRuntime(
+        profile="local",
+        identity=actors,
         bootstrap=bootstrap,
+        projects=_Projects(),
         queries=queries,
         tasks=tasks,
+    )
+    session = LocalSession(
+        context=cast("WorkspaceContextGateway", _InvalidContext()),
+        profiles=_Profiles(),
+        runtimes=_Runtimes(runtime),
     )
 
     with pytest.raises(ApplicationError) as captured:
@@ -864,7 +986,6 @@ def test_invalid_context_gateway_output_is_context_invalid() -> None:
 
     assert captured.value.code is ApplicationErrorCode.CONTEXT_INVALID
     assert log == []
-    assert actors.bindings == []
 
 
 def test_invalid_context_write_result_is_reported_after_durable_bootstrap() -> None:
@@ -877,7 +998,7 @@ def test_invalid_context_write_result_is_reported_after_durable_bootstrap() -> N
         session.up(UpRequest(project_key="ACME"))
 
     assert captured.value.code is ApplicationErrorCode.INTERNAL_ERROR
-    assert log == ["bootstrap.up", "context.write"]
+    assert log == ["context.read", "bootstrap.up", "context.write"]
 
 
 def test_request_models_are_strict_frozen_and_bounded() -> None:

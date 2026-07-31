@@ -8,6 +8,53 @@ public versioning begins.
 
 ## Unreleased
 
+## [0.2.0a1] - 2026-07-30
+
+### Added
+
+- Trusted embedded `profiles.toml` registries with deterministic profile
+  selection through command options, process configuration, and Workspace
+  context.
+- Multiple named Projects per Instance, Project creation and binding commands,
+  canonical upward Workspace discovery, and a safe explicit replacement
+  boundary.
+- Explicit Project and all-Project Task selection with independent stable
+  `PROJECT-NUMBER` sequences, deterministic ordering, and scope-bound cursors.
+- Cumulative Phase 2 repository and Session conformance suites plus the enabled
+  fresh-process multi-project golden journey.
+- Public multi-project quick start and current architecture, CLI, persistence,
+  and threat-model documentation.
+- A fail-fast Phase 2 clean-state gate and isolated installed-wheel journey
+  that prove source/wheel parity, independent Project numbering, and safe
+  configuration, data, and Workspace ownership.
+
+### Changed
+
+- Replaced the disposable Phase 1 store with clean-store SQLite schema version
+  `2`; schema version `1` is rejected unchanged and has no migration path.
+- Expanded the local CLI from the six Phase 1 commands to the nine Phase 2
+  Project, context, and Task operations.
+
+### Security
+
+- Context discovery walks canonical physical parents, treats the nearest file
+  as authoritative, and refuses fallback or replacement when nearer input is
+  malformed, unsafe, symlinked, or concurrently changed.
+- Repository-controlled context can name but never define a profile. Phase 2
+  rejects remote URLs, credentials, Tokens, secret references, executable
+  paths, and non-embedded profile modes.
+- Golden CLI processes pin test-owned configuration and data roots, strip
+  inherited Workaholic and Python-path selectors, and reject undocumented
+  environment injection.
+
+### Known limitations
+
+- The alpha remains embedded-only with one bootstrapped Human operator per
+  profile and SQLite persistence.
+- Stores and automation remain disposable. Agents, Tokens, remote profiles,
+  `RemoteSession`, servers, JSON/PostgreSQL adapters, schema migration, Project
+  archival, and Task updates are unavailable.
+
 ## [0.1.0a1] - 2026-07-30
 
 ### Added

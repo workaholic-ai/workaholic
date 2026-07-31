@@ -7,6 +7,7 @@ from pathlib import Path
 from subprocess import CompletedProcess
 
 import pytest
+
 from tests.golden import (
     SubprocessGoldenJourneyRunner,
     require_error,
@@ -183,10 +184,28 @@ def test_subprocess_runner_validates_owned_paths_and_overrides(
     """The runner cannot be redirected to developer state at runtime."""
     workspace = tmp_path / "workspace"
     workspace.mkdir()
-    runner = SubprocessGoldenJourneyRunner(tmp_path / "data")
+    data_directory = tmp_path / "data"
+    config_directory = tmp_path / "config"
+    runner = SubprocessGoldenJourneyRunner(
+        data_directory=data_directory,
+        config_directory=config_directory,
+    )
 
     with pytest.raises(TypeError):
-        SubprocessGoldenJourneyRunner(Path("relative-data"))
+        SubprocessGoldenJourneyRunner(
+            data_directory=Path("relative-data"),
+            config_directory=config_directory,
+        )
+    with pytest.raises(TypeError):
+        SubprocessGoldenJourneyRunner(
+            data_directory=data_directory,
+            config_directory=Path("relative-config"),
+        )
+    with pytest.raises(ValueError, match="must be distinct"):
+        SubprocessGoldenJourneyRunner(
+            data_directory=data_directory,
+            config_directory=data_directory,
+        )
     with pytest.raises(TypeError):
         runner.cli("status", cwd=workspace)
     with pytest.raises(TypeError):
@@ -201,15 +220,87 @@ def test_subprocess_runner_validates_owned_paths_and_overrides(
             cwd=workspace,
             environment={"WORKAHOLIC_DATA_DIR": str(tmp_path / "other")},
         )
+    with pytest.raises(ValueError, match="config directory"):
+        runner.cli(
+            (),
+            cwd=workspace,
+            environment={"WORKAHOLIC_CONFIG_DIR": str(tmp_path / "other-config")},
+        )
+    with pytest.raises(ValueError, match="profile override"):
+        runner.cli(
+            (),
+            cwd=workspace,
+            environment={"WORKAHOLIC_PROFILE": "INVALID"},
+        )
     with pytest.raises(ValueError, match="undocumented"):
         runner.cli((), cwd=workspace, environment={"UNSUPPORTED": "value"})
+
+
+@pytest.mark.parametrize(
+    "environment_key",
+    [
+        "WORKAHOLIC_SERVER_URL",
+        "WORKAHOLIC_TOKEN",
+        "WORKAHOLIC_CREDENTIAL",
+        "AWS_ACCESS_KEY_ID",
+        "PYTHONPATH",
+        "UNSUPPORTED",
+    ],
+)
+def test_subprocess_runner_rejects_sensitive_and_arbitrary_environment_injection(
+    environment_key: str,
+    tmp_path: Path,
+) -> None:
+    """Only documented local selectors may enter a golden CLI process."""
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    runner = SubprocessGoldenJourneyRunner(
+        data_directory=tmp_path / "data",
+        config_directory=tmp_path / "config",
+    )
+
+    with pytest.raises(ValueError, match="undocumented"):
+        runner.cli(
+            (),
+            cwd=workspace,
+            environment={environment_key: "untrusted"},
+        )
+
+
+def test_subprocess_runner_accepts_only_exact_owned_paths_and_valid_profile(
+    tmp_path: Path,
+) -> None:
+    """Documented Phase 2 selectors can repeat owned roots and select a profile."""
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    data_directory = tmp_path / "data"
+    config_directory = tmp_path / "config"
+    runner = SubprocessGoldenJourneyRunner(
+        data_directory=data_directory,
+        config_directory=config_directory,
+    )
+
+    result = runner.cli(
+        ("--help",),
+        cwd=workspace,
+        environment={
+            "WORKAHOLIC_CONFIG_DIR": str(config_directory),
+            "WORKAHOLIC_DATA_DIR": str(data_directory),
+            "WORKAHOLIC_PROFILE": "local",
+        },
+    )
+
+    assert result.returncode == 0
 
 
 def test_future_golden_operations_remain_explicitly_unsupported(
     tmp_path: Path,
 ) -> None:
     """Future orchestration and registry paths cannot fabricate behavior."""
-    runner = SubprocessGoldenJourneyRunner(tmp_path / "data")
+    runner = SubprocessGoldenJourneyRunner(
+        data_directory=tmp_path / "data",
+        config_directory=tmp_path / "config",
+    )
 
     with pytest.raises(NotImplementedError, match="Instance orchestration"):
         runner.instance(
@@ -223,7 +314,7 @@ def test_future_golden_operations_remain_explicitly_unsupported(
         runner.published_package_spec()
     with pytest.raises(NotImplementedError, match="uvx execution"):
         runner.uvx(
-            "workaholic-ai==0.1.0a1",
+            "workaholic-ai==0.2.0a1",
             ("--version",),
             cwd=tmp_path,
         )

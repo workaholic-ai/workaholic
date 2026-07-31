@@ -1,4 +1,4 @@
-"""Command-specific Phase 1 CLI object serialization."""
+"""Command-specific CLI object serialization."""
 
 from __future__ import annotations
 
@@ -17,6 +17,7 @@ if TYPE_CHECKING:
         Task,
         WorkspaceBinding,
     )
+    from workaholic.session import ContextResult, StatusResult
 
 _CONTEXT_FILENAME = ".workaholic.env"
 
@@ -35,7 +36,7 @@ def instance_data(instance: Instance) -> dict[str, JsonValue]:
 
 
 def project_data(project: Project) -> dict[str, JsonValue]:
-    """Serialize one Project using the closed Phase 1 CLI shape.
+    """Serialize one Project using the closed Phase 2 CLI shape.
 
     Args:
         project: Validated domain Project.
@@ -47,6 +48,24 @@ def project_data(project: Project) -> dict[str, JsonValue]:
     return {
         "id": str(project.id),
         "key": project.key,
+        "name": project.name,
+    }
+
+
+def grant_data(grant: ProjectGrant) -> dict[str, JsonValue]:
+    """Serialize one Project grant returned by Project creation.
+
+    Args:
+        grant: Validated Project grant.
+
+    Returns:
+        Public grant data.
+
+    """
+    return {
+        "subject_id": str(grant.subject_id),
+        "project_id": str(grant.project_id),
+        "role": grant.role.value,
     }
 
 
@@ -70,6 +89,52 @@ def subject_data(
         "display_name": subject.display_name,
         "is_instance_admin": subject.is_instance_admin,
         "project_role": grant.role.value,
+    }
+
+
+def status_data(result: StatusResult) -> dict[str, JsonValue]:
+    """Serialize authoritative embedded status.
+
+    Args:
+        result: Validated status result.
+
+    Returns:
+        Closed Phase 2 status object.
+
+    """
+    return {
+        "mode": result.mode,
+        "profile": result.profile,
+        "schema_version": result.schema_version,
+        "instance": instance_data(result.instance),
+        "project": project_data(result.project),
+        "subject": subject_data(result.subject, result.grant),
+    }
+
+
+def context_data(result: ContextResult) -> dict[str, JsonValue]:
+    """Serialize effective context without private profile or storage details.
+
+    Args:
+        result: Validated effective-context result.
+
+    Returns:
+        Closed Phase 2 effective-context object.
+
+    """
+    return {
+        "mode": result.mode,
+        "profile": result.profile,
+        "schema_version": result.schema_version,
+        "instance": instance_data(result.instance),
+        "project": project_data(result.project),
+        "workspace_root": (
+            None if result.workspace_root is None else str(result.workspace_root)
+        ),
+        "subject": subject_data(result.subject, result.grant),
+        "context_source": (
+            None if result.context_source is None else str(result.context_source)
+        ),
     }
 
 

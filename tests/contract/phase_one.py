@@ -8,8 +8,8 @@ from typing import TYPE_CHECKING, Protocol
 from workaholic.application import (
     BootstrapMutation,
     BootstrapResult,
-    PhaseOneRepository,
     TaskCreationMutation,
+    WorkaholicRepository,
 )
 from workaholic.domain import (
     InstanceId,
@@ -23,7 +23,7 @@ from workaholic.domain import (
 if TYPE_CHECKING:
     from pathlib import Path
 
-    from workaholic.session import WorkaholicSession
+    from workaholic.session import TaskSession
 
 PHASE_ONE_NOW = datetime(2026, 7, 30, 12, 0, tzinfo=UTC)
 
@@ -31,7 +31,7 @@ PHASE_ONE_NOW = datetime(2026, 7, 30, 12, 0, tzinfo=UTC)
 class PhaseOneRepositoryFactory(Protocol):
     """Construct one repository over a test-owned persistence root."""
 
-    def create(self, root: Path) -> PhaseOneRepository:
+    def create(self, root: Path) -> WorkaholicRepository:
         """Construct or reopen a repository without mutating state.
 
         Args:
@@ -47,7 +47,7 @@ class PhaseOneRepositoryFactory(Protocol):
 class PhaseOneSessionFactory(Protocol):
     """Construct one Session over test-owned data and Workspace roots."""
 
-    def create(self, root: Path, workspace: Path) -> WorkaholicSession:
+    def create(self, root: Path, workspace: Path) -> TaskSession:
         """Construct or reopen a Session without invoking an operation.
 
         Args:

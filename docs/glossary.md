@@ -3,7 +3,7 @@
 This glossary defines the canonical v1 vocabulary shared by the architecture,
 roadmap, contracts, CLI, and tests. The definitions describe accepted v1
 semantics; they do not imply that a capability is implemented in the current
-`0.1.0a1` package.
+`0.2.0a1` package.
 
 Terms use singular names and exact capitalization when they refer to domain or
 interface concepts.

@@ -1,4 +1,4 @@
-"""Tests for public documentation and the Phase 1 quick start."""
+"""Tests for public documentation and the Phase 2 quick start."""
 
 from __future__ import annotations
 
@@ -45,11 +45,37 @@ _BASH_BLOCK_PATTERN = re.compile(
 _VERSION_OUTPUT_PATTERN = re.compile(
     r"The version command prints:\n\n```text\n(?P<output>[^\n]+)\n```"
 )
-_EXPECTED_QUICK_START = """uv sync --frozen
-export WORKAHOLIC_DATA_DIR="$(mktemp -d "${TMPDIR:-/tmp}/workaholic-quickstart.XXXXXX")"
-uv run workaholic up --project-key ACME
-uv run workaholic task add "First persistent task"
-uv run workaholic task list"""
+_EXPECTED_QUICK_START = (
+    "uv sync --frozen\n"
+    'export WORKAHOLIC_CONFIG_DIR="$(mktemp -d "'
+    '${TMPDIR:-/tmp}/workaholic-quickstart-config.XXXXXX")"\n'
+    'export WORKAHOLIC_DATA_DIR="$(mktemp -d "'
+    '${TMPDIR:-/tmp}/workaholic-quickstart-data.XXXXXX")"\n'
+    "workaholic_source_directory=$PWD\n"
+    'workaholic_workspace_directory="$(mktemp -d "'
+    '${TMPDIR:-/tmp}/workaholic-quickstart-workspaces.XXXXXX")"\n'
+    'mkdir -p "$workaholic_workspace_directory/acme/src/app"\n'
+    'mkdir -p "$workaholic_workspace_directory/docs/guides/draft"\n'
+    "(\n"
+    '  cd "$workaholic_workspace_directory/acme"\n'
+    '  uv run --project "$workaholic_source_directory" workaholic up '
+    '--project-key ACME --project-name "Acme delivery"\n'
+    '  uv run --project "$workaholic_source_directory" workaholic project '
+    'create --key DOCS --name "Documentation"\n'
+    '  uv run --project "$workaholic_source_directory" workaholic project '
+    "bind DOCS ../docs\n"
+    "  cd src/app\n"
+    '  uv run --project "$workaholic_source_directory" workaholic task add '
+    '"First ACME task"\n'
+    ")\n"
+    "(\n"
+    '  cd "$workaholic_workspace_directory/docs/guides/draft"\n'
+    '  uv run --project "$workaholic_source_directory" workaholic task add '
+    '"First DOCS task"\n'
+    '  uv run --project "$workaholic_source_directory" workaholic task list\n'
+    ")\n"
+    "uv run workaholic task list --all-projects"
+)
 _REQUIRED_GLOSSARY_TERMS = frozenset(
     {
         "Agent",
@@ -149,8 +175,8 @@ def test_threat_model_covers_required_boundaries_and_attack_scenarios() -> None:
         assert boundary in threat_model
 
 
-def test_readme_quick_start_contains_only_phase_one_journey_commands() -> None:
-    """The quick start is the exact owner-approved local Task sequence."""
+def test_readme_quick_start_contains_the_exact_phase_two_journey() -> None:
+    """The quick start is the exact owner-approved multi-Project sequence."""
     readme = _README.read_text(encoding="utf-8")
     quick_start_match = _QUICK_START_PATTERN.search(readme)
 
@@ -169,6 +195,12 @@ def test_readme_quick_start_executes_in_an_isolated_source_checkout(
     for filename in ("LICENSE", "README.md", "pyproject.toml", "uv.lock"):
         shutil.copy2(_PROJECT_ROOT / filename, checkout / filename)
     shutil.copytree(_PROJECT_ROOT / "src", checkout / "src")
+    inherited_config_directory = tmp_path / "inherited-config"
+    inherited_config_directory.mkdir()
+    (inherited_config_directory / "profiles.toml").write_text(
+        "not valid TOML = [",
+        encoding="utf-8",
+    )
     inherited_data_directory = tmp_path / "inherited-data"
     inherited_data_directory.mkdir()
     (inherited_data_directory / "local.db").write_bytes(b"not a SQLite store")
@@ -180,6 +212,7 @@ def test_readme_quick_start_executes_in_an_isolated_source_checkout(
             "UV_CACHE_DIR": str(tmp_path / "uv-cache"),
             "UV_LINK_MODE": "copy",
             "UV_NO_PROGRESS": "1",
+            "WORKAHOLIC_CONFIG_DIR": str(inherited_config_directory),
             "WORKAHOLIC_DATA_DIR": str(inherited_data_directory),
         }
     )
@@ -191,17 +224,28 @@ def test_readme_quick_start_executes_in_an_isolated_source_checkout(
         env=environment,
         capture_output=True,
         text=True,
-        timeout=60,
+        timeout=90,
     )
 
     assert result.returncode == 0, f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
     assert "Traceback" not in result.stderr
     assert "ACME-1" in result.stdout
-    assert "First persistent task" in result.stdout
-    assert (checkout / ".workaholic.env").is_file()
-    data_directories = tuple(tmp_path.glob("workaholic-quickstart.*"))
+    assert "DOCS-1" in result.stdout
+    assert "First ACME task" in result.stdout
+    assert "First DOCS task" in result.stdout
+    config_directories = tuple(tmp_path.glob("workaholic-quickstart-config.*"))
+    data_directories = tuple(tmp_path.glob("workaholic-quickstart-data.*"))
+    workspace_directories = tuple(tmp_path.glob("workaholic-quickstart-workspaces.*"))
+    assert len(config_directories) == 1
     assert len(data_directories) == 1
+    assert len(workspace_directories) == 1
     assert (data_directories[0] / "local.db").is_file()
+    assert (workspace_directories[0] / "acme" / ".workaholic.env").is_file()
+    assert (workspace_directories[0] / "docs" / ".workaholic.env").is_file()
+    assert tuple(config_directories[0].iterdir()) == ()
+    assert (inherited_config_directory / "profiles.toml").read_text(
+        encoding="utf-8"
+    ) == "not valid TOML = ["
     assert (inherited_data_directory / "local.db").read_bytes() == (
         b"not a SQLite store"
     )
@@ -218,57 +262,69 @@ def test_readme_version_output_matches_installed_distribution() -> None:
     )
 
 
-def test_readme_publishes_the_phase_one_clean_state_gate() -> None:
+def test_readme_publishes_the_phase_two_clean_state_gate() -> None:
     """Public development guidance exposes the isolated aggregate command."""
     readme = " ".join(_README.read_text(encoding="utf-8").split())
 
-    assert "## Phase 1 acceptance gate" in _README.read_text(encoding="utf-8")
-    assert "scripts/verify-phase-1.sh" in readme
+    assert "## Phase 2 acceptance gate" in _README.read_text(encoding="utf-8")
+    assert "scripts/verify-phase-2.sh" in readme
     for guarantee in (
         "clean checkout",
         "no active virtual environment",
         "no pre-existing `.venv` or `dist`",
         "temporary virtual environment",
+        "`WORKAHOLIC_CONFIG_DIR`",
         "`WORKAHOLIC_DATA_DIR`",
         "never uses the operator's default profile or database",
     ):
         assert guarantee in readme
 
 
-def test_phase_one_status_and_limitations_are_explicit() -> None:
-    """Public implementation notices distinguish Phase 1 from planned v1."""
+def test_phase_two_status_and_limitations_are_explicit() -> None:
+    """Public implementation notices distinguish Phase 2 from planned v1."""
     readme = " ".join(_README.read_text(encoding="utf-8").split())
     architecture = " ".join(_ARCHITECTURE.read_text(encoding="utf-8").split())
     cli_contract = " ".join(_CLI_CONTRACT.read_text(encoding="utf-8").split())
     persistence = " ".join(_PERSISTENCE_CONTRACT.read_text(encoding="utf-8").split())
 
     for document in (readme, architecture, cli_contract, persistence):
-        assert "`0.1.0a1`" in document
+        assert "`0.2.0a1`" in document
     for command in (
         "workaholic up",
         "workaholic status",
+        "workaholic context",
+        "workaholic project create",
+        "workaholic project bind",
         "workaholic project list",
         "workaholic task add",
         "workaholic task list",
         "workaholic task show",
     ):
         assert command in readme
+    for implemented in (
+        "upward Workspace discovery",
+        "multiple named Projects",
+        "trusted embedded profiles",
+        "schema version `2`",
+        "all-Project Task",
+    ):
+        assert implemented in readme
     for unavailable in (
-        "upward context discovery",
-        "multiple active Projects",
         "Agents",
         "Tokens",
-        "RemoteSession",
+        "`RemoteSession`",
         "JSON or PostgreSQL persistence adapters",
         "schema migration",
+        "Project archival",
+        "Task updates",
     ):
         assert unavailable in readme
-    assert "does not implement upward context discovery" in architecture
-    assert "does not discover context upward" in cli_contract
+    assert "canonical upward `.workaholic.env` discovery" in architecture
+    assert "canonical upward Workspace discovery" in cli_contract
     assert "JSON and PostgreSQL adapters and schema migration remain unavailable" in (
         persistence
     )
-    assert "unsupported alpha store is rejected unchanged" in persistence
+    assert "including Phase 1 schema version `1`, is rejected unchanged" in persistence
 
 
 def test_foundation_scope_decisions_are_consistent_across_public_documents() -> None:

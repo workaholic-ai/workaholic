@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import json
 from datetime import UTC, datetime, timedelta
 from functools import partial
 from typing import TYPE_CHECKING, cast
@@ -13,12 +14,15 @@ from workaholic.application import (
     ApplicationErrorCode,
     BootstrapMutation,
     GetLocalStatus,
+    GetProjectByKey,
     GetTask,
     InvalidInputError,
+    ListInstanceTasks,
     ListProjects,
     ListTasks,
     NotInitializedError,
     PermissionDeniedError,
+    ProjectNotFoundError,
     TaskCreationMutation,
     TaskNotFoundError,
 )
@@ -32,7 +36,7 @@ from workaholic.domain import (
     TaskId,
 )
 from workaholic.persistence.sqlite import (
-    SQLitePhaseOneRepository,
+    SQLiteRepository,
     StorageUnavailableError,
     initialize_empty_store,
     open_write_transaction,
@@ -51,7 +55,7 @@ _ACME_PROJECT_ID = ProjectId("prj_acme")
 
 def _repository(
     tmp_path: Path,
-) -> tuple[SQLitePhaseOneRepository, BootstrapResult]:
+) -> tuple[SQLiteRepository, BootstrapResult]:
     """Create one initialized, bootstrapped SQLite repository.
 
     Args:
@@ -63,7 +67,7 @@ def _repository(
     """
     database_path = tmp_path / "local.db"
     initialize_empty_store(database_path)
-    repository = SQLitePhaseOneRepository(database_path)
+    repository = SQLiteRepository(database_path)
     result = repository.bootstrap_local_project(
         BootstrapMutation(
             instance_id=InstanceId("ins_local"),
@@ -111,7 +115,7 @@ def _task_mutation(
 
 
 def _read_without_mutation[T](
-    repository: SQLitePhaseOneRepository,
+    repository: SQLiteRepository,
     operation: Callable[[], T],
 ) -> T:
     """Execute one query and prove its database file remains byte-identical.
@@ -134,7 +138,7 @@ def _read_without_mutation[T](
         assert repository.database_path.read_bytes() == before
 
 
-def _add_second_project(repository: SQLitePhaseOneRepository) -> ProjectId:
+def _add_second_project(repository: SQLiteRepository) -> ProjectId:
     """Add one authorized Project for isolation and ordering tests.
 
     Args:
@@ -149,13 +153,14 @@ def _add_second_project(repository: SQLitePhaseOneRepository) -> ProjectId:
         connection.execute(
             """
             INSERT INTO projects (
-                id, instance_id, key, next_task_number, created_at
-            ) VALUES (?, ?, ?, ?, ?)
+                id, instance_id, key, name, next_task_number, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?)
             """,
             (
                 str(project_id),
                 "ins_local",
                 "BETA",
+                "Beta",
                 1,
                 _CANONICAL_NOW,
             ),
@@ -170,18 +175,289 @@ def _add_second_project(repository: SQLitePhaseOneRepository) -> ProjectId:
     return project_id
 
 
-def _opaque_cursor(payload: str) -> str:
-    """Encode test-owned JSON into the public cursor envelope.
+def _opaque_cursor(payload: object) -> str:
+    """Encode test-owned JSON into the Phase 2 cursor envelope.
 
     Args:
-        payload: UTF-8 JSON text to encode.
+        payload: JSON-compatible value to encode canonically.
 
     Returns:
-        Version-1 unpadded URL-safe cursor text.
+        Version-2 unpadded URL-safe cursor text.
 
     """
-    encoded = base64.urlsafe_b64encode(payload.encode()).decode().rstrip("=")
-    return f"v1.{encoded}"
+    serialized = json.dumps(
+        payload,
+        ensure_ascii=True,
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+    encoded = base64.urlsafe_b64encode(serialized.encode()).decode().rstrip("=")
+    return f"v2.{encoded}"
+
+
+def _decode_opaque_cursor(cursor: str) -> object:
+    """Decode one emitted cursor for white-box contract assertions.
+
+    Args:
+        cursor: Version-2 unpadded URL-safe cursor.
+
+    Returns:
+        Decoded JSON-compatible payload.
+
+    """
+    encoded = cursor.removeprefix("v2.")
+    padding = "=" * (-len(encoded) % 4)
+    return json.loads(base64.urlsafe_b64decode(f"{encoded}{padding}"))
+
+
+def _project_cursor_payload(  # noqa: PLR0913
+    *,
+    after: object = 1,
+    profile: object = "local",
+    instance_id: object = "ins_local",
+    subject_id: object = "sub_local",
+    project_id: object = "prj_acme",
+    selection: object = "project",
+    version: object = 2,
+) -> dict[str, object]:
+    """Build one closed Phase 2 Project-cursor payload.
+
+    Args:
+        after: Last Project-local Task number.
+        profile: Trusted profile binding.
+        instance_id: Selected Instance identity.
+        subject_id: Selected Subject identity.
+        project_id: Selected Project identity.
+        selection: Cursor selection kind.
+        version: Cursor payload version.
+
+    Returns:
+        Complete mutable payload for malformed-input tests.
+
+    """
+    return {
+        "after": after,
+        "instance_id": instance_id,
+        "profile": profile,
+        "project_id": project_id,
+        "selection": selection,
+        "subject_id": subject_id,
+        "v": version,
+    }
+
+
+def test_project_lookup_is_exact_authorized_and_non_mutating(
+    tmp_path: Path,
+) -> None:
+    """Immutable-key lookup never crosses Instance or authorization scope."""
+    repository, bootstrap = _repository(tmp_path)
+    beta_id = _add_second_project(repository)
+
+    beta = _read_without_mutation(
+        repository,
+        lambda: repository.get_project_by_key(
+            GetProjectByKey(
+                instance_id=bootstrap.instance.id,
+                subject_id=bootstrap.subject.id,
+                project_key="BETA",
+            )
+        ),
+    )
+
+    assert beta.id == beta_id
+    assert beta.instance_id == bootstrap.instance.id
+    assert beta.key == "BETA"
+    assert beta.name == "Beta"
+    for missing_key in ("DOCS", "OTHER"):
+        missing_command = GetProjectByKey(
+            instance_id=bootstrap.instance.id,
+            subject_id=bootstrap.subject.id,
+            project_key=missing_key,
+        )
+        with pytest.raises(ProjectNotFoundError) as captured:
+            _read_without_mutation(
+                repository,
+                partial(repository.get_project_by_key, missing_command),
+            )
+        assert captured.value.code is ApplicationErrorCode.PROJECT_NOT_FOUND
+
+    with open_write_transaction(repository.database_path) as connection:
+        connection.execute(
+            """
+            INSERT INTO subjects (
+                id, kind, display_name, enabled, is_instance_admin
+            ) VALUES ('sub_other', 'human', 'Other operator', 1, 1)
+            """
+        )
+        connection.execute(
+            """
+            INSERT INTO project_grants (subject_id, project_id, role)
+            VALUES ('sub_other', 'prj_beta', 'owner')
+            """
+        )
+    with pytest.raises(ProjectNotFoundError):
+        _read_without_mutation(
+            repository,
+            lambda: repository.get_project_by_key(
+                GetProjectByKey(
+                    instance_id=bootstrap.instance.id,
+                    subject_id=SubjectId("sub_other"),
+                    project_key="ACME",
+                )
+            ),
+        )
+    assert _read_without_mutation(
+        repository,
+        lambda: repository.list_projects(
+            ListProjects(
+                instance_id=bootstrap.instance.id,
+                subject_id=SubjectId("sub_other"),
+            )
+        ),
+    ) == (beta,)
+
+
+def test_all_project_pagination_is_stable_gap_tolerant_and_complete(
+    tmp_path: Path,
+) -> None:
+    """Instance traversal follows Project key and number without omissions."""
+    repository, bootstrap = _repository(tmp_path)
+    beta_id = _add_second_project(repository)
+    with open_write_transaction(repository.database_path) as connection:
+        connection.execute(
+            """
+            INSERT INTO projects (
+                id, instance_id, key, name, next_task_number, created_at
+            ) VALUES (
+                'prj_empty', 'ins_local', 'EMPTY', 'Empty', 1, ?
+            )
+            """,
+            (_CANONICAL_NOW,),
+        )
+        connection.execute(
+            """
+            INSERT INTO project_grants (subject_id, project_id, role)
+            VALUES ('sub_local', 'prj_empty', 'owner')
+            """
+        )
+    acme_tasks = tuple(
+        repository.create_task(_task_mutation(f"acme_{number}", seconds=number))
+        for number in range(1, 3)
+    )
+    beta_tasks = tuple(
+        repository.create_task(
+            _task_mutation(
+                f"beta_{number}",
+                project_id=beta_id,
+                seconds=number + 2,
+            )
+        )
+        for number in range(1, 4)
+    )
+    with open_write_transaction(repository.database_path) as connection:
+        connection.execute(
+            "DELETE FROM task_events WHERE task_uid = ?",
+            (str(beta_tasks[1].uid),),
+        )
+        connection.execute(
+            "DELETE FROM tasks WHERE uid = ?",
+            (str(beta_tasks[1].uid),),
+        )
+    expected = (acme_tasks[0], acme_tasks[1], beta_tasks[0], beta_tasks[2])
+
+    collected: list[Task] = []
+    emitted_cursors: list[str] = []
+    cursor: str | None = None
+    while True:
+        command = ListInstanceTasks(
+            profile="alpha",
+            instance_id=bootstrap.instance.id,
+            subject_id=bootstrap.subject.id,
+            cursor=cursor,
+            limit=2,
+        )
+        page = _read_without_mutation(
+            repository,
+            partial(repository.list_tasks_for_instance, command),
+        )
+        collected.extend(page.tasks)
+        if page.next_cursor is None:
+            break
+        assert page.next_cursor.startswith("v2.")
+        emitted_cursors.append(page.next_cursor)
+        cursor = page.next_cursor
+
+    assert tuple(collected) == expected
+    assert tuple(task.key for task in collected) == (
+        "ACME-1",
+        "ACME-2",
+        "BETA-1",
+        "BETA-3",
+    )
+    assert len({task.uid for task in collected}) == len(expected)
+    assert _decode_opaque_cursor(emitted_cursors[0]) == {
+        "after": ["ACME", 2],
+        "instance_id": "ins_local",
+        "profile": "alpha",
+        "project_id": None,
+        "selection": "all_projects",
+        "subject_id": "sub_local",
+        "v": 2,
+    }
+    reopened = SQLiteRepository(repository.database_path)
+    assert (
+        _read_without_mutation(
+            reopened,
+            lambda: reopened.list_tasks_for_instance(
+                ListInstanceTasks(
+                    profile="alpha",
+                    instance_id=bootstrap.instance.id,
+                    subject_id=bootstrap.subject.id,
+                    limit=500,
+                )
+            ),
+        ).tasks
+        == expected
+    )
+
+
+def test_all_project_listing_filters_unauthorized_projects(
+    tmp_path: Path,
+) -> None:
+    """Instance pages expose Tasks only through active Project grants."""
+    repository, bootstrap = _repository(tmp_path)
+    beta_id = _add_second_project(repository)
+    acme_task = repository.create_task(_task_mutation("acme"))
+    repository.create_task(_task_mutation("beta", project_id=beta_id, seconds=2))
+    with open_write_transaction(repository.database_path) as connection:
+        connection.execute(
+            """
+            DELETE FROM project_grants
+            WHERE subject_id = 'sub_local' AND project_id = 'prj_beta'
+            """
+        )
+
+    page = _read_without_mutation(
+        repository,
+        lambda: repository.list_tasks_for_instance(
+            ListInstanceTasks(
+                instance_id=bootstrap.instance.id,
+                subject_id=bootstrap.subject.id,
+            )
+        ),
+    )
+
+    assert page.tasks == (acme_task,)
+    projects = _read_without_mutation(
+        repository,
+        lambda: repository.list_projects(
+            ListProjects(
+                instance_id=bootstrap.instance.id,
+                subject_id=bootstrap.subject.id,
+            )
+        ),
+    )
+    assert projects == (bootstrap.project,)
 
 
 def test_status_and_project_listing_are_stable_after_reopen(tmp_path: Path) -> None:
@@ -206,14 +482,15 @@ def test_status_and_project_listing_are_stable_after_reopen(tmp_path: Path) -> N
         lambda: repository.list_projects(projects_command),
     )
 
-    assert status.mode == "local"
-    assert status.schema_version == 1
+    assert status.mode == "embedded"
+    assert status.profile == "local"
+    assert status.schema_version == 2
     assert status.instance == bootstrap.instance
     assert status.project == bootstrap.project
     assert status.subject == bootstrap.subject
     assert status.grant == bootstrap.grant
     assert projects == (bootstrap.project,)
-    reopened = SQLitePhaseOneRepository(repository.database_path)
+    reopened = SQLiteRepository(repository.database_path)
     assert (
         _read_without_mutation(
             reopened,
@@ -343,6 +620,16 @@ def test_task_pagination_is_empty_then_complete_stable_and_reopenable(
     assert first == repeated
     assert tuple(task.number for task in first.tasks) == (1, 2)
     assert first.next_cursor is not None
+    assert first.next_cursor.startswith("v2.")
+    assert _decode_opaque_cursor(first.next_cursor) == {
+        "after": 2,
+        "instance_id": "ins_local",
+        "profile": "local",
+        "project_id": "prj_acme",
+        "selection": "project",
+        "subject_id": "sub_local",
+        "v": 2,
+    }
 
     collected: list[Task] = []
     cursor: str | None = None
@@ -364,7 +651,7 @@ def test_task_pagination_is_empty_then_complete_stable_and_reopenable(
 
     assert tuple(collected) == expected
     assert tuple(task.number for task in collected) == (1, 2, 3, 4, 5)
-    reopened = SQLitePhaseOneRepository(repository.database_path)
+    reopened = SQLiteRepository(repository.database_path)
     assert (
         _read_without_mutation(
             reopened,
@@ -393,15 +680,24 @@ def test_malformed_versioned_and_cross_project_cursors_are_invalid(
         ),
     )
     assert beta_first.next_cursor is not None
+    noncanonical_payload = json.dumps(
+        _project_cursor_payload(),
+        sort_keys=True,
+    ).encode()
+    noncanonical_cursor = "v2." + base64.urlsafe_b64encode(
+        noncanonical_payload
+    ).decode().rstrip("=")
     invalid_cursors = (
         "broken",
-        "v1.***",
-        "v1.e30",
-        _opaque_cursor('{"after":true,"project_id":"prj_acme","v":1}'),
-        _opaque_cursor('{"after":1,"project_id":"prj_acme","v":2}'),
-        _opaque_cursor('{"after":9223372036854775808,"project_id":"prj_acme","v":1}'),
+        "v2.***",
+        "v2.e30",
+        noncanonical_cursor,
+        _opaque_cursor({"wrong": "shape"}),
+        _opaque_cursor(_project_cursor_payload(after=True)),
+        _opaque_cursor(_project_cursor_payload(version=3)),
+        _opaque_cursor(_project_cursor_payload(after=9_223_372_036_854_775_808)),
         f"{beta_first.next_cursor}=",
-        beta_first.next_cursor.replace("v1.", "v2.", 1),
+        beta_first.next_cursor.replace("v2.", "v1.", 1),
         beta_first.next_cursor,
     )
 
@@ -417,6 +713,166 @@ def test_malformed_versioned_and_cross_project_cursors_are_invalid(
                 repository,
                 partial(repository.list_tasks, invalid_command),
             )
+        assert captured.value.code is ApplicationErrorCode.INVALID_INPUT
+
+
+def test_cursors_reject_cross_binding_and_cross_selection_reuse(
+    tmp_path: Path,
+) -> None:
+    """Every profile, Instance, Subject, Project, and selection is bound."""
+    repository, bootstrap = _repository(tmp_path)
+    beta_id = _add_second_project(repository)
+    for number in range(1, 3):
+        repository.create_task(_task_mutation(f"acme_{number}", seconds=number))
+        repository.create_task(
+            _task_mutation(
+                f"beta_{number}",
+                project_id=beta_id,
+                seconds=number + 2,
+            )
+        )
+    project_page = repository.list_tasks(
+        ListTasks(
+            profile="alpha",
+            project_id=bootstrap.project.id,
+            subject_id=bootstrap.subject.id,
+            limit=1,
+        )
+    )
+    all_page = repository.list_tasks_for_instance(
+        ListInstanceTasks(
+            profile="alpha",
+            instance_id=bootstrap.instance.id,
+            subject_id=bootstrap.subject.id,
+            limit=1,
+        )
+    )
+    project_cursor = project_page.next_cursor
+    all_cursor = all_page.next_cursor
+    assert project_cursor is not None
+    assert all_cursor is not None
+
+    with open_write_transaction(repository.database_path) as connection:
+        connection.execute(
+            """
+            INSERT INTO subjects (
+                id, kind, display_name, enabled, is_instance_admin
+            ) VALUES ('sub_other', 'human', 'Other operator', 1, 1)
+            """
+        )
+        connection.executemany(
+            """
+            INSERT INTO project_grants (subject_id, project_id, role)
+            VALUES ('sub_other', ?, 'owner')
+            """,
+            (("prj_acme",), ("prj_beta",)),
+        )
+
+    invalid_operations: tuple[Callable[[], object], ...] = (
+        lambda: repository.list_tasks(
+            ListTasks(
+                profile="beta",
+                project_id=bootstrap.project.id,
+                subject_id=bootstrap.subject.id,
+                cursor=project_cursor,
+                limit=1,
+            )
+        ),
+        lambda: repository.list_tasks(
+            ListTasks(
+                profile="alpha",
+                project_id=beta_id,
+                subject_id=bootstrap.subject.id,
+                cursor=project_cursor,
+                limit=1,
+            )
+        ),
+        lambda: repository.list_tasks(
+            ListTasks(
+                profile="alpha",
+                project_id=bootstrap.project.id,
+                subject_id=SubjectId("sub_other"),
+                cursor=project_cursor,
+                limit=1,
+            )
+        ),
+        lambda: repository.list_tasks_for_instance(
+            ListInstanceTasks(
+                profile="alpha",
+                instance_id=bootstrap.instance.id,
+                subject_id=bootstrap.subject.id,
+                cursor=project_cursor,
+                limit=1,
+            )
+        ),
+        lambda: repository.list_tasks(
+            ListTasks(
+                profile="alpha",
+                project_id=bootstrap.project.id,
+                subject_id=bootstrap.subject.id,
+                cursor=all_cursor,
+                limit=1,
+            )
+        ),
+        lambda: repository.list_tasks(
+            ListTasks(
+                profile="alpha",
+                project_id=bootstrap.project.id,
+                subject_id=bootstrap.subject.id,
+                cursor=_opaque_cursor(_project_cursor_payload(instance_id="ins_other")),
+                limit=1,
+            )
+        ),
+        lambda: repository.list_tasks_for_instance(
+            ListInstanceTasks(
+                profile="alpha",
+                instance_id=bootstrap.instance.id,
+                subject_id=bootstrap.subject.id,
+                cursor=_opaque_cursor(
+                    _project_cursor_payload(
+                        after=1,
+                        project_id=None,
+                        selection="all_projects",
+                    )
+                ),
+                limit=1,
+            )
+        ),
+        lambda: repository.list_tasks_for_instance(
+            ListInstanceTasks(
+                profile="alpha",
+                instance_id=bootstrap.instance.id,
+                subject_id=bootstrap.subject.id,
+                cursor=_opaque_cursor(
+                    _project_cursor_payload(
+                        after=[1, 1],
+                        project_id=None,
+                        selection="all_projects",
+                    )
+                ),
+                limit=1,
+            )
+        ),
+        lambda: repository.list_tasks_for_instance(
+            ListInstanceTasks(
+                profile="alpha",
+                instance_id=bootstrap.instance.id,
+                subject_id=bootstrap.subject.id,
+                cursor=_opaque_cursor(
+                    _project_cursor_payload(
+                        after=["lowercase", 1],
+                        project_id=None,
+                        selection="all_projects",
+                    )
+                ),
+                limit=1,
+            )
+        ),
+    )
+
+    for operation in invalid_operations:
+        with pytest.raises(InvalidInputError) as captured:
+            _read_without_mutation(repository, operation)
         assert captured.value.code is ApplicationErrorCode.INVALID_INPUT
 
 
@@ -443,9 +899,22 @@ def test_disabled_subject_cannot_execute_any_query(tmp_path: Path) -> None:
                 subject_id=bootstrap.subject.id,
             )
         ),
+        lambda: repository.get_project_by_key(
+            GetProjectByKey(
+                instance_id=bootstrap.instance.id,
+                subject_id=bootstrap.subject.id,
+                project_key=bootstrap.project.key,
+            )
+        ),
         lambda: repository.list_tasks(
             ListTasks(
                 project_id=bootstrap.project.id,
+                subject_id=bootstrap.subject.id,
+            )
+        ),
+        lambda: repository.list_tasks_for_instance(
+            ListInstanceTasks(
+                instance_id=bootstrap.instance.id,
                 subject_id=bootstrap.subject.id,
             )
         ),
@@ -470,7 +939,7 @@ def test_valid_store_maps_missing_identity_state_to_typed_errors(
     """Valid stores distinguish absent initialization and scoped Task lookup."""
     database_path = tmp_path / "empty.db"
     initialize_empty_store(database_path)
-    repository = SQLitePhaseOneRepository(database_path)
+    repository = SQLiteRepository(database_path)
 
     with pytest.raises(NotInitializedError) as status_error:
         _read_without_mutation(
@@ -497,9 +966,30 @@ def test_valid_store_maps_missing_identity_state_to_typed_errors(
     with pytest.raises(NotInitializedError):
         _read_without_mutation(
             repository,
+            lambda: repository.get_project_by_key(
+                GetProjectByKey(
+                    instance_id=InstanceId("ins_missing"),
+                    subject_id=SubjectId("sub_missing"),
+                    project_key="ACME",
+                )
+            ),
+        )
+    with pytest.raises(NotInitializedError):
+        _read_without_mutation(
+            repository,
             lambda: repository.list_tasks(
                 ListTasks(
                     project_id=ProjectId("prj_missing"),
+                    subject_id=SubjectId("sub_missing"),
+                )
+            ),
+        )
+    with pytest.raises(NotInitializedError):
+        _read_without_mutation(
+            repository,
+            lambda: repository.list_tasks_for_instance(
+                ListInstanceTasks(
+                    instance_id=InstanceId("ins_missing"),
                     subject_id=SubjectId("sub_missing"),
                 )
             ),
@@ -512,7 +1002,9 @@ def test_repository_rejects_unvalidated_query_objects(tmp_path: Path) -> None:
     operations: tuple[Callable[[], object], ...] = (
         lambda: repository.get_local_status(cast("GetLocalStatus", object())),
         lambda: repository.list_projects(cast("ListProjects", object())),
+        lambda: repository.get_project_by_key(cast("GetProjectByKey", object())),
         lambda: repository.list_tasks(cast("ListTasks", object())),
+        lambda: repository.list_tasks_for_instance(cast("ListInstanceTasks", object())),
         lambda: repository.get_task(cast("GetTask", object())),
     )
 
@@ -537,10 +1029,32 @@ def test_malformed_persisted_rows_map_to_safe_storage_failure(
         instance_id=bootstrap.instance.id,
         subject_id=bootstrap.subject.id,
     )
+    project_command = GetProjectByKey(
+        instance_id=bootstrap.instance.id,
+        subject_id=bootstrap.subject.id,
+        project_key=bootstrap.project.key,
+    )
     with open_write_transaction(repository.database_path) as connection:
         connection.execute("PRAGMA ignore_check_constraints = ON")
         connection.execute(
-            "UPDATE projects SET key = 'lowercase' WHERE id = ?",
+            "UPDATE projects SET name = ' invalid ' WHERE id = ?",
+            (str(bootstrap.project.id),),
+        )
+
+    with pytest.raises(StorageUnavailableError):
+        _read_without_mutation(
+            repository,
+            partial(repository.get_project_by_key, project_command),
+        )
+
+    with open_write_transaction(repository.database_path) as connection:
+        connection.execute("PRAGMA ignore_check_constraints = ON")
+        connection.execute(
+            """
+            UPDATE projects
+            SET key = 'lowercase', name = 'ACME'
+            WHERE id = ?
+            """,
             (str(bootstrap.project.id),),
         )
 
@@ -558,7 +1072,42 @@ def test_malformed_persisted_rows_map_to_safe_storage_failure(
             (str(bootstrap.project.id),),
         )
         connection.execute(
-            "UPDATE tasks SET state = 'invalid' WHERE uid = ?",
+            "UPDATE tasks SET key = 'BETA-1' WHERE uid = ?",
+            (str(task.uid),),
+        )
+    cross_key_commands: tuple[Callable[[], object], ...] = (
+        lambda: repository.list_tasks(
+            ListTasks(
+                project_id=bootstrap.project.id,
+                subject_id=bootstrap.subject.id,
+            )
+        ),
+        lambda: repository.list_tasks_for_instance(
+            ListInstanceTasks(
+                instance_id=bootstrap.instance.id,
+                subject_id=bootstrap.subject.id,
+            )
+        ),
+        lambda: repository.get_task(
+            GetTask(
+                project_id=bootstrap.project.id,
+                subject_id=bootstrap.subject.id,
+                task=task.uid,
+            )
+        ),
+    )
+    for operation in cross_key_commands:
+        with pytest.raises(StorageUnavailableError):
+            _read_without_mutation(repository, operation)
+
+    with open_write_transaction(repository.database_path) as connection:
+        connection.execute("PRAGMA ignore_check_constraints = ON")
+        connection.execute(
+            """
+            UPDATE tasks
+            SET key = 'ACME-1', state = 'invalid'
+            WHERE uid = ?
+            """,
             (str(task.uid),),
         )
     task_list_command = ListTasks(
@@ -573,6 +1122,12 @@ def test_malformed_persisted_rows_map_to_safe_storage_failure(
 
     for task_operation in (
         lambda: repository.list_tasks(task_list_command),
+        lambda: repository.list_tasks_for_instance(
+            ListInstanceTasks(
+                instance_id=bootstrap.instance.id,
+                subject_id=bootstrap.subject.id,
+            )
+        ),
         lambda: repository.get_task(task_get_command),
     ):
         with pytest.raises(StorageUnavailableError):
