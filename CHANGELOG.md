@@ -24,6 +24,9 @@ public versioning begins.
   fresh-process multi-project golden journey.
 - Public multi-project quick start and current architecture, CLI, persistence,
   and threat-model documentation.
+- A fail-fast Phase 2 clean-state gate and isolated installed-wheel journey
+  that prove source/wheel parity, independent Project numbering, and safe
+  configuration, data, and Workspace ownership.
 
 ### Changed
 

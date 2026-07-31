@@ -262,17 +262,18 @@ def test_readme_version_output_matches_installed_distribution() -> None:
     )
 
 
-def test_readme_publishes_the_phase_one_clean_state_gate() -> None:
+def test_readme_publishes_the_phase_two_clean_state_gate() -> None:
     """Public development guidance exposes the isolated aggregate command."""
     readme = " ".join(_README.read_text(encoding="utf-8").split())
 
-    assert "## Phase 1 acceptance gate" in _README.read_text(encoding="utf-8")
-    assert "scripts/verify-phase-1.sh" in readme
+    assert "## Phase 2 acceptance gate" in _README.read_text(encoding="utf-8")
+    assert "scripts/verify-phase-2.sh" in readme
     for guarantee in (
         "clean checkout",
         "no active virtual environment",
         "no pre-existing `.venv` or `dist`",
         "temporary virtual environment",
+        "`WORKAHOLIC_CONFIG_DIR`",
         "`WORKAHOLIC_DATA_DIR`",
         "never uses the operator's default profile or database",
     ):

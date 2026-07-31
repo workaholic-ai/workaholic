@@ -222,24 +222,25 @@ uv build
 scripts/smoke-install.sh dist/*.whl
 ```
 
-## Phase 1 acceptance gate
+## Phase 2 acceptance gate
 
 From a clean checkout with no active virtual environment and no pre-existing
-`.venv` or `dist`, the latest completed aggregate gate remains:
+`.venv` or `dist`, and with no inherited Workaholic profile, configuration, or
+data selector, run:
 
 ```bash
-scripts/verify-phase-1.sh
+scripts/verify-phase-2.sh
 ```
 
 It runs locked synchronization, all commit-stage hooks, the complete test suite,
 package build, isolated wheel-install smoke, and the installed persistent Task
-journey. Its temporary virtual environment, `WORKAHOLIC_DATA_DIR`, and
-Workspace are isolated. The gate never uses the operator's default profile or
-database. The Phase 2 gate will supersede it only after the multi-project wheel
-journey passes from a clean checkout.
+journey across multiple Projects and Workspaces. Its temporary virtual
+environment, `WORKAHOLIC_CONFIG_DIR`, `WORKAHOLIC_DATA_DIR`, profile file, and
+Workspaces are isolated. The gate never uses the operator's default profile or
+database.
 
-The Phase 0 foundation gate remains available as
-`scripts/verify-phase-0.sh`.
+The earlier foundation and persistent-solo gates remain available as
+`scripts/verify-phase-0.sh` and `scripts/verify-phase-1.sh`.
 
 ## Project documents
 
