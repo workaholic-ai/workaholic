@@ -45,6 +45,7 @@ if TYPE_CHECKING:
         Project,
         ProjectId,
         RequestId,
+        ResultId,
         SubjectId,
         Task,
         TaskEventId,
@@ -100,6 +101,37 @@ class IdentifierFactory(Protocol):
 
         Returns:
             A new opaque TaskId.
+
+        """
+        ...
+
+    def new_event_id(self) -> TaskEventId:
+        """Create a candidate TaskEvent identifier.
+
+        Returns:
+            A new opaque TaskEventId.
+
+        """
+        ...
+
+    def new_request_id(self) -> RequestId:
+        """Create a candidate request identifier.
+
+        Returns:
+            A new opaque RequestId.
+
+        """
+        ...
+
+
+class ResultIdentifierFactory(Protocol):
+    """Generate only the identities required by Human Result operations."""
+
+    def new_result_id(self) -> ResultId:
+        """Create a candidate Result identifier.
+
+        Returns:
+            A new opaque ResultId.
 
         """
         ...

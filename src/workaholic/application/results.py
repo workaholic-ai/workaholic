@@ -338,6 +338,25 @@ class TaskSubmissionResult(_ResultModel):
         if tuple(event.event_type for event in self.events) != expected:
             message = "Task submission events must match the Result review disposition."
             raise ValueError(message)
+        first = self.events[0]
+        if status in (
+            ResultReviewStatus.NOT_REQUIRED,
+            ResultReviewStatus.PENDING,
+        ):
+            attribution_matches = (
+                self.result.submitted_by == first.actor_subject_id
+                and self.result.submitted_at == first.occurred_at
+            )
+        else:
+            attribution_matches = (
+                self.result.review.reviewed_by == first.actor_subject_id
+                and self.result.review.reviewed_at == first.occurred_at
+            )
+        if not attribution_matches or self.task.updated_at != first.occurred_at:
+            message = (
+                "Task submission attribution and timestamps must match its events."
+            )
+            raise ValueError(message)
         return self
 
 

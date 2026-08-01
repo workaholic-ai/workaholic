@@ -173,7 +173,7 @@ def _result(task: Task, status: ResultReviewStatus) -> TaskResult:
         proposed_follow_ups=(),
         review=ResultReview(
             status=status,
-            reviewed_by=SubjectId("sub_reviewer") if reviewed else None,
+            reviewed_by=SubjectId("sub_human") if reviewed else None,
             reviewed_at=_NOW if reviewed else None,
             reason="Needs evidence" if status is ResultReviewStatus.REJECTED else None,
         ),
@@ -781,6 +781,27 @@ def test_submission_result_rejects_wrong_result_state_and_event_sequences() -> N
         )
     with pytest.raises(ValidationError, match="at least one"):
         TaskSubmissionResult(task=task, result=result, events=())
+
+
+def test_submission_result_rejects_event_actor_unrelated_to_result_action() -> None:
+    """Submission and review events must identify the submitting or reviewing Human."""
+    task = _task(
+        state=TaskState.DONE,
+        current_result_id=ResultId("res_current"),
+    )
+    result = _result(task, ResultReviewStatus.APPROVED)
+    events = tuple(
+        replace(
+            _event(task, event_type, cursor=index + 1),
+            actor_subject_id=SubjectId("sub_other"),
+        )
+        for index, event_type in enumerate(
+            (TaskEventType.REVIEW_APPROVED, TaskEventType.TASK_COMPLETED)
+        )
+    )
+
+    with pytest.raises(ValidationError, match="attribution"):
+        TaskSubmissionResult(task=task, result=result, events=events)
 
 
 def test_submission_result_rejects_unordered_or_mixed_attribution_events() -> None:

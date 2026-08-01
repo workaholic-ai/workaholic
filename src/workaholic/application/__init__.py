@@ -68,6 +68,7 @@ from workaholic.application.ports import (
     IdentifierFactory,
     ProjectRepository,
     QueryRepository,
+    ResultIdentifierFactory,
     TaskCreationRepository,
     TaskRepository,
     TaskViewQueryRepository,
@@ -88,6 +89,7 @@ from workaholic.application.results import (
 )
 from workaholic.application.task_dependencies import TaskDependencyApplication
 from workaholic.application.task_lifecycle import TaskLifecycleApplication
+from workaholic.application.task_results import TaskResultApplication
 from workaholic.application.tasks import TaskApplication
 
 __all__ = [
@@ -142,6 +144,7 @@ __all__ = [
     "RejectResultMutation",
     "RemoveTaskDependencyInput",
     "RemoveTaskDependencyMutation",
+    "ResultIdentifierFactory",
     "ResultInvalidError",
     "StatusResult",
     "SubmitHumanResultInput",
@@ -160,6 +163,7 @@ __all__ = [
     "TaskNotFoundError",
     "TaskPage",
     "TaskRepository",
+    "TaskResultApplication",
     "TaskResultInput",
     "TaskSubmissionResult",
     "TaskUnblockMutation",

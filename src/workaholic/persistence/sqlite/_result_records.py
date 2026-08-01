@@ -3,8 +3,12 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from typing import Final
+from typing import TYPE_CHECKING, Final, cast
 
+from workaholic.application import (
+    IdempotencyConflictError,
+    TaskSubmissionResult,
+)
 from workaholic.domain import (
     ArtifactReference,
     CriterionOutcome,
@@ -17,17 +21,36 @@ from workaholic.domain import (
     TaskId,
     TaskResult,
 )
+from workaholic.persistence.sqlite._event_records import (
+    TASK_EVENT_FIELDS,
+    TaskEventRecord,
+    task_event_record_from_mapping,
+    task_event_record_from_row,
+    task_event_record_mapping,
+)
 from workaholic.persistence.sqlite._records import (
+    IDEMPOTENCY_OUTCOME_JSON_MAX_LENGTH,
     STRUCTURED_COLLECTION_JSON_MAX_LENGTH,
+    canonical_json,
     canonical_json_value,
     parse_json_array,
+    parse_json_object,
     parse_optional_timestamp,
     parse_timestamp,
     require_optional_text,
     require_text,
     serialize_timestamp,
 )
+from workaholic.persistence.sqlite._task_records import (
+    TASK_FIELD_SET,
+    task_from_mapping,
+    task_mapping,
+)
 from workaholic.persistence.sqlite.errors import StorageUnavailableError
+
+if TYPE_CHECKING:
+    import sqlite3
+    from datetime import datetime
 
 TASK_RESULT_FIELDS: Final = (
     "id",
@@ -63,6 +86,7 @@ TASK_RESULT_MAPPING_FIELD_SET: Final = frozenset(TASK_RESULT_MAPPING_FIELDS)
 _REVIEW_MAPPING_FIELDS: Final = frozenset(
     ("status", "reviewed_by", "reviewed_at", "comment", "reason")
 )
+_RESULT_OUTCOME_KEYS: Final = frozenset(("events", "result", "task"))
 
 
 def task_result_mapping(result: TaskResult) -> dict[str, object]:
@@ -335,3 +359,165 @@ def _require_mapping(
     if not isinstance(value, Mapping) or set(value) != fields:
         raise StorageUnavailableError
     return value
+
+
+def read_idempotent_result_outcome(
+    connection: sqlite3.Connection,
+    *,
+    operation: str,
+    actor_subject_id: str,
+    caller_key: str | None,
+    request_fingerprint: str,
+) -> TaskSubmissionResult | None:
+    """Read and validate one historic Result-operation outcome.
+
+    Args:
+        connection: Active validated write transaction.
+        operation: Closed semantic operation name.
+        actor_subject_id: Authenticated Human scope.
+        caller_key: Optional caller-provided idempotency key.
+        request_fingerprint: Canonical semantic-input digest.
+
+    Returns:
+        Historic outcome when the key exists, otherwise ``None``.
+
+    Raises:
+        IdempotencyConflictError: If the key has different semantic input.
+        StorageUnavailableError: If replay data or referenced events are invalid.
+
+    """
+    if caller_key is None:
+        return None
+    row = connection.execute(
+        """
+        SELECT request_fingerprint, outcome_json
+        FROM idempotency_records
+        WHERE subject_scope = ? AND operation = ? AND caller_key = ?
+        """,
+        (actor_subject_id, operation, caller_key),
+    ).fetchone()
+    if row is None:
+        return None
+    if require_text(row[0]) != request_fingerprint:
+        raise IdempotencyConflictError
+    result, event_records = parse_result_outcome(require_text(row[1]))
+    for event_record in event_records:
+        actual = connection.execute(
+            f"""
+            SELECT {", ".join(TASK_EVENT_FIELDS)}
+            FROM task_events
+            WHERE id = ?
+            """,  # noqa: S608 - field names are a closed module constant.
+            (str(event_record.event.id),),
+        ).fetchone()
+        if (
+            actual is None
+            or task_event_record_from_row(actual) != event_record
+            or event_record.attempt_id is not None
+            or str(event_record.event.actor_subject_id) != actor_subject_id
+        ):
+            raise StorageUnavailableError
+    return result
+
+
+def record_idempotent_result_outcome(  # noqa: PLR0913 - durable contract.
+    connection: sqlite3.Connection,
+    *,
+    operation: str,
+    actor_subject_id: str,
+    caller_key: str | None,
+    request_fingerprint: str,
+    occurred_at: datetime,
+    result: TaskSubmissionResult,
+    event_records: Sequence[TaskEventRecord],
+) -> None:
+    """Persist one canonical Result replay outcome in its transaction.
+
+    Args:
+        connection: Active validated write transaction.
+        operation: Closed semantic operation name.
+        actor_subject_id: Authenticated Human scope.
+        caller_key: Optional caller-provided idempotency key.
+        request_fingerprint: Canonical semantic-input digest.
+        occurred_at: Authoritative operation timestamp.
+        result: Complete semantic outcome to replay.
+        event_records: Durable event records owned by the outcome.
+
+    """
+    if caller_key is None:
+        return
+    connection.execute(
+        """
+        INSERT INTO idempotency_records (
+            subject_scope, operation, caller_key, request_fingerprint,
+            outcome_json, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?)
+        """,
+        (
+            actor_subject_id,
+            operation,
+            caller_key,
+            request_fingerprint,
+            canonical_json(
+                {
+                    "events": [
+                        task_event_record_mapping(record) for record in event_records
+                    ],
+                    "result": task_result_mapping(result.result),
+                    "task": task_mapping(result.task),
+                }
+            ),
+            serialize_timestamp(occurred_at),
+        ),
+    )
+
+
+def parse_result_outcome(
+    value: str,
+) -> tuple[TaskSubmissionResult, tuple[TaskEventRecord, ...]]:
+    """Parse one exact canonical Result-operation replay outcome.
+
+    Args:
+        value: Canonical JSON outcome text.
+
+    Returns:
+        Validated semantic outcome and its full event records.
+
+    Raises:
+        StorageUnavailableError: If shape, values, or relationships are invalid.
+
+    """
+    decoded = parse_json_object(
+        value,
+        maximum=IDEMPOTENCY_OUTCOME_JSON_MAX_LENGTH,
+    )
+    if set(decoded) != _RESULT_OUTCOME_KEYS:
+        raise StorageUnavailableError
+    task_value = decoded["task"]
+    result_value = decoded["result"]
+    events_value = decoded["events"]
+    if (
+        not isinstance(task_value, dict)
+        or set(task_value) != TASK_FIELD_SET
+        or not isinstance(result_value, dict)
+        or not isinstance(events_value, list)
+    ):
+        raise StorageUnavailableError
+    task = task_from_mapping(cast("Mapping[str, object]", task_value))
+    task_result = task_result_from_mapping(cast("Mapping[str, object]", result_value))
+    records: list[TaskEventRecord] = []
+    for event_value in events_value:
+        if not isinstance(event_value, dict):
+            raise StorageUnavailableError
+        records.append(
+            task_event_record_from_mapping(cast("Mapping[str, object]", event_value))
+        )
+    try:
+        outcome = TaskSubmissionResult(
+            task=task,
+            result=task_result,
+            events=tuple(record.event for record in records),
+        )
+    except ValueError as error:
+        raise StorageUnavailableError from error
+    return outcome, tuple(records)

@@ -30,12 +30,20 @@ from workaholic.persistence.sqlite._task_lifecycle import (
 from workaholic.persistence.sqlite._task_lifecycle import (
     update_task_if_version as _update_task_if_version,
 )
+from workaholic.persistence.sqlite._task_results import (
+    approve_result as _approve_result,
+)
+from workaholic.persistence.sqlite._task_results import reject_result as _reject_result
+from workaholic.persistence.sqlite._task_results import (
+    submit_human_result as _submit_human_result,
+)
 from workaholic.persistence.sqlite._tasks import create_task as _create_task
 from workaholic.persistence.sqlite.schema import initialize_empty_store
 
 if TYPE_CHECKING:
     from workaholic.application import (
         AddTaskDependencyMutation,
+        ApproveResultMutation,
         BootstrapMutation,
         BootstrapResult,
         Clock,
@@ -49,14 +57,17 @@ if TYPE_CHECKING:
         ListTasksByView,
         ProjectCreationMutation,
         ProjectCreationResult,
+        RejectResultMutation,
         RemoveTaskDependencyMutation,
         StatusResult,
+        SubmitHumanResultMutation,
         TaskBlockMutation,
         TaskCancelMutation,
         TaskCreationMutation,
         TaskDetails,
         TaskMutationResult,
         TaskPage,
+        TaskSubmissionResult,
         TaskUnblockMutation,
         TaskUpdateMutation,
     )
@@ -214,6 +225,51 @@ class SQLiteRepository:
 
         """
         return _remove_task_dependency(self._database_path, mutation)
+
+    def submit_human_result(
+        self,
+        mutation: SubmitHumanResultMutation,
+    ) -> TaskSubmissionResult:
+        """Atomically submit one Human Result without an Agent Attempt.
+
+        Args:
+            mutation: Validated optimistic Human submission mutation.
+
+        Returns:
+            Committed Task, Result, and ordered semantic events.
+
+        """
+        return _submit_human_result(self._database_path, mutation)
+
+    def approve_result(
+        self,
+        mutation: ApproveResultMutation,
+    ) -> TaskSubmissionResult:
+        """Atomically approve the current pending Result.
+
+        Args:
+            mutation: Validated optimistic approval mutation.
+
+        Returns:
+            Committed Task, approved Result, and ordered events.
+
+        """
+        return _approve_result(self._database_path, mutation)
+
+    def reject_result(
+        self,
+        mutation: RejectResultMutation,
+    ) -> TaskSubmissionResult:
+        """Atomically reject and deselect the current pending Result.
+
+        Args:
+            mutation: Validated optimistic rejection mutation.
+
+        Returns:
+            Reopened Task, retained Result, and rejection event.
+
+        """
+        return _reject_result(self._database_path, mutation)
 
     def create_project(
         self,

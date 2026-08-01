@@ -43,6 +43,7 @@ from workaholic.domain import (
     InstanceId,
     ProjectId,
     RequestId,
+    ResultId,
     SubjectId,
     TaskEventId,
     TaskId,
@@ -64,7 +65,7 @@ from workaholic.session import (
 _PROGRAM_NAME = "workaholic"
 _UUID7_VERSION = 7
 _IDENTIFIER_PREFIXES: Final = frozenset(
-    ("ins_", "prj_", "sub_", "tsk_", "evt_", "req_")
+    ("ins_", "prj_", "sub_", "tsk_", "res_", "evt_", "req_")
 )
 
 type ConfigPathResolver = Callable[[Mapping[str, str]], LocalConfigPaths]
@@ -230,6 +231,10 @@ class _Uuid7IdentifierFactory:
     def new_task_id(self) -> TaskId:
         """Create a candidate Task identifier."""
         return TaskId(_new_uuid7_text("tsk_"))
+
+    def new_result_id(self) -> ResultId:
+        """Create a candidate Result identifier."""
+        return ResultId(_new_uuid7_text("res_"))
 
     def new_event_id(self) -> TaskEventId:
         """Create a candidate TaskEvent identifier."""

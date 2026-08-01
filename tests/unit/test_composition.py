@@ -28,6 +28,7 @@ from workaholic.domain import (
     InstanceId,
     ProjectId,
     RequestId,
+    ResultId,
     SubjectId,
     TaskEventId,
     TaskId,
@@ -627,6 +628,7 @@ def test_identifier_factory_uses_unique_typed_uuid7_values() -> None:
         factory.new_project_id(),
         factory.new_subject_id(),
         factory.new_task_id(),
+        factory.new_result_id(),
         factory.new_event_id(),
         factory.new_request_id(),
     )
@@ -635,6 +637,7 @@ def test_identifier_factory_uses_unique_typed_uuid7_values() -> None:
         (ProjectId, "prj_"),
         (SubjectId, "sub_"),
         (TaskId, "tsk_"),
+        (ResultId, "res_"),
         (TaskEventId, "evt_"),
         (RequestId, "req_"),
     )
