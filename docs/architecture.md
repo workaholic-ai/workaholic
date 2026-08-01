@@ -545,6 +545,13 @@ running =
 
 A minimal task looks like:
 
+V1 does not model a parent/child Task hierarchy. Decomposition creates ordinary
+Tasks and connects them with explicit same-Project dependencies when ordering
+or completion constraints apply. Attributable creation events and Results
+preserve why follow-up work exists without introducing a second relationship
+model. Typed hierarchical relationships remain outside v1 until real workflows
+demonstrate a separate need beyond dependencies and provenance.
+
 ```json
 {
   "uid": "tsk_01K9Q...",
@@ -559,7 +566,6 @@ A minimal task looks like:
   "priority": 70,
   "available_at": null,
 
-  "parent_uid": null,
   "depends_on": ["tsk_01K9P..."],
 
   "requirements": {
@@ -907,7 +913,7 @@ Tokens never appear in `.workaholic.env` or normal command arguments.
 | Role                   | Main permissions                                                                 |
 | ---------------------- | -------------------------------------------------------------------------------- |
 | Viewer                 | Read tasks, projects, attempts, and events                                       |
-| Agent                  | Claim, heartbeat, report progress, release, submit, create permitted child tasks |
+| Agent                  | Claim, heartbeat, report progress, release, submit                               |
 | Operator               | Create and edit tasks, block/unblock, review, cancel                             |
 | Owner                  | Operator rights plus project settings and grants                                 |
 | Instance administrator | Create projects, subjects, tokens, and instance-wide grants                      |

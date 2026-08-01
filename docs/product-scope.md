@@ -123,6 +123,7 @@ The following capabilities must not delay v1:
 - storage conversion, import/export, and automated schema migrations;
 - a TUI, browser UI, public API, or supported language SDK;
 - GitHub synchronization, webhooks, or a plugin system;
+- parent/child Task hierarchies;
 - cross-project blocking dependencies;
 - SSO, OAuth, enterprise identity providers, custom roles, or a policy
   language;

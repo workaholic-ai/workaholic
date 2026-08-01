@@ -8,6 +8,12 @@ public versioning begins.
 
 ## Unreleased
 
+### Changed
+
+- Removed the speculative parent/child Task hierarchy from planned v1.
+  Decomposition uses explicit same-Project dependencies, while attributable
+  events and Results preserve the provenance of follow-up work.
+
 ## [0.2.0a1] - 2026-07-30
 
 ### Added
