@@ -16,6 +16,9 @@ from workaholic.application import (
     ApplicationErrorCode,
     NotInitializedError,
     PermissionDeniedError,
+    TaskListView,
+    TaskResultInput,
+    TaskUpdatePatch,
 )
 from workaholic.cli.main import create_app
 from workaholic.context import (
@@ -25,12 +28,15 @@ from workaholic.context import (
     ProfileNotFoundError,
 )
 from workaholic.domain import (
+    ApprovalRequirement,
     InstanceId,
     ProjectId,
     RequestId,
     ResultId,
+    ResultReviewStatus,
     SubjectId,
     TaskEventId,
+    TaskEventType,
     TaskId,
     WorkspaceBinding,
 )
@@ -46,8 +52,20 @@ from workaholic.session import (
     ContextRequest,
     LocalSession,
     StatusRequest,
+    TaskAddDependencyRequest,
+    TaskApproveRequest,
+    TaskBlockRequest,
+    TaskCancelRequest,
     TaskCreateRequest,
+    TaskDetailsRequest,
+    TaskEventsRequest,
+    TaskListByViewRequest,
     TaskListRequest,
+    TaskRejectRequest,
+    TaskRemoveDependencyRequest,
+    TaskSubmitRequest,
+    TaskUnblockRequest,
+    TaskUpdateRequest,
     UpRequest,
 )
 
@@ -126,6 +144,10 @@ class _FixedIdentifiers:
     def new_task_id(self) -> TaskId:
         """Return the fixed Task identity."""
         return TaskId("tsk_fixed")
+
+    def new_result_id(self) -> ResultId:
+        """Return the fixed Result identity."""
+        return ResultId("res_fixed")
 
     def new_event_id(self) -> TaskEventId:
         """Return the fixed TaskEvent identity."""
@@ -212,6 +234,165 @@ def test_composed_session_persists_and_reopens_real_local_state(
         _require_uuid7(identifier, prefix=prefix)
 
 
+def test_composed_session_runs_complete_phase_three_human_workflow(
+    tmp_path: Path,
+) -> None:
+    """Real composition exposes every Phase 3 operation with one meaning."""
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    environment = _environment(tmp_path / "data")
+    session = composition.create_local_session(
+        cwd=workspace,
+        environment=environment,
+    )
+    session.up(UpRequest(project_key="ACME"))
+    prerequisite = session.create_task(
+        TaskCreateRequest(title="Prepare the prerequisite")
+    )
+    reviewed = session.create_task(
+        TaskCreateRequest(
+            title="Implement the reviewed outcome",
+            approval=ApprovalRequirement.HUMAN,
+        )
+    )
+    cancelled = session.create_task(TaskCreateRequest(title="Obsolete task"))
+
+    prerequisite = session.update_task(
+        TaskUpdateRequest(
+            task=prerequisite.uid,
+            expected_version=prerequisite.version,
+            patch=TaskUpdatePatch(priority=80),
+        )
+    ).task
+    prerequisite = session.block_task(
+        TaskBlockRequest(
+            task=prerequisite.key,
+            expected_version=prerequisite.version,
+            reason="Waiting for owner input.",
+        )
+    ).task
+    prerequisite = session.unblock_task(
+        TaskUnblockRequest(
+            task=prerequisite.uid,
+            expected_version=prerequisite.version,
+        )
+    ).task
+    reviewed = session.add_task_dependency(
+        TaskAddDependencyRequest(
+            task=reviewed.key,
+            prerequisite=prerequisite.uid,
+            expected_version=reviewed.version,
+        )
+    ).task
+    reviewed = session.remove_task_dependency(
+        TaskRemoveDependencyRequest(
+            task=reviewed.uid,
+            prerequisite=prerequisite.key,
+            expected_version=reviewed.version,
+        )
+    ).task
+    reviewed = session.add_task_dependency(
+        TaskAddDependencyRequest(
+            task=reviewed.uid,
+            prerequisite=prerequisite.uid,
+            expected_version=reviewed.version,
+        )
+    ).task
+    prerequisite_submission = session.submit_human_result(
+        TaskSubmitRequest(
+            task=prerequisite.key,
+            expected_version=prerequisite.version,
+            comment="Prepared manually.",
+        )
+    )
+    prerequisite = prerequisite_submission.task
+
+    ready = session.list_tasks_by_view(TaskListByViewRequest(view=TaskListView.READY))
+    assert reviewed.uid in {task.uid for task in ready.tasks}
+    first_submission = session.submit_human_result(
+        TaskSubmitRequest(
+            task=reviewed.uid,
+            expected_version=reviewed.version,
+            result=TaskResultInput(summary="Implemented and verified."),
+        )
+    )
+    assert first_submission.result.attempt_id is None
+    assert first_submission.result.review.status is ResultReviewStatus.PENDING
+    reviewed = session.reject_result(
+        TaskRejectRequest(
+            task=reviewed.key,
+            expected_version=first_submission.task.version,
+            reason="Add one missing verification.",
+        )
+    ).task
+    second_submission = session.submit_human_result(
+        TaskSubmitRequest(
+            task=reviewed.uid,
+            expected_version=reviewed.version,
+            result=TaskResultInput(
+                summary="Implemented with the missing verification."
+            ),
+        )
+    )
+    approved = session.approve_result(
+        TaskApproveRequest(
+            task=reviewed.key,
+            expected_version=second_submission.task.version,
+            comment="Verified and accepted.",
+        )
+    )
+    cancelled = session.cancel_task(
+        TaskCancelRequest(
+            task=cancelled.uid,
+            expected_version=cancelled.version,
+            reason="No longer required.",
+        )
+    ).task
+
+    details = session.get_task_details(TaskDetailsRequest(task=reviewed.uid))
+    assert details.task == approved.task
+    assert details.prerequisites == (prerequisite,)
+    assert details.current_result == approved.result
+    assert approved.result.attempt_id is None
+    assert approved.result.review.status is ResultReviewStatus.APPROVED
+    done = session.list_tasks_by_view(
+        TaskListByViewRequest(view=TaskListView.DONE, all_projects=True)
+    )
+    assert {task.uid for task in done.tasks} == {prerequisite.uid, reviewed.uid}
+    cancelled_page = session.list_tasks_by_view(
+        TaskListByViewRequest(view=TaskListView.CANCELLED)
+    )
+    assert cancelled_page.tasks == (cancelled,)
+
+    cursor = 0
+    event_types: list[TaskEventType] = []
+    while True:
+        page = session.read_task_events(
+            TaskEventsRequest(
+                task=reviewed.uid,
+                after=cursor,
+                limit=2,
+            )
+        )
+        event_types.extend(event.event_type for event in page.events)
+        if not page.events:
+            assert page.next_cursor == cursor
+            break
+        assert all(event.attempt_id is None for event in page.events)
+        cursor = page.next_cursor
+    assert event_types == [
+        TaskEventType.TASK_CREATED,
+        TaskEventType.TASK_UPDATED,
+        TaskEventType.TASK_UPDATED,
+        TaskEventType.TASK_UPDATED,
+        TaskEventType.RESULT_SUBMITTED,
+        TaskEventType.REVIEW_REJECTED,
+        TaskEventType.RESULT_SUBMITTED,
+        TaskEventType.REVIEW_APPROVED,
+        TaskEventType.TASK_COMPLETED,
+    ]
+
+
 def test_injected_factories_are_lazy_and_deterministic(tmp_path: Path) -> None:
     """Composition defers runtime factories and honors deterministic adapters."""
     workspace = tmp_path / "workspace"
@@ -279,6 +460,154 @@ def test_injected_factories_are_lazy_and_deterministic(tmp_path: Path) -> None:
         ("clock", None),
         ("identifiers", None),
     ]
+
+
+def test_phase_three_composition_owns_clock_and_exact_identifier_allocation(
+    tmp_path: Path,
+) -> None:
+    """Each mutation obtains time and its exact identity set only once."""
+
+    class _CountingClock:
+        """Count authoritative clock reads while returning one UTC instant."""
+
+        def __init__(self) -> None:
+            """Initialize an empty call count."""
+            self.calls = 0
+
+        def now(self) -> datetime:
+            """Record and return the deterministic UTC instant."""
+            self.calls += 1
+            return _NOW
+
+    class _CountingIdentifiers:
+        """Generate unique deterministic IDs and count each identity family."""
+
+        def __init__(self) -> None:
+            """Initialize per-family counters."""
+            self.counts = {
+                "instance": 0,
+                "project": 0,
+                "subject": 0,
+                "task": 0,
+                "result": 0,
+                "event": 0,
+                "request": 0,
+            }
+            self._sequence = dict(self.counts)
+
+        def _next(self, family: str, prefix: str) -> str:
+            """Increment and serialize one deterministic identity family."""
+            self.counts[family] += 1
+            self._sequence[family] += 1
+            return f"{prefix}counted_{self._sequence[family]}"
+
+        def new_instance_id(self) -> InstanceId:
+            """Generate one Instance identity."""
+            return InstanceId(self._next("instance", "ins_"))
+
+        def new_project_id(self) -> ProjectId:
+            """Generate one Project identity."""
+            return ProjectId(self._next("project", "prj_"))
+
+        def new_subject_id(self) -> SubjectId:
+            """Generate one Subject identity."""
+            return SubjectId(self._next("subject", "sub_"))
+
+        def new_task_id(self) -> TaskId:
+            """Generate one Task identity."""
+            return TaskId(self._next("task", "tsk_"))
+
+        def new_result_id(self) -> ResultId:
+            """Generate one Result identity."""
+            return ResultId(self._next("result", "res_"))
+
+        def new_event_id(self) -> TaskEventId:
+            """Generate one TaskEvent identity."""
+            return TaskEventId(self._next("event", "evt_"))
+
+        def new_request_id(self) -> RequestId:
+            """Generate one request identity."""
+            return RequestId(self._next("request", "req_"))
+
+        def reset_operation_counts(self) -> None:
+            """Reset only identity families allocated by Task mutations."""
+            for family in ("result", "event", "request"):
+                self.counts[family] = 0
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    data_directory = tmp_path / "data"
+    clock = _CountingClock()
+    identifiers = _CountingIdentifiers()
+    factories = composition.LocalCompositionFactories(
+        repository=SQLiteRepository,
+        identity=SQLiteLocalActorSelector,
+        clock=lambda: clock,
+        identifiers=lambda: identifiers,
+    )
+    session = composition.create_local_session(
+        cwd=workspace,
+        environment=_environment(data_directory),
+        factories=factories,
+    )
+    session.up(UpRequest(project_key="ACME"))
+    task = session.create_task(TaskCreateRequest(title="Count allocations"))
+
+    clock.calls = 0
+    identifiers.reset_operation_counts()
+    task = session.update_task(
+        TaskUpdateRequest(
+            task=task.uid,
+            expected_version=task.version,
+            patch=TaskUpdatePatch(priority=70),
+        )
+    ).task
+    assert clock.calls == 1
+    assert identifiers.counts["result"] == 0
+    assert identifiers.counts["event"] == 1
+    assert identifiers.counts["request"] == 1
+
+    clock.calls = 0
+    identifiers.reset_operation_counts()
+    session.submit_human_result(
+        TaskSubmitRequest(task=task.uid, expected_version=task.version)
+    )
+    assert clock.calls == 1
+    assert identifiers.counts["result"] == 1
+    assert identifiers.counts["event"] == 2
+    assert identifiers.counts["request"] == 1
+
+    review_task = session.create_task(
+        TaskCreateRequest(
+            title="Count approval",
+            approval=ApprovalRequirement.HUMAN,
+        )
+    )
+    clock.calls = 0
+    identifiers.reset_operation_counts()
+    pending = session.submit_human_result(
+        TaskSubmitRequest(
+            task=review_task.uid,
+            expected_version=review_task.version,
+        )
+    )
+    assert clock.calls == 1
+    assert identifiers.counts["result"] == 1
+    assert identifiers.counts["event"] == 1
+    assert identifiers.counts["request"] == 1
+
+    clock.calls = 0
+    identifiers.reset_operation_counts()
+    session.approve_result(
+        TaskApproveRequest(
+            task=review_task.uid,
+            expected_version=pending.task.version,
+        )
+    )
+    assert clock.calls == 1
+    assert identifiers.counts["result"] == 0
+    assert identifiers.counts["event"] == 2
+    assert identifiers.counts["request"] == 1
 
 
 def test_two_embedded_profiles_are_isolated_across_process_restarts(

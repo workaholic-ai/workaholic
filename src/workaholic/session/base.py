@@ -14,7 +14,11 @@ if TYPE_CHECKING:
         ContextResult,
         ProjectCreationResult,
         StatusResult,
+        TaskDetails,
+        TaskEventPage,
+        TaskMutationResult,
         TaskPage,
+        TaskSubmissionResult,
     )
     from workaholic.domain import (
         Project,
@@ -27,9 +31,21 @@ if TYPE_CHECKING:
         ProjectCreateRequest,
         ProjectListRequest,
         StatusRequest,
+        TaskAddDependencyRequest,
+        TaskApproveRequest,
+        TaskBlockRequest,
+        TaskCancelRequest,
         TaskCreateRequest,
+        TaskDetailsRequest,
+        TaskEventsRequest,
         TaskGetRequest,
+        TaskListByViewRequest,
         TaskListRequest,
+        TaskRejectRequest,
+        TaskRemoveDependencyRequest,
+        TaskSubmitRequest,
+        TaskUnblockRequest,
+        TaskUpdateRequest,
         UpRequest,
     )
 
@@ -305,6 +321,159 @@ class WorkaholicSession(TaskSession, Protocol):
 
         Returns:
             Effective context after the durable binding.
+
+        """
+        ...
+
+    def update_task(self, request: TaskUpdateRequest) -> TaskMutationResult:
+        """Update editable Task fields at an expected version.
+
+        Args:
+            request: Validated optimistic Task patch intent.
+
+        Returns:
+            Committed Task and its attributable update event.
+
+        """
+        ...
+
+    def block_task(self, request: TaskBlockRequest) -> TaskMutationResult:
+        """Block one open Task at an expected version.
+
+        Args:
+            request: Validated optimistic block intent.
+
+        Returns:
+            Committed blocked Task and event.
+
+        """
+        ...
+
+    def unblock_task(self, request: TaskUnblockRequest) -> TaskMutationResult:
+        """Return one blocked Task to open.
+
+        Args:
+            request: Validated optimistic unblock intent.
+
+        Returns:
+            Committed open Task and event.
+
+        """
+        ...
+
+    def cancel_task(self, request: TaskCancelRequest) -> TaskMutationResult:
+        """Cancel one mutable Task at an expected version.
+
+        Args:
+            request: Validated optimistic cancellation intent.
+
+        Returns:
+            Committed cancelled Task and event.
+
+        """
+        ...
+
+    def add_task_dependency(
+        self,
+        request: TaskAddDependencyRequest,
+    ) -> TaskMutationResult:
+        """Add one same-Project prerequisite.
+
+        Args:
+            request: Validated optimistic dependency intent.
+
+        Returns:
+            Committed dependent Task and event.
+
+        """
+        ...
+
+    def remove_task_dependency(
+        self,
+        request: TaskRemoveDependencyRequest,
+    ) -> TaskMutationResult:
+        """Remove one same-Project prerequisite.
+
+        Args:
+            request: Validated optimistic dependency intent.
+
+        Returns:
+            Committed dependent Task and event.
+
+        """
+        ...
+
+    def submit_human_result(
+        self,
+        request: TaskSubmitRequest,
+    ) -> TaskSubmissionResult:
+        """Submit direct Human work without an Agent Attempt.
+
+        Args:
+            request: Validated optimistic Human submission intent.
+
+        Returns:
+            Committed Task, Result, and ordered events.
+
+        """
+        ...
+
+    def approve_result(self, request: TaskApproveRequest) -> TaskSubmissionResult:
+        """Approve the current pending Result.
+
+        Args:
+            request: Validated optimistic approval intent.
+
+        Returns:
+            Completed Task, approved Result, and ordered events.
+
+        """
+        ...
+
+    def reject_result(self, request: TaskRejectRequest) -> TaskSubmissionResult:
+        """Reject the current pending Result.
+
+        Args:
+            request: Validated optimistic rejection intent.
+
+        Returns:
+            Reopened Task, rejected Result, and event.
+
+        """
+        ...
+
+    def get_task_details(self, request: TaskDetailsRequest) -> TaskDetails:
+        """Return complete Task definition and derived details.
+
+        Args:
+            request: Validated Task detail selection.
+
+        Returns:
+            Complete Task, dependencies, readiness, and current Result.
+
+        """
+        ...
+
+    def list_tasks_by_view(self, request: TaskListByViewRequest) -> TaskPage:
+        """Return one deterministic Task readiness or lifecycle view.
+
+        Args:
+            request: Validated view, selection, and pagination intent.
+
+        Returns:
+            View-bound Task page with aligned readiness.
+
+        """
+        ...
+
+    def read_task_events(self, request: TaskEventsRequest) -> TaskEventPage:
+        """Return one bounded attributable TaskEvent history page.
+
+        Args:
+            request: Validated Task selection and cursor intent.
+
+        Returns:
+            Polling-safe TaskEvent page.
 
         """
         ...

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Never
 
 from workaholic.application import (
     BootstrapResult,
@@ -30,15 +30,33 @@ from workaholic.domain import (
 )
 
 if TYPE_CHECKING:
+    from workaholic.application import (
+        TaskDetails,
+        TaskEventPage,
+        TaskMutationResult,
+        TaskSubmissionResult,
+    )
     from workaholic.session import (
         ContextRequest,
         ProjectBindRequest,
         ProjectCreateRequest,
         ProjectListRequest,
         StatusRequest,
+        TaskAddDependencyRequest,
+        TaskApproveRequest,
+        TaskBlockRequest,
+        TaskCancelRequest,
         TaskCreateRequest,
+        TaskDetailsRequest,
+        TaskEventsRequest,
         TaskGetRequest,
+        TaskListByViewRequest,
         TaskListRequest,
+        TaskRejectRequest,
+        TaskRemoveDependencyRequest,
+        TaskSubmitRequest,
+        TaskUnblockRequest,
+        TaskUpdateRequest,
         UpRequest,
         WorkaholicSession,
     )
@@ -314,6 +332,83 @@ class RecordingSession:
         self.task_get_requests.append(request)
         self._raise_failure("get_task")
         return self.get_task_result
+
+    def update_task(self, _request: TaskUpdateRequest) -> TaskMutationResult:
+        """Fail an unexpected Phase 3 update in a Phase 2 CLI test."""
+        self._unexpected_phase_three("update Tasks")
+
+    def block_task(self, _request: TaskBlockRequest) -> TaskMutationResult:
+        """Fail an unexpected Phase 3 block in a Phase 2 CLI test."""
+        self._unexpected_phase_three("block Tasks")
+
+    def unblock_task(self, _request: TaskUnblockRequest) -> TaskMutationResult:
+        """Fail an unexpected Phase 3 unblock in a Phase 2 CLI test."""
+        self._unexpected_phase_three("unblock Tasks")
+
+    def cancel_task(self, _request: TaskCancelRequest) -> TaskMutationResult:
+        """Fail an unexpected Phase 3 cancellation in a Phase 2 CLI test."""
+        self._unexpected_phase_three("cancel Tasks")
+
+    def add_task_dependency(
+        self,
+        _request: TaskAddDependencyRequest,
+    ) -> TaskMutationResult:
+        """Fail an unexpected Phase 3 dependency addition."""
+        self._unexpected_phase_three("add dependencies")
+
+    def remove_task_dependency(
+        self,
+        _request: TaskRemoveDependencyRequest,
+    ) -> TaskMutationResult:
+        """Fail an unexpected Phase 3 dependency removal."""
+        self._unexpected_phase_three("remove dependencies")
+
+    def submit_human_result(
+        self,
+        _request: TaskSubmitRequest,
+    ) -> TaskSubmissionResult:
+        """Fail an unexpected Phase 3 Human submission."""
+        self._unexpected_phase_three("submit Results")
+
+    def approve_result(
+        self,
+        _request: TaskApproveRequest,
+    ) -> TaskSubmissionResult:
+        """Fail an unexpected Phase 3 Result approval."""
+        self._unexpected_phase_three("approve Results")
+
+    def reject_result(
+        self,
+        _request: TaskRejectRequest,
+    ) -> TaskSubmissionResult:
+        """Fail an unexpected Phase 3 Result rejection."""
+        self._unexpected_phase_three("reject Results")
+
+    def get_task_details(self, _request: TaskDetailsRequest) -> TaskDetails:
+        """Fail an unexpected Phase 3 Task-details query."""
+        self._unexpected_phase_three("query Task details")
+
+    def list_tasks_by_view(self, _request: TaskListByViewRequest) -> TaskPage:
+        """Fail an unexpected Phase 3 Task-view query."""
+        self._unexpected_phase_three("query Task views")
+
+    def read_task_events(self, _request: TaskEventsRequest) -> TaskEventPage:
+        """Fail an unexpected Phase 3 Task-event query."""
+        self._unexpected_phase_three("query Task events")
+
+    @staticmethod
+    def _unexpected_phase_three(operation: str) -> Never:
+        """Fail when a pre-Phase-3 CLI test crosses the newer Session surface.
+
+        Args:
+            operation: Short semantic operation description.
+
+        Raises:
+            AssertionError: Always, because the call is outside test scope.
+
+        """
+        message = f"Phase 2 CLI tests must not {operation}."
+        raise AssertionError(message)
 
     def _raise_failure(self, operation: str) -> None:
         """Raise the configured failure for one operation, if present.

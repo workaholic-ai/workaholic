@@ -22,6 +22,7 @@ from workaholic.domain import (
     InstanceId,
     ProjectId,
     RequestId,
+    ResultId,
     SubjectId,
     TaskEventId,
     TaskId,
@@ -173,6 +174,10 @@ class DeterministicIdentifierFactory:
     def new_task_id(self) -> TaskId:
         """Return the next deterministic Task identifier."""
         return TaskId(self._next("tsk"))
+
+    def new_result_id(self) -> ResultId:
+        """Return the next deterministic Result identifier."""
+        return ResultId(self._next("res"))
 
     def new_event_id(self) -> TaskEventId:
         """Return the next deterministic TaskEvent identifier."""

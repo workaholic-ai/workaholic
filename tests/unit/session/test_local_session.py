@@ -12,6 +12,7 @@ import pytest
 from pydantic import ValidationError
 
 import workaholic.session as session_package
+from tests.unit.session.fakes import UnavailablePhaseThreeServices
 from workaholic.application import (
     ApplicationError,
     ApplicationErrorCode,
@@ -22,14 +23,19 @@ from workaholic.application import (
     GetLocalStatus,
     GetProjectByKey,
     GetTask,
+    GetTaskDetails,
     IdempotencyConflictError,
     ListInstanceTasks,
     ListProjects,
     ListTasks,
+    ListTasksByView,
     PermissionDeniedError,
     ProfileNotFoundError,
     ProjectCreationResult,
+    ReadTaskEvents,
     StatusResult,
+    TaskDetails,
+    TaskEventPage,
     TaskPage,
 )
 from workaholic.domain import (
@@ -403,6 +409,18 @@ class _Queries:
             raise self.task_error
         return cast("Task", self.task_result)
 
+    def get_task_details(self, _command: GetTaskDetails) -> TaskDetails:
+        """Fail if a pre-Phase 3 test requests complete Task details."""
+        pytest.fail("This focused Session test must not request Task details")
+
+    def list_tasks_by_view(self, _command: ListTasksByView) -> TaskPage:
+        """Fail if a pre-Phase 3 test requests a Task view."""
+        pytest.fail("This focused Session test must not request a Task view")
+
+    def read_task_events_after(self, _command: ReadTaskEvents) -> TaskEventPage:
+        """Fail if a pre-Phase 3 test requests TaskEvent history."""
+        pytest.fail("This focused Session test must not request Task events")
+
 
 class _Tasks:
     """Recording Task application fake."""
@@ -512,6 +530,9 @@ def _session(
         projects=_Projects(),
         queries=queries,
         tasks=tasks,
+        lifecycle=UnavailablePhaseThreeServices(),
+        dependencies=UnavailablePhaseThreeServices(),
+        results=UnavailablePhaseThreeServices(),
     )
     return LocalSession(
         context=context,
@@ -898,6 +919,9 @@ def test_constructor_runtime_validates_every_dependency(
         projects=_Projects(),
         queries=queries,
         tasks=tasks,
+        lifecycle=UnavailablePhaseThreeServices(),
+        dependencies=UnavailablePhaseThreeServices(),
+        results=UnavailablePhaseThreeServices(),
     )
     dependencies: list[object] = [context, _Profiles(), _Runtimes(runtime)]
     dependencies[dependency_index] = object()
@@ -1043,6 +1067,9 @@ def test_invalid_context_gateway_output_is_context_invalid() -> None:
         projects=_Projects(),
         queries=queries,
         tasks=tasks,
+        lifecycle=UnavailablePhaseThreeServices(),
+        dependencies=UnavailablePhaseThreeServices(),
+        results=UnavailablePhaseThreeServices(),
     )
     session = LocalSession(
         context=cast("WorkspaceContextGateway", _InvalidContext()),

@@ -16,6 +16,7 @@ from pydantic import (
     model_validator,
 )
 
+from workaholic.application import TaskListView, TaskResultInput, TaskUpdatePatch
 from workaholic.domain import (
     ACCEPTANCE_CRITERIA_MAX_ITEMS,
     CONTEXT_REFERENCES_MAX_ITEMS,
@@ -263,6 +264,164 @@ class TaskGetRequest(_SessionRequest):
     """Request one explicit- or discovered-Project Task by UID or Human key."""
 
     task: _TaskSelector
+    project: _ProjectKeyText | None = None
+
+
+class _ExistingTaskRequest(_SessionRequest):
+    """Shared optimistic intent for one existing selected-Project Task."""
+
+    task: _TaskSelector
+    expected_version: int = Field(ge=1)
+    idempotency_key: _IdempotencyKey | None = None
+    project: _ProjectKeyText | None = None
+
+
+class TaskUpdateRequest(_ExistingTaskRequest):
+    """Request an optimistic replacement of editable Task definition fields."""
+
+    patch: TaskUpdatePatch
+
+    @field_validator("patch", mode="before")
+    @classmethod
+    def _validate_patch(cls, value: object) -> TaskUpdatePatch:
+        """Revalidate a closed nonempty Task patch at the Session boundary.
+
+        Args:
+            value: Candidate TaskUpdatePatch or its closed mapping form.
+
+        Returns:
+            Independently validated immutable application patch.
+
+        """
+        if isinstance(value, TaskUpdatePatch):
+            value = value.model_dump(exclude_unset=True)
+        return TaskUpdatePatch.model_validate(value)
+
+
+class TaskBlockRequest(_ExistingTaskRequest):
+    """Request an optimistic transition from open to blocked."""
+
+    reason: str
+
+
+class TaskUnblockRequest(_ExistingTaskRequest):
+    """Request an optimistic transition from blocked to open."""
+
+
+class TaskCancelRequest(_ExistingTaskRequest):
+    """Request optimistic cancellation with an optional Human reason."""
+
+    reason: str | None = None
+
+
+class TaskAddDependencyRequest(_ExistingTaskRequest):
+    """Request one same-Project prerequisite addition."""
+
+    prerequisite: _TaskSelector
+
+
+class TaskRemoveDependencyRequest(_ExistingTaskRequest):
+    """Request one same-Project prerequisite removal."""
+
+    prerequisite: _TaskSelector
+
+
+class TaskSubmitRequest(_ExistingTaskRequest):
+    """Request direct Human Result submission without an Agent Attempt."""
+
+    comment: str | None = None
+    result: TaskResultInput = Field(default_factory=TaskResultInput)
+
+    @field_validator("result", mode="before")
+    @classmethod
+    def _validate_result(cls, value: object) -> TaskResultInput:
+        """Revalidate caller-controlled Result content without identities.
+
+        Args:
+            value: Candidate TaskResultInput or its closed mapping form.
+
+        Returns:
+            Independently validated immutable Result content.
+
+        """
+        if isinstance(value, TaskResultInput):
+            value = value.model_dump()
+        return TaskResultInput.model_validate(value)
+
+
+class TaskApproveRequest(_ExistingTaskRequest):
+    """Request optimistic Human approval of the current pending Result."""
+
+    comment: str | None = None
+
+
+class TaskRejectRequest(_ExistingTaskRequest):
+    """Request optimistic Human rejection of the current pending Result."""
+
+    reason: str
+
+
+class TaskDetailsRequest(_SessionRequest):
+    """Request complete Task definition, readiness, dependencies, and Result."""
+
+    task: _TaskSelector
+    project: _ProjectKeyText | None = None
+
+
+class TaskListByViewRequest(_SessionRequest):
+    """Request one deterministic Project- or Instance-scoped Task view page."""
+
+    view: TaskListView = TaskListView.ALL
+    cursor: _Cursor | None = None
+    limit: int = Field(default=100, ge=1, le=500)
+    project: _ProjectKeyText | None = None
+    all_projects: bool = False
+
+    @field_validator("view", mode="before")
+    @classmethod
+    def _validate_view(cls, value: object) -> TaskListView:
+        """Validate a typed or serialized closed Task view.
+
+        Args:
+            value: Candidate TaskListView or exact serialized value.
+
+        Returns:
+            Typed supported Task view.
+
+        Raises:
+            ValueError: If the value is not a supported string or enum.
+
+        """
+        if isinstance(value, TaskListView):
+            return value
+        if not isinstance(value, str):
+            message = "Task list view must be a supported string."
+            raise ValueError(message)  # noqa: TRY004 - Pydantic boundary.
+        return TaskListView(value)
+
+    @model_validator(mode="after")
+    def _validate_selection(self) -> TaskListByViewRequest:
+        """Reject simultaneous one-Project and all-Project selection.
+
+        Returns:
+            Validated mutually exclusive selection.
+
+        Raises:
+            ValueError: If both selection modes are requested.
+
+        """
+        if self.project is not None and self.all_projects:
+            message = "Project and all-project selection are mutually exclusive."
+            raise ValueError(message)
+        return self
+
+
+class TaskEventsRequest(_SessionRequest):
+    """Request one bounded TaskEvent snapshot after an Instance cursor."""
+
+    task: _TaskSelector
+    after: int = Field(default=0, ge=0)
+    limit: int = Field(default=100, ge=1, le=500)
     project: _ProjectKeyText | None = None
 
 

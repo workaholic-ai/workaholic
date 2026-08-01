@@ -23,8 +23,12 @@ from workaholic.application import (
     ProjectRepository,
     QueryApplication,
     QueryRepository,
+    ResultIdentifierFactory,
     TaskApplication,
-    TaskCreationRepository,
+    TaskDependencyApplication,
+    TaskLifecycleApplication,
+    TaskRepository,
+    TaskResultApplication,
 )
 from workaholic.cli.main import create_app
 from workaholic.context import (
@@ -74,11 +78,19 @@ type ConfigPathResolver = Callable[[Mapping[str, str]], LocalConfigPaths]
 class _ComposedRepository(
     BootstrapRepository,
     ProjectRepository,
-    TaskCreationRepository,
+    TaskRepository,
     QueryRepository,
     Protocol,
 ):
     """Expose only operations consumed by the current local composition."""
+
+
+class _ComposedIdentifierFactory(
+    IdentifierFactory,
+    ResultIdentifierFactory,
+    Protocol,
+):
+    """Generate every identity owned by the embedded application services."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -252,7 +264,7 @@ class LocalCompositionFactories:
     repository: Callable[[Path], _ComposedRepository]
     identity: Callable[[Path], EmbeddedIdentitySelector]
     clock: Callable[[], Clock]
-    identifiers: Callable[[], IdentifierFactory]
+    identifiers: Callable[[], _ComposedIdentifierFactory]
 
     def __post_init__(self) -> None:
         """Validate the explicit factory boundary at composition time."""
@@ -298,6 +310,13 @@ class _ProfileRuntimeOpener:
                 projects=ProjectApplication(repository, clock, identifiers),
                 queries=QueryApplication(repository),
                 tasks=TaskApplication(repository, clock, identifiers),
+                lifecycle=TaskLifecycleApplication(repository, clock, identifiers),
+                dependencies=TaskDependencyApplication(
+                    repository,
+                    clock,
+                    identifiers,
+                ),
+                results=TaskResultApplication(repository, clock, identifiers),
             )
         except ApplicationError:
             raise
