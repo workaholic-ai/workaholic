@@ -21,13 +21,13 @@ from workaholic.application.results import StatusResult, TaskPage
 from workaholic.domain import Project, Task, TaskId
 
 if TYPE_CHECKING:
-    from workaholic.application.ports import QueryRepository
+    from workaholic.application.ports import CoreQueryRepository
 
 
 class QueryApplication:
     """Validate query boundaries and delegate read-only repository operations."""
 
-    def __init__(self, repository: QueryRepository) -> None:
+    def __init__(self, repository: CoreQueryRepository) -> None:
         """Initialize the query service with one semantic repository.
 
         Args:

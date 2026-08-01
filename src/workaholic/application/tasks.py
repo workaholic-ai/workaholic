@@ -12,7 +12,7 @@ if TYPE_CHECKING:
     from workaholic.application.ports import (
         Clock,
         IdentifierFactory,
-        TaskRepository,
+        TaskCreationRepository,
     )
 
 
@@ -21,7 +21,7 @@ class TaskApplication:
 
     def __init__(
         self,
-        repository: TaskRepository,
+        repository: TaskCreationRepository,
         clock: Clock,
         identifiers: IdentifierFactory,
     ) -> None:

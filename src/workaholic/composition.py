@@ -14,14 +14,17 @@ from workaholic.application import (
     ApplicationError,
     ApplicationErrorCode,
     BootstrapApplication,
+    BootstrapRepository,
     Clock,
+    CoreQueryRepository,
     IdentifierFactory,
     ProfileInvalidError,
     ProfileNotFoundError,
     ProjectApplication,
+    ProjectRepository,
     QueryApplication,
     TaskApplication,
-    WorkaholicRepository,
+    TaskCreationRepository,
 )
 from workaholic.cli.main import create_app
 from workaholic.context import (
@@ -65,6 +68,16 @@ _IDENTIFIER_PREFIXES: Final = frozenset(
 )
 
 type ConfigPathResolver = Callable[[Mapping[str, str]], LocalConfigPaths]
+
+
+class _ComposedRepository(
+    BootstrapRepository,
+    ProjectRepository,
+    TaskCreationRepository,
+    CoreQueryRepository,
+    Protocol,
+):
+    """Expose only operations consumed by the current local composition."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -231,7 +244,7 @@ class _Uuid7IdentifierFactory:
 class LocalCompositionFactories:
     """Injectable constructors for one profile-selected embedded runtime."""
 
-    repository: Callable[[Path], WorkaholicRepository]
+    repository: Callable[[Path], _ComposedRepository]
     identity: Callable[[Path], EmbeddedIdentitySelector]
     clock: Callable[[], Clock]
     identifiers: Callable[[], IdentifierFactory]
