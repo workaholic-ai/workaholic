@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import hashlib
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Final, cast
 
 from workaholic.application import (
@@ -12,8 +12,11 @@ from workaholic.application import (
     InvalidInputError,
     InvalidTransitionError,
     PermissionDeniedError,
+    TaskBlockMutation,
+    TaskCancelMutation,
     TaskMutationResult,
     TaskNotFoundError,
+    TaskUnblockMutation,
     TaskUpdateMutation,
     VersionConflictError,
 )
@@ -68,8 +71,42 @@ if TYPE_CHECKING:
         JsonValue,
     )
 
-_UPDATE_TASK_OPERATION: Final = "task.update"
 _MUTATION_OUTCOME_KEYS: Final = frozenset(("event", "task"))
+
+type _LifecycleMutation = (
+    TaskUpdateMutation | TaskBlockMutation | TaskUnblockMutation | TaskCancelMutation
+)
+
+
+@dataclass(frozen=True, slots=True)
+class _MutationPlan:
+    """Closed semantic constants for one optimistic lifecycle operation."""
+
+    operation: str
+    transition: TaskTransition
+    event_type: TaskEventType
+
+
+_UPDATE_PLAN: Final = _MutationPlan(
+    operation="task.update",
+    transition=TaskTransition.UPDATE,
+    event_type=TaskEventType.TASK_UPDATED,
+)
+_BLOCK_PLAN: Final = _MutationPlan(
+    operation="task.block",
+    transition=TaskTransition.BLOCK,
+    event_type=TaskEventType.TASK_BLOCKED,
+)
+_UNBLOCK_PLAN: Final = _MutationPlan(
+    operation="task.unblock",
+    transition=TaskTransition.UNBLOCK,
+    event_type=TaskEventType.TASK_UNBLOCKED,
+)
+_CANCEL_PLAN: Final = _MutationPlan(
+    operation="task.cancel",
+    transition=TaskTransition.CANCEL,
+    event_type=TaskEventType.TASK_CANCELLED,
+)
 
 
 def update_task_if_version(
@@ -98,36 +135,136 @@ def update_task_if_version(
     candidate: object = mutation
     if not isinstance(candidate, TaskUpdateMutation):
         raise StorageUnavailableError
-    request_fingerprint = _update_fingerprint(candidate)
+    return _execute_mutation(database_path, mutation=candidate, plan=_UPDATE_PLAN)
+
+
+def block_task(
+    database_path: Path,
+    mutation: TaskBlockMutation,
+) -> TaskMutationResult:
+    """Atomically move one open Task to blocked.
+
+    Args:
+        database_path: Absolute path to the validated SQLite store.
+        mutation: Validated optimistic blocking mutation.
+
+    Returns:
+        The committed blocked Task and its attributable event.
+
+    Raises:
+        ApplicationError: If authorization, version, transition, or replay fails.
+        StorageUnavailableError: If storage violates its contract.
+
+    """
+    candidate: object = mutation
+    if not isinstance(candidate, TaskBlockMutation):
+        raise StorageUnavailableError
+    return _execute_mutation(database_path, mutation=candidate, plan=_BLOCK_PLAN)
+
+
+def unblock_task(
+    database_path: Path,
+    mutation: TaskUnblockMutation,
+) -> TaskMutationResult:
+    """Atomically return one blocked Task to open.
+
+    Args:
+        database_path: Absolute path to the validated SQLite store.
+        mutation: Validated optimistic unblocking mutation.
+
+    Returns:
+        The committed open Task and its attributable event.
+
+    Raises:
+        ApplicationError: If authorization, version, transition, or replay fails.
+        StorageUnavailableError: If storage violates its contract.
+
+    """
+    candidate: object = mutation
+    if not isinstance(candidate, TaskUnblockMutation):
+        raise StorageUnavailableError
+    return _execute_mutation(database_path, mutation=candidate, plan=_UNBLOCK_PLAN)
+
+
+def cancel_task(
+    database_path: Path,
+    mutation: TaskCancelMutation,
+) -> TaskMutationResult:
+    """Atomically cancel one mutable Task.
+
+    Args:
+        database_path: Absolute path to the validated SQLite store.
+        mutation: Validated optimistic cancellation mutation.
+
+    Returns:
+        The committed cancelled Task and its attributable event.
+
+    Raises:
+        ApplicationError: If authorization, version, transition, or replay fails.
+        StorageUnavailableError: If storage violates its contract.
+
+    """
+    candidate: object = mutation
+    if not isinstance(candidate, TaskCancelMutation):
+        raise StorageUnavailableError
+    return _execute_mutation(database_path, mutation=candidate, plan=_CANCEL_PLAN)
+
+
+def _execute_mutation(
+    database_path: Path,
+    *,
+    mutation: _LifecycleMutation,
+    plan: _MutationPlan,
+) -> TaskMutationResult:
+    """Execute one lifecycle mutation through the shared optimistic core.
+
+    Args:
+        database_path: Absolute path to the validated SQLite store.
+        mutation: Validated lifecycle mutation.
+        plan: Closed operation, transition, and event semantics.
+
+    Returns:
+        The committed or idempotently replayed mutation result.
+
+    Raises:
+        ApplicationError: If a stable semantic operation fails.
+        StorageUnavailableError: If persisted state violates its contract.
+
+    """
+    request_fingerprint = _mutation_fingerprint(mutation)
     try:
         with open_write_transaction(database_path) as connection:
             current = _load_authorized_task(
                 connection,
-                task_uid=candidate.task_uid,
-                project_id=str(candidate.project_id),
-                actor_subject_id=str(candidate.actor_subject_id),
+                task_uid=mutation.task_uid,
+                project_id=str(mutation.project_id),
+                actor_subject_id=str(mutation.actor_subject_id),
             )
             replay = _read_idempotent_mutation(
                 connection,
-                operation=_UPDATE_TASK_OPERATION,
-                actor_subject_id=str(candidate.actor_subject_id),
-                caller_key=candidate.idempotency_key,
+                operation=plan.operation,
+                actor_subject_id=str(mutation.actor_subject_id),
+                caller_key=mutation.idempotency_key,
                 request_fingerprint=request_fingerprint,
             )
             if replay is not None:
-                _require_matching_update(replay, mutation=candidate)
+                _require_matching_mutation(replay, mutation=mutation, plan=plan)
                 return replay
-            if current.version != candidate.expected_version:
+            if current.version != mutation.expected_version:
                 raise VersionConflictError
             try:
-                transition_task_state(
+                next_state = transition_task_state(
                     current.state,
-                    TaskTransition.UPDATE,
+                    plan.transition,
                     approval=current.approval,
                 )
             except DomainValidationError as error:
                 raise InvalidTransitionError from error
-            updated = _apply_update(current, mutation=candidate)
+            updated = _apply_mutation(
+                current,
+                mutation=mutation,
+                next_state=next_state,
+            )
             _write_task_if_version(
                 connection,
                 previous=current,
@@ -135,23 +272,20 @@ def update_task_if_version(
             )
             event = _insert_task_event(
                 connection,
-                mutation=candidate,
+                mutation=mutation,
                 task=updated,
-                event_type=TaskEventType.TASK_UPDATED,
-                payload={
-                    "changes": tuple(sorted(candidate.patch.model_fields_set)),
-                    "version": updated.version,
-                },
+                event_type=plan.event_type,
+                payload=_event_payload(mutation, task=updated),
             )
             result = TaskMutationResult(task=updated, events=(event.event,))
-            _require_matching_update(result, mutation=candidate)
+            _require_matching_mutation(result, mutation=mutation, plan=plan)
             _record_idempotent_mutation(
                 connection,
-                operation=_UPDATE_TASK_OPERATION,
-                actor_subject_id=str(candidate.actor_subject_id),
-                caller_key=candidate.idempotency_key,
+                operation=plan.operation,
+                actor_subject_id=str(mutation.actor_subject_id),
+                caller_key=mutation.idempotency_key,
                 request_fingerprint=request_fingerprint,
-                occurred_at=candidate.occurred_at,
+                occurred_at=mutation.occurred_at,
                 result=result,
                 event_record=event,
             )
@@ -164,33 +298,85 @@ def update_task_if_version(
         raise StorageUnavailableError from error
 
 
-def _apply_update(current: Task, *, mutation: TaskUpdateMutation) -> Task:
-    """Apply one nonempty semantic field patch to a validated Task.
+def _apply_mutation(
+    current: Task,
+    *,
+    mutation: _LifecycleMutation,
+    next_state: TaskState,
+) -> Task:
+    """Apply one validated lifecycle operation to an authoritative Task.
 
     Args:
         current: Authoritative Task snapshot locked by the transaction.
-        mutation: Validated update mutation.
+        mutation: Validated lifecycle mutation.
+        next_state: Domain-authorized post-operation state.
 
     Returns:
         Updated Task with one version increment and authoritative timestamp.
 
     Raises:
-        InvalidInputError: If every supplied value equals current state.
+        InvalidInputError: If an update patch changes no definition field.
         StorageUnavailableError: If the authoritative timestamp is inconsistent.
 
     """
-    changes = {
-        field_name: getattr(mutation.patch, field_name)
-        for field_name in mutation.patch.model_fields_set
-    }
-    if all(getattr(current, name) == value for name, value in changes.items()):
-        raise InvalidInputError
+    if isinstance(mutation, TaskUpdateMutation):
+        changes = {
+            field_name: getattr(mutation.patch, field_name)
+            for field_name in mutation.patch.model_fields_set
+        }
+        if all(getattr(current, name) == value for name, value in changes.items()):
+            raise InvalidInputError
     if mutation.occurred_at < current.updated_at:
         raise StorageUnavailableError
     try:
+        if isinstance(mutation, TaskUpdateMutation):
+            fields = mutation.patch.model_fields_set
+            patch = mutation.patch
+            return replace(
+                current,
+                title=(
+                    cast("str", patch.title) if "title" in fields else current.title
+                ),
+                objective=(
+                    cast("str", patch.objective)
+                    if "objective" in fields
+                    else current.objective
+                ),
+                priority=(
+                    cast("int", patch.priority)
+                    if "priority" in fields
+                    else current.priority
+                ),
+                available_at=(
+                    patch.available_at
+                    if "available_at" in fields
+                    else current.available_at
+                ),
+                approval=(
+                    cast("ApprovalRequirement", patch.approval)
+                    if "approval" in fields
+                    else current.approval
+                ),
+                acceptance=(
+                    cast("tuple[AcceptanceCriterion, ...]", patch.acceptance)
+                    if "acceptance" in fields
+                    else current.acceptance
+                ),
+                context=(
+                    cast("tuple[ContextReference, ...]", patch.context)
+                    if "context" in fields
+                    else current.context
+                ),
+                version=current.version + 1,
+                updated_at=mutation.occurred_at,
+            )
+        blocking_reason = (
+            mutation.reason if isinstance(mutation, TaskBlockMutation) else None
+        )
         return replace(
             current,
-            **changes,
+            state=next_state,
+            blocking_reason=blocking_reason,
             version=current.version + 1,
             updated_at=mutation.occurred_at,
         )
@@ -198,11 +384,11 @@ def _apply_update(current: Task, *, mutation: TaskUpdateMutation) -> Task:
         raise StorageUnavailableError from error
 
 
-def _update_fingerprint(mutation: TaskUpdateMutation) -> str:
-    """Hash exact caller-controlled update semantics, including omission.
+def _mutation_fingerprint(mutation: _LifecycleMutation) -> str:
+    """Hash exact caller-controlled lifecycle semantics.
 
     Args:
-        mutation: Validated update mutation.
+        mutation: Validated lifecycle mutation.
 
     Returns:
         Lowercase SHA-256 digest of canonical semantic input.
@@ -212,12 +398,54 @@ def _update_fingerprint(mutation: TaskUpdateMutation) -> str:
         {
             "actor_subject_id": str(mutation.actor_subject_id),
             "expected_version": mutation.expected_version,
-            "patch": _patch_mapping(mutation),
+            "input": _mutation_input_mapping(mutation),
             "project_id": str(mutation.project_id),
             "task_uid": str(mutation.task_uid),
         }
     ).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()
+
+
+def _mutation_input_mapping(mutation: _LifecycleMutation) -> dict[str, object]:
+    """Serialize exact operation-specific caller input for fingerprinting.
+
+    Args:
+        mutation: Validated lifecycle mutation.
+
+    Returns:
+        Canonical JSON-compatible operation input.
+
+    """
+    if isinstance(mutation, TaskUpdateMutation):
+        return _patch_mapping(mutation)
+    if isinstance(mutation, (TaskBlockMutation, TaskCancelMutation)):
+        return {"reason": mutation.reason}
+    return {}
+
+
+def _event_payload(
+    mutation: _LifecycleMutation,
+    *,
+    task: Task,
+) -> dict[str, JsonValue]:
+    """Build one bounded operation-specific lifecycle event payload.
+
+    Args:
+        mutation: Validated lifecycle mutation.
+        task: Committed post-operation Task snapshot.
+
+    Returns:
+        Stable event metadata without infrastructure details.
+
+    """
+    if isinstance(mutation, TaskUpdateMutation):
+        return {
+            "changes": tuple(sorted(mutation.patch.model_fields_set)),
+            "version": task.version,
+        }
+    if isinstance(mutation, (TaskBlockMutation, TaskCancelMutation)):
+        return {"reason": mutation.reason, "version": task.version}
+    return {"version": task.version}
 
 
 def _patch_mapping(mutation: TaskUpdateMutation) -> dict[str, object]:
@@ -397,7 +625,7 @@ def _write_task_if_version(
 def _insert_task_event(
     connection: sqlite3.Connection,
     *,
-    mutation: TaskUpdateMutation,
+    mutation: _LifecycleMutation,
     task: Task,
     event_type: TaskEventType,
     payload: Mapping[str, JsonValue],
@@ -545,27 +773,40 @@ def _parse_mutation_outcome(value: str) -> tuple[TaskMutationResult, TaskEventRe
     return result, event_record
 
 
-def _require_matching_update(
+def _require_matching_mutation(
     result: TaskMutationResult,
     *,
-    mutation: TaskUpdateMutation,
+    mutation: _LifecycleMutation,
+    plan: _MutationPlan,
 ) -> None:
-    """Validate one fresh or replayed update result against its mutation."""
+    """Validate one fresh or replayed lifecycle result against its mutation."""
     task = result.task
     event = result.events[0]
-    expected_changes = tuple(sorted(mutation.patch.model_fields_set))
-    if (
+    invalid_common = (
         task.uid != mutation.task_uid
         or task.project_id != mutation.project_id
         or task.version != mutation.expected_version + 1
-        or task.state not in (TaskState.OPEN, TaskState.BLOCKED)
-        or event.event_type is not TaskEventType.TASK_UPDATED
+        or event.event_type is not plan.event_type
         or event.actor_subject_id != mutation.actor_subject_id
         or event.occurred_at != task.updated_at
-        or dict(event.payload) != {"changes": expected_changes, "version": task.version}
-        or any(
-            getattr(task, name) != getattr(mutation.patch, name)
+        or dict(event.payload) != _event_payload(mutation, task=task)
+    )
+    if invalid_common:
+        raise StorageUnavailableError
+    if isinstance(mutation, TaskUpdateMutation):
+        valid_outcome = task.state in (TaskState.OPEN, TaskState.BLOCKED) and all(
+            getattr(task, name) == getattr(mutation.patch, name)
             for name in mutation.patch.model_fields_set
         )
-    ):
+    elif isinstance(mutation, TaskBlockMutation):
+        valid_outcome = (
+            task.state is TaskState.BLOCKED and task.blocking_reason == mutation.reason
+        )
+    elif isinstance(mutation, TaskUnblockMutation):
+        valid_outcome = task.state is TaskState.OPEN and task.blocking_reason is None
+    else:
+        valid_outcome = (
+            task.state is TaskState.CANCELLED and task.blocking_reason is None
+        )
+    if not valid_outcome:
         raise StorageUnavailableError

@@ -11,11 +11,17 @@ import pytest
 from workaholic.application import (
     ApplicationError,
     ApplicationErrorCode,
+    BlockTaskInput,
+    CancelTaskInput,
     GetTask,
+    TaskBlockMutation,
+    TaskCancelMutation,
     TaskLifecycleApplication,
     TaskMutationResult,
+    TaskUnblockMutation,
     TaskUpdateMutation,
     TaskUpdatePatch,
+    UnblockTaskInput,
     UpdateTaskInput,
     VersionConflictError,
 )
@@ -36,6 +42,7 @@ from workaholic.domain import (
 
 if TYPE_CHECKING:
     from workaholic.application.ports import Clock, IdentifierFactory
+    from workaholic.domain import JsonValue
 
 _NOW = datetime(2026, 8, 1, 9, 30, 0, 123456, tzinfo=UTC)
 _CREATED_AT = _NOW - timedelta(days=1)
@@ -121,6 +128,69 @@ def _result(  # noqa: PLR0913 - explicit mismatch controls keep cases readable.
     return TaskMutationResult(task=task, events=(event,))
 
 
+def _transition_result(  # noqa: PLR0913 - explicit mismatch controls aid tests.
+    mutation_type: type[TaskBlockMutation | TaskUnblockMutation | TaskCancelMutation],
+    *,
+    reason: str | None = None,
+    occurred_at: datetime = _NOW,
+    event_id: TaskEventId = _EVENT_ID,
+    request_id: RequestId = _REQUEST_ID,
+    actor_subject_id: SubjectId = _ACTOR_ID,
+    task_version: int = 2,
+) -> TaskMutationResult:
+    """Build one internally valid explicit transition result.
+
+    Args:
+        mutation_type: Mutation class identifying transition semantics.
+        reason: Blocking or optional cancellation reason.
+        occurred_at: Authoritative transition timestamp.
+        event_id: Event identity returned by persistence.
+        request_id: Request identity returned by persistence.
+        actor_subject_id: Event actor identity.
+        task_version: Returned optimistic Task version.
+
+    Returns:
+        Valid transition result matching the selected operation.
+
+    """
+    if mutation_type is TaskBlockMutation:
+        state = TaskState.BLOCKED
+        blocking_reason = cast("str", reason)
+        event_type = TaskEventType.TASK_BLOCKED
+        payload: dict[str, JsonValue] = {
+            "reason": reason,
+            "version": task_version,
+        }
+    elif mutation_type is TaskUnblockMutation:
+        state = TaskState.OPEN
+        blocking_reason = None
+        event_type = TaskEventType.TASK_UNBLOCKED
+        payload = {"version": task_version}
+    else:
+        state = TaskState.CANCELLED
+        blocking_reason = None
+        event_type = TaskEventType.TASK_CANCELLED
+        payload = {"reason": reason, "version": task_version}
+    task = _task(
+        state=state,
+        blocking_reason=blocking_reason,
+        version=task_version,
+        updated_at=occurred_at,
+    )
+    event = TaskEvent(
+        id=event_id,
+        cursor=2,
+        task_uid=task.uid,
+        project_id=task.project_id,
+        actor_subject_id=actor_subject_id,
+        request_id=request_id,
+        event_type=event_type,
+        occurred_at=occurred_at,
+        payload=payload,
+    )
+    return TaskMutationResult(task=task, events=(event,))
+
+
 class _Clock:
     """Deterministic lifecycle-test clock."""
 
@@ -164,6 +234,9 @@ class _RecordingRepository:
         self.error = error
         self.queries: list[GetTask] = []
         self.mutations: list[TaskUpdateMutation] = []
+        self.block_mutations: list[TaskBlockMutation] = []
+        self.unblock_mutations: list[TaskUnblockMutation] = []
+        self.cancel_mutations: list[TaskCancelMutation] = []
 
     def get_task(self, command: GetTask) -> Task:
         """Record a Human-key lookup and return its configured value."""
@@ -176,6 +249,27 @@ class _RecordingRepository:
     ) -> TaskMutationResult:
         """Record a mutation and return or raise configured behavior."""
         self.mutations.append(mutation)
+        if self.error is not None:
+            raise self.error
+        return cast("TaskMutationResult", self.result)
+
+    def block_task(self, mutation: TaskBlockMutation) -> TaskMutationResult:
+        """Record a blocking mutation and return configured behavior."""
+        self.block_mutations.append(mutation)
+        return self._transition_result()
+
+    def unblock_task(self, mutation: TaskUnblockMutation) -> TaskMutationResult:
+        """Record an unblocking mutation and return configured behavior."""
+        self.unblock_mutations.append(mutation)
+        return self._transition_result()
+
+    def cancel_task(self, mutation: TaskCancelMutation) -> TaskMutationResult:
+        """Record a cancellation mutation and return configured behavior."""
+        self.cancel_mutations.append(mutation)
+        return self._transition_result()
+
+    def _transition_result(self) -> TaskMutationResult:
+        """Return or raise the configured lifecycle transition behavior."""
         if self.error is not None:
             raise self.error
         return cast("TaskMutationResult", self.result)
@@ -284,6 +378,205 @@ def test_update_accepts_matching_historic_idempotency_replay() -> None:
     )
 
     assert actual is replay
+
+
+def test_block_builds_exact_mutation_and_validates_blocked_result() -> None:
+    """Blocking forwards its required reason and generated attribution exactly."""
+    expected = _transition_result(TaskBlockMutation, reason="Waiting for input.")
+    repository = _RecordingRepository(expected)
+
+    actual = _application(repository).block(
+        BlockTaskInput(
+            project_id=ProjectId("prj_acme"),
+            subject_id=SubjectId("sub_local"),
+            task=TaskId("tsk_first"),
+            expected_version=1,
+            reason="Waiting for input.",
+            idempotency_key="block-1",
+        )
+    )
+
+    assert actual is expected
+    assert repository.block_mutations == [
+        TaskBlockMutation(
+            task_uid=TaskId("tsk_first"),
+            project_id=ProjectId("prj_acme"),
+            actor_subject_id=SubjectId("sub_local"),
+            event_id=TaskEventId("evt_update"),
+            request_id=RequestId("req_update"),
+            occurred_at=_NOW,
+            expected_version=1,
+            reason="Waiting for input.",
+            idempotency_key="block-1",
+        )
+    ]
+    assert repository.queries == []
+
+
+def test_unblock_resolves_human_key_and_builds_exact_mutation() -> None:
+    """Unblocking resolves one Human key without accepting a state setter."""
+    expected = _transition_result(TaskUnblockMutation)
+    repository = _RecordingRepository(expected)
+
+    actual = _application(repository).unblock(
+        UnblockTaskInput(
+            project_id=ProjectId("prj_acme"),
+            subject_id=SubjectId("sub_local"),
+            task="ACME-1",
+            expected_version=1,
+        )
+    )
+
+    assert actual is expected
+    assert repository.queries == [
+        GetTask(
+            project_id=ProjectId("prj_acme"),
+            subject_id=SubjectId("sub_local"),
+            task="ACME-1",
+        )
+    ]
+    assert repository.unblock_mutations == [
+        TaskUnblockMutation(
+            task_uid=TaskId("tsk_first"),
+            project_id=ProjectId("prj_acme"),
+            actor_subject_id=SubjectId("sub_local"),
+            event_id=TaskEventId("evt_update"),
+            request_id=RequestId("req_update"),
+            occurred_at=_NOW,
+            expected_version=1,
+        )
+    ]
+
+
+@pytest.mark.parametrize("reason", [None, "No longer required."])
+def test_cancel_builds_exact_mutation_with_optional_reason(
+    reason: str | None,
+) -> None:
+    """Cancellation preserves explicit nullable reason semantics."""
+    expected = _transition_result(TaskCancelMutation, reason=reason)
+    repository = _RecordingRepository(expected)
+
+    actual = _application(repository).cancel(
+        CancelTaskInput(
+            project_id=ProjectId("prj_acme"),
+            subject_id=SubjectId("sub_local"),
+            task=TaskId("tsk_first"),
+            expected_version=1,
+            reason=reason,
+            idempotency_key="cancel-1",
+        )
+    )
+
+    assert actual is expected
+    assert repository.cancel_mutations == [
+        TaskCancelMutation(
+            task_uid=TaskId("tsk_first"),
+            project_id=ProjectId("prj_acme"),
+            actor_subject_id=SubjectId("sub_local"),
+            event_id=TaskEventId("evt_update"),
+            request_id=RequestId("req_update"),
+            occurred_at=_NOW,
+            expected_version=1,
+            reason=reason,
+            idempotency_key="cancel-1",
+        )
+    ]
+
+
+def test_transition_accepts_matching_historic_idempotency_replay() -> None:
+    """A transition retry may return the original event, request, and timestamp."""
+    historic = _NOW - timedelta(hours=1)
+    replay = _transition_result(
+        TaskCancelMutation,
+        reason="No longer required.",
+        occurred_at=historic,
+        event_id=TaskEventId("evt_historic"),
+        request_id=RequestId("req_historic"),
+    )
+    repository = _RecordingRepository(replay)
+
+    actual = _application(repository).cancel(
+        CancelTaskInput(
+            project_id=ProjectId("prj_acme"),
+            subject_id=SubjectId("sub_local"),
+            task=TaskId("tsk_first"),
+            expected_version=1,
+            reason="No longer required.",
+            idempotency_key="cancel-1",
+        )
+    )
+
+    assert actual is replay
+
+
+def test_transition_methods_reject_runtime_command_bypasses() -> None:
+    """Each semantic operation requires its own validated intent model."""
+    application = _application(_RecordingRepository(object()))
+
+    with pytest.raises(ApplicationError) as block_error:
+        application.block(cast("BlockTaskInput", object()))
+    with pytest.raises(ApplicationError) as unblock_error:
+        application.unblock(cast("UnblockTaskInput", object()))
+    with pytest.raises(ApplicationError) as cancel_error:
+        application.cancel(cast("CancelTaskInput", object()))
+
+    assert block_error.value.code is ApplicationErrorCode.INVALID_INPUT
+    assert unblock_error.value.code is ApplicationErrorCode.INVALID_INPUT
+    assert cancel_error.value.code is ApplicationErrorCode.INVALID_INPUT
+
+
+@pytest.mark.parametrize(
+    ("operation", "result"),
+    [
+        ("block", object()),
+        (
+            "block",
+            _transition_result(TaskBlockMutation, reason="Different reason."),
+        ),
+        ("unblock", _transition_result(TaskBlockMutation, reason="Waiting.")),
+        ("cancel", _transition_result(TaskUnblockMutation)),
+    ],
+)
+def test_transitions_reject_semantically_mismatched_repository_results(
+    operation: str,
+    result: object,
+) -> None:
+    """State, reason, event, and operation must all prove caller semantics."""
+    application = _application(_RecordingRepository(result))
+
+    with pytest.raises(ApplicationError) as captured:
+        _invoke_transition(application, operation)
+
+    assert captured.value.code is ApplicationErrorCode.INTERNAL_ERROR
+
+
+def _invoke_transition(
+    application: TaskLifecycleApplication,
+    operation: str,
+) -> TaskMutationResult:
+    """Invoke one lifecycle operation with canonical unit-test input.
+
+    Args:
+        application: Composed lifecycle application.
+        operation: One of block, unblock, or cancel.
+
+    Returns:
+        Operation result when the configured repository accepts it.
+
+    """
+    common = {
+        "project_id": ProjectId("prj_acme"),
+        "subject_id": SubjectId("sub_local"),
+        "task": TaskId("tsk_first"),
+        "expected_version": 1,
+    }
+    if operation == "block":
+        return application.block(
+            BlockTaskInput.model_validate({**common, "reason": "Waiting."})
+        )
+    if operation == "unblock":
+        return application.unblock(UnblockTaskInput.model_validate(common))
+    return application.cancel(CancelTaskInput.model_validate(common))
 
 
 @pytest.mark.parametrize(

@@ -19,12 +19,14 @@ from workaholic.application import (
     ProjectCreationMutation,
     ProjectCreationResult,
     ProjectKeyConflictError,
+    TaskBlockMutation,
+    TaskCancelMutation,
     TaskMutationResult,
     TaskUpdateMutation,
     TaskUpdatePatch,
     VersionConflictError,
 )
-from workaholic.domain import ProjectId, RequestId, TaskEventId
+from workaholic.domain import ProjectId, RequestId, TaskEventId, TaskState
 from workaholic.persistence.sqlite import (
     SQLiteRepository,
     open_read_connection,
@@ -253,6 +255,53 @@ def test_concurrent_matching_update_key_replays_one_committed_mutation(
     assert counts == (2, 1)
 
 
+def test_concurrent_block_and_cancel_have_one_versioned_winner(
+    tmp_path: Path,
+) -> None:
+    """Competing semantic transitions cannot both mutate the same Task version."""
+    database_path = tmp_path / "local.db"
+    repository = SQLiteRepository(database_path)
+    bootstrap = repository.bootstrap_local_project(bootstrap_mutation("bootstrap"))
+    task = repository.create_task(task_mutation(bootstrap, "target"))
+    barrier = Barrier(2)
+    arguments = (
+        (database_path, bootstrap, task, "block", barrier),
+        (database_path, bootstrap, task, "cancel", barrier),
+    )
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        outcomes = tuple(executor.map(_transition_task_or_conflict, arguments))
+
+    winners = tuple(item for item in outcomes if isinstance(item, TaskMutationResult))
+    conflicts = tuple(
+        item for item in outcomes if isinstance(item, VersionConflictError)
+    )
+    assert len(winners) == 1
+    assert len(conflicts) == 1
+    assert winners[0].task.version == 2
+    assert winners[0].task.state in (TaskState.BLOCKED, TaskState.CANCELLED)
+    page = repository.list_tasks(
+        ListTasks(
+            project_id=bootstrap.project.id,
+            subject_id=bootstrap.subject.id,
+            limit=100,
+        )
+    )
+    assert page.tasks == (winners[0].task,)
+    with open_read_connection(database_path) as connection:
+        counts = connection.execute(
+            """
+            SELECT
+                (SELECT count(*) FROM task_events),
+                (
+                    SELECT count(*) FROM idempotency_records
+                    WHERE operation IN ('task.block', 'task.cancel')
+                )
+            """
+        ).fetchone()
+    assert counts == (2, 1)
+
+
 def _create_task(
     arguments: tuple[Path, BootstrapResult, int, Barrier],
 ) -> Task:
@@ -313,6 +362,53 @@ def _update_task_or_conflict(
     barrier.wait(timeout=10)
     try:
         return repository.update_task_if_version(mutation)
+    except VersionConflictError as error:
+        return error
+
+
+def _transition_task_or_conflict(
+    arguments: tuple[Path, BootstrapResult, Task, str, Barrier],
+) -> TaskMutationResult | VersionConflictError:
+    """Run one contended semantic transition through its own connection.
+
+    Args:
+        arguments: Database, identity graph, Task, operation, and shared barrier.
+
+    Returns:
+        The committed transition or expected stale-version error.
+
+    """
+    database_path, bootstrap, task, operation, barrier = arguments
+    repository = SQLiteRepository(database_path)
+    if operation == "block":
+        mutation: TaskBlockMutation | TaskCancelMutation = TaskBlockMutation(
+            task_uid=task.uid,
+            project_id=bootstrap.project.id,
+            actor_subject_id=bootstrap.subject.id,
+            event_id=TaskEventId("evt_block_race"),
+            request_id=RequestId("req_block_race"),
+            occurred_at=later_timestamp(1),
+            expected_version=1,
+            reason="Waiting.",
+            idempotency_key="block-race",
+        )
+    else:
+        mutation = TaskCancelMutation(
+            task_uid=task.uid,
+            project_id=bootstrap.project.id,
+            actor_subject_id=bootstrap.subject.id,
+            event_id=TaskEventId("evt_cancel_race"),
+            request_id=RequestId("req_cancel_race"),
+            occurred_at=later_timestamp(2),
+            expected_version=1,
+            reason="No longer needed.",
+            idempotency_key="cancel-race",
+        )
+    barrier.wait(timeout=10)
+    try:
+        if isinstance(mutation, TaskBlockMutation):
+            return repository.block_task(mutation)
+        return repository.cancel_task(mutation)
     except VersionConflictError as error:
         return error
 

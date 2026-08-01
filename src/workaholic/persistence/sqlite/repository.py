@@ -11,6 +11,15 @@ from workaholic.persistence.sqlite._bootstrap import (
 )
 from workaholic.persistence.sqlite._projects import create_project as _create_project
 from workaholic.persistence.sqlite._task_lifecycle import (
+    block_task as _block_task,
+)
+from workaholic.persistence.sqlite._task_lifecycle import (
+    cancel_task as _cancel_task,
+)
+from workaholic.persistence.sqlite._task_lifecycle import (
+    unblock_task as _unblock_task,
+)
+from workaholic.persistence.sqlite._task_lifecycle import (
     update_task_if_version as _update_task_if_version,
 )
 from workaholic.persistence.sqlite._tasks import create_task as _create_task
@@ -29,9 +38,12 @@ if TYPE_CHECKING:
         ProjectCreationMutation,
         ProjectCreationResult,
         StatusResult,
+        TaskBlockMutation,
+        TaskCancelMutation,
         TaskCreationMutation,
         TaskMutationResult,
         TaskPage,
+        TaskUnblockMutation,
         TaskUpdateMutation,
     )
     from workaholic.domain import Project, Task
@@ -108,6 +120,42 @@ class SQLiteRepository:
 
         """
         return _update_task_if_version(self._database_path, mutation)
+
+    def block_task(self, mutation: TaskBlockMutation) -> TaskMutationResult:
+        """Atomically block an open Task at an expected version.
+
+        Args:
+            mutation: Validated optimistic blocking mutation.
+
+        Returns:
+            The committed blocked Task and its attributable event.
+
+        """
+        return _block_task(self._database_path, mutation)
+
+    def unblock_task(self, mutation: TaskUnblockMutation) -> TaskMutationResult:
+        """Atomically return a blocked Task to open.
+
+        Args:
+            mutation: Validated optimistic unblocking mutation.
+
+        Returns:
+            The committed open Task and its attributable event.
+
+        """
+        return _unblock_task(self._database_path, mutation)
+
+    def cancel_task(self, mutation: TaskCancelMutation) -> TaskMutationResult:
+        """Atomically cancel a mutable Task at an expected version.
+
+        Args:
+            mutation: Validated optimistic cancellation mutation.
+
+        Returns:
+            The committed cancelled Task and its attributable event.
+
+        """
+        return _cancel_task(self._database_path, mutation)
 
     def create_project(
         self,

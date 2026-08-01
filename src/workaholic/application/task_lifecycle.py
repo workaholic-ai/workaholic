@@ -5,8 +5,14 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Protocol
 
 from workaholic.application.commands import (
+    BlockTaskInput,
+    CancelTaskInput,
     GetTask,
+    TaskBlockMutation,
+    TaskCancelMutation,
+    TaskUnblockMutation,
     TaskUpdateMutation,
+    UnblockTaskInput,
     UpdateTaskInput,
 )
 from workaholic.application.errors import ApplicationError, ApplicationErrorCode
@@ -15,6 +21,11 @@ from workaholic.domain import Task, TaskEventType, TaskId, TaskState
 
 if TYPE_CHECKING:
     from workaholic.application.ports import Clock, IdentifierFactory
+
+type _LifecycleInput = (
+    UpdateTaskInput | BlockTaskInput | UnblockTaskInput | CancelTaskInput
+)
+type _TransitionMutation = TaskBlockMutation | TaskUnblockMutation | TaskCancelMutation
 
 
 class _LifecycleRepository(Protocol):
@@ -29,6 +40,18 @@ class _LifecycleRepository(Protocol):
         mutation: TaskUpdateMutation,
     ) -> TaskMutationResult:
         """Persist one optimistic Task definition update."""
+        ...
+
+    def block_task(self, mutation: TaskBlockMutation) -> TaskMutationResult:
+        """Persist one optimistic Task blocking transition."""
+        ...
+
+    def unblock_task(self, mutation: TaskUnblockMutation) -> TaskMutationResult:
+        """Persist one optimistic Task unblocking transition."""
+        ...
+
+    def cancel_task(self, mutation: TaskCancelMutation) -> TaskMutationResult:
+        """Persist one optimistic Task cancellation transition."""
         ...
 
 
@@ -52,7 +75,13 @@ class TaskLifecycleApplication:
             TypeError: If a dependency lacks a required method.
 
         """
-        for method_name in ("get_task", "update_task_if_version"):
+        for method_name in (
+            "get_task",
+            "update_task_if_version",
+            "block_task",
+            "unblock_task",
+            "cancel_task",
+        ):
             _require_callable(repository, method_name, "repository")
         _require_callable(clock, "now", "clock")
         for method_name in ("new_event_id", "new_request_id"):
@@ -109,7 +138,126 @@ class TaskLifecycleApplication:
             )
         return result
 
-    def _resolve_task_uid(self, command: UpdateTaskInput) -> TaskId:
+    def block(self, command: BlockTaskInput) -> TaskMutationResult:
+        """Move one open Task to blocked at an expected version.
+
+        Args:
+            command: Validated Human blocking intent.
+
+        Returns:
+            Committed blocked Task and its attributable event.
+
+        Raises:
+            ApplicationError: If input, dependencies, or output violate contracts.
+
+        """
+        operation = "block"
+        candidate: object = command
+        if not isinstance(candidate, BlockTaskInput):
+            raise _invalid_input(operation)
+        task_uid = self._resolve_task_uid(candidate)
+        try:
+            mutation = TaskBlockMutation(
+                task_uid=task_uid,
+                project_id=candidate.project_id,
+                actor_subject_id=candidate.subject_id,
+                event_id=self._identifiers.new_event_id(),
+                request_id=self._identifiers.new_request_id(),
+                occurred_at=self._clock.now(),
+                expected_version=candidate.expected_version,
+                reason=candidate.reason,
+                idempotency_key=candidate.idempotency_key,
+            )
+        except (TypeError, ValueError) as error:
+            raise _invalid_dependencies(operation) from error
+        result: object = self._repository.block_task(mutation)
+        if not isinstance(result, TaskMutationResult) or not _matches_transition(
+            result,
+            mutation=mutation,
+        ):
+            raise _invalid_result(operation)
+        return result
+
+    def unblock(self, command: UnblockTaskInput) -> TaskMutationResult:
+        """Return one blocked Task to open at an expected version.
+
+        Args:
+            command: Validated Human unblocking intent.
+
+        Returns:
+            Committed open Task and its attributable event.
+
+        Raises:
+            ApplicationError: If input, dependencies, or output violate contracts.
+
+        """
+        operation = "unblock"
+        candidate: object = command
+        if not isinstance(candidate, UnblockTaskInput):
+            raise _invalid_input(operation)
+        task_uid = self._resolve_task_uid(candidate)
+        try:
+            mutation = TaskUnblockMutation(
+                task_uid=task_uid,
+                project_id=candidate.project_id,
+                actor_subject_id=candidate.subject_id,
+                event_id=self._identifiers.new_event_id(),
+                request_id=self._identifiers.new_request_id(),
+                occurred_at=self._clock.now(),
+                expected_version=candidate.expected_version,
+                idempotency_key=candidate.idempotency_key,
+            )
+        except (TypeError, ValueError) as error:
+            raise _invalid_dependencies(operation) from error
+        result: object = self._repository.unblock_task(mutation)
+        if not isinstance(result, TaskMutationResult) or not _matches_transition(
+            result,
+            mutation=mutation,
+        ):
+            raise _invalid_result(operation)
+        return result
+
+    def cancel(self, command: CancelTaskInput) -> TaskMutationResult:
+        """Cancel one mutable Task at an expected version.
+
+        Args:
+            command: Validated Human cancellation intent.
+
+        Returns:
+            Committed cancelled Task and its attributable event.
+
+        Raises:
+            ApplicationError: If input, dependencies, or output violate contracts.
+
+        """
+        operation = "cancel"
+        candidate: object = command
+        if not isinstance(candidate, CancelTaskInput):
+            raise _invalid_input(operation)
+        task_uid = self._resolve_task_uid(candidate)
+        try:
+            mutation = TaskCancelMutation(
+                task_uid=task_uid,
+                project_id=candidate.project_id,
+                actor_subject_id=candidate.subject_id,
+                event_id=self._identifiers.new_event_id(),
+                request_id=self._identifiers.new_request_id(),
+                occurred_at=self._clock.now(),
+                expected_version=candidate.expected_version,
+                reason=candidate.reason,
+                idempotency_key=candidate.idempotency_key,
+            )
+        except (TypeError, ValueError) as error:
+            raise _invalid_dependencies(operation) from error
+        result: object = self._repository.cancel_task(mutation)
+        if not isinstance(result, TaskMutationResult) or not _matches_transition(
+            result,
+            mutation=mutation,
+        ):
+            raise _invalid_result(operation)
+        return result
+
+    def _resolve_task_uid(self, command: _LifecycleInput) -> TaskId:
         """Resolve a Human key only when the caller did not supply a TaskId.
 
         Args:
@@ -186,6 +334,108 @@ def _matches_update(
             "changes": tuple(sorted(patch_fields)),
             "version": task.version,
         }
+    )
+
+
+def _matches_transition(
+    result: TaskMutationResult,
+    *,
+    mutation: _TransitionMutation,
+) -> bool:
+    """Return whether a result satisfies one explicit transition contract.
+
+    Args:
+        result: Candidate persistence result.
+        mutation: Transition mutation sent to persistence.
+
+    Returns:
+        Whether identity, version, state, attribution, and payload match.
+
+    """
+    task = result.task
+    event = result.events[0]
+    expected_event: TaskEventType
+    expected_payload: dict[str, object]
+    valid_state: bool
+    if isinstance(mutation, TaskBlockMutation):
+        expected_event = TaskEventType.TASK_BLOCKED
+        expected_payload = {"reason": mutation.reason, "version": task.version}
+        valid_state = (
+            task.state is TaskState.BLOCKED and task.blocking_reason == mutation.reason
+        )
+    elif isinstance(mutation, TaskUnblockMutation):
+        expected_event = TaskEventType.TASK_UNBLOCKED
+        expected_payload = {"version": task.version}
+        valid_state = task.state is TaskState.OPEN and task.blocking_reason is None
+    else:
+        expected_event = TaskEventType.TASK_CANCELLED
+        expected_payload = {"reason": mutation.reason, "version": task.version}
+        valid_state = task.state is TaskState.CANCELLED and task.blocking_reason is None
+    return (
+        task.uid == mutation.task_uid
+        and task.project_id == mutation.project_id
+        and task.version == mutation.expected_version + 1
+        and valid_state
+        and event.event_type is expected_event
+        and event.actor_subject_id == mutation.actor_subject_id
+        and event.occurred_at == task.updated_at
+        and (
+            mutation.idempotency_key is not None
+            or (
+                task.updated_at == mutation.occurred_at
+                and event.id == mutation.event_id
+                and event.request_id == mutation.request_id
+            )
+        )
+        and dict(event.payload) == expected_payload
+    )
+
+
+def _invalid_input(operation: str) -> ApplicationError:
+    """Build one stable invalid runtime-input error.
+
+    Args:
+        operation: Safe lifecycle operation label.
+
+    Returns:
+        Stable public application error.
+
+    """
+    return ApplicationError(
+        ApplicationErrorCode.INVALID_INPUT,
+        f"Task {operation} input is invalid.",
+    )
+
+
+def _invalid_dependencies(operation: str) -> ApplicationError:
+    """Build one safe invalid generated-dependency error.
+
+    Args:
+        operation: Safe lifecycle operation label.
+
+    Returns:
+        Stable internal application error.
+
+    """
+    return ApplicationError(
+        ApplicationErrorCode.INTERNAL_ERROR,
+        f"Task {operation} dependencies returned invalid values.",
+    )
+
+
+def _invalid_result(operation: str) -> ApplicationError:
+    """Build one safe invalid persistence-result error.
+
+    Args:
+        operation: Safe lifecycle operation label.
+
+    Returns:
+        Stable internal application error.
+
+    """
+    return ApplicationError(
+        ApplicationErrorCode.INTERNAL_ERROR,
+        f"Task {operation} persistence returned an invalid result.",
     )
 
 
