@@ -1,6 +1,6 @@
 # Workaholic AI Persistence Contract
 
-- Status: Accepted v1 contract with Phase 2 SQLite implementation
+- Status: Accepted v1 contract through Phase 3 with Phase 2 SQLite implementation
 - Decision date: 2026-07-29
 - Contract scope: Observable semantics shared by JSON, SQLite, and PostgreSQL
 - Public API status: Internal architecture contract, not a third-party API
@@ -18,6 +18,10 @@ unchanged. Preserve any needed information outside Workaholic, verify the
 exact disposable profile data and Workspace contexts, remove those alpha
 artifacts, and run `workaholic up` again. There is no in-place reset, automatic
 migration, backend conversion, import, or export command in Phase 2.
+
+The Phase 3 sections below are an accepted implementation contract, not a
+current capability claim. Phase 3 replaces disposable version `2` with a clean
+version `3` store; it never migrates or reinterprets version `2`.
 
 ## Normative language
 
@@ -165,6 +169,53 @@ cross-Instance, cross-Subject, cross-Project, or cross-selection reuse is an
 `INVALID_INPUT` outcome. Traversal of unchanged records neither duplicates nor
 omits a Task.
 
+## Phase 3 SQLite contract
+
+Phase 3 introduces disposable SQLite schema version `3`. A normal read or
+mutation accepts exact version `3` only. Version `2`, malformed, missing, and
+future stores fail with `SCHEMA_UNSUPPORTED` and remain unchanged; Phase 3 has
+no migration, conversion, import, export, or automatic reset path.
+
+The clean version `3` layout represents:
+
+- all five stored Task states and optimistic versions;
+- optional availability and blocking reason;
+- approval requirement `none` or `human`;
+- ordered acceptance criteria and context references;
+- directed same-Project Task dependencies;
+- structured Results, review disposition, and nullable Attempt attribution;
+- every Phase 3 TaskEvent type and ordered Instance cursor;
+- durable idempotency outcomes for every Phase 3 mutation.
+
+Physical tables and JSON columns remain adapter details. Observable semantics
+come from the operations and conformance tests below.
+
+Phase 3 remains Human-operated. A Human Result records the authenticated Human
+and a null Attempt identity. The adapter must reject any Phase 3 input that
+attempts to populate an Attempt. Agent Attempts and Leases begin in Phase 4.
+
+The Phase 3 semantic operations are:
+
+```text
+update_task_if_version
+block_task
+unblock_task
+cancel_task
+add_task_dependency
+remove_task_dependency
+submit_human_result
+approve_result
+reject_result
+list_tasks_by_view
+read_task_events_after
+```
+
+Each mutation validates Project authorization, Task identity, expected
+version, operation-specific transition, event payload, and idempotency inside
+one write transaction. Clients never supply actor kind, authoritative time,
+request identity, Result identity, event identity, Attempt identity, or event
+cursor through task or Result payloads.
+
 ## Store opening and schema version
 
 Every store records a backend-independent schema version. Before the first
@@ -248,13 +299,24 @@ checks begin when versioned update commands arrive in Phase 3; creation itself
 does not perform a synthetic increment.
 
 - If the expected version matches, the adapter validates the transition,
-  commits the mutation and TaskEvent, and increments the version exactly once.
-- If it does not match, the adapter returns a version-conflict outcome and
-  leaves state and events unchanged.
+  commits the mutation and required TaskEvents, and increments the version
+  exactly once.
+- If it does not match, the adapter returns `VERSION_CONFLICT` and leaves state
+  and events unchanged.
 - Idempotent replay of an already committed mutation returns its recorded
   outcome rather than incrementing the version again.
 
-Adapters must not implement last-write-wins behavior for versioned updates.
+Adapters must not implement last-write-wins behavior for versioned updates and
+official clients must not refresh a rejected version and silently retry.
+Every Phase 3 mutation of an existing Task is versioned, including block,
+unblock, cancel, dependency add/remove, Human submit, approve, and reject.
+Generic update cannot change state or perform another semantic operation.
+
+One semantic operation increments the Task version once even when it appends
+multiple events. The canonical idempotency fingerprint includes the supplied
+expected version. An equivalent replay returns the recorded outcome before
+comparing that historic version with the now-current Task; conflicting reuse
+still returns `IDEMPOTENCY_CONFLICT` and changes nothing.
 
 ## Readiness and atomic claims
 
@@ -262,11 +324,26 @@ Readiness is derived from Task state and related data. A ready Task is open,
 available at the authoritative time, has satisfied blocking dependencies, and
 has no current unexpired Attempt.
 
+During Human-only Phase 3, there are no Attempts, so `running` and `stale` are
+always false. `scheduled` means an otherwise open Task has future
+`available_at`; `awaiting_review` means stored state `review`.
+
+Dependencies are unique, directed, same-Project, and acyclic. A Task cannot
+depend on itself. Adding or removing an edge checks and increments only the
+dependant Task's version and appends `task_updated`. A prerequisite transition
+does not mutate dependant Tasks. A prerequisite is satisfied only by `done`;
+`cancelled` produces `UNSATISFIABLE_DEPENDENCY` until the graph changes.
+
 Default claim ordering is deterministic:
 
 1. priority descending;
 2. `available_at` ascending;
 3. task number ascending.
+
+Phase 3 ready views use the same order. Absent `available_at` sorts before a
+present timestamp. All-Project ready views add immutable Project key before
+Task number as the final tie-breaker. View cursors bind the view and its exact
+ordering position in addition to the Phase 2 identity and selection scope.
 
 One `claim_next_task` transaction:
 
@@ -311,16 +388,27 @@ when the same Agent owns the new Attempt.
 
 A successful submission stores structured Result data and external artifact
 references, not artifact contents. It validates acceptance-criterion
-identifiers and the current Attempt in the same transaction.
+identifiers and applicable attribution in the same transaction.
+
+A Phase 3 Human submission requires `open`, satisfied dependencies, the
+authenticated Human, a null Attempt, and the expected Task version. The Human
+comment and structured content are independently optional. Availability does
+not prohibit deliberate Human submission. A Phase 4 Agent submission instead
+requires the current valid Attempt.
 
 - Submission without required approval moves the Task to done.
 - Submission requiring approval moves the Task to review.
 - Approval moves a review Task to done.
-- Rejection closes the reviewed Attempt and returns the Task to open according
-  to the documented workflow.
+- Rejection retains the Result for audit, clears it as the current review
+  selection, and returns the Task to open. If the Result belongs to a Phase 4
+  Agent Attempt, rejection also closes that reviewed Attempt.
 
 Each accepted transition appends its required attributable TaskEvent. An invalid
 transition leaves Result, Task, Attempt, version, and event state unchanged.
+No-approval Human submission appends `result_submitted` then
+`task_completed`; approval appends `review_approved` then `task_completed`.
+Each pair shares request, actor, and timestamp and increments Task version once.
+Proposed follow-ups remain Result data and create no Tasks or relationships.
 
 ## TaskEvents
 
@@ -345,6 +433,16 @@ back change.
 Reading events after a cursor returns a stable ascending sequence with
 documented bounds. Event records are never updated or deleted by normal domain
 operations.
+
+Phase 3 event types are exactly `task_created`, `task_updated`,
+`task_blocked`, `task_unblocked`, `result_submitted`, `review_approved`,
+`review_rejected`, `task_completed`, and `task_cancelled`. Phase 4 adds Agent
+execution events without changing the Phase 3 records.
+
+`read_task_events_after` is Task- and Project-authorized, accepts an optional
+nonnegative Instance cursor and a limit from 1 through 500, and returns a stable
+ascending page. Empty pages are successful. Reads never allocate a cursor or
+mutate event, Task, Result, or idempotency state.
 
 ## Idempotent mutations
 
@@ -388,6 +486,9 @@ expected conditions, including:
 - conflicting Project key;
 - optimistic version conflict;
 - invalid lifecycle transition;
+- duplicate, absent, cross-Project, self, or cyclic dependency change;
+- cancelled prerequisite that makes completion unsatisfiable;
+- invalid Result or acceptance-criterion outcome;
 - no eligible Task to claim;
 - Lease lost through expiry, release, or supersession;
 - idempotency-key conflict;
@@ -471,6 +572,7 @@ Unsupported stores fail unchanged. See
 - [ADR 0008: Stable Task-Key Allocation](adr/0008-stable-task-key-allocation.md)
 - [ADR 0009: No Storage Migrations in v1](adr/0009-no-storage-migrations-in-v1.md)
 - [ADR 0010: Single-Process, Single-Instance Server](adr/0010-single-process-single-instance-server.md)
+- [ADR 0011: Phase 3 Task Mutation and Human Submission](adr/0011-phase-three-task-mutation-and-human-submission.md)
 - [Compatibility policy](compatibility-policy.md)
 - [Threat model](threat-model.md)
 - [Architecture](architecture.md)

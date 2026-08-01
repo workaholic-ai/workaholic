@@ -38,14 +38,17 @@ ProjectGrants and instance-administrator status determine authorization.
 ## Human
 
 A Subject operated by a person, normally through interactive CLI output. Being
-a Human does not automatically grant project or instance permissions.
+a Human does not automatically grant project or instance permissions. A Human
+may submit completed work directly without an Attempt; that Result has null
+Attempt attribution.
 
 ## Agent
 
 A Subject operated by an autonomous or automated process. Each independently
 operating Agent receives its own identity and credential so claims, Results,
 and TaskEvents remain attributable. Being an Agent does not replace
-authorization through ProjectGrants.
+authorization through ProjectGrants. Agent submission requires the current
+owned Attempt.
 
 ## ProjectGrant
 
@@ -59,10 +62,13 @@ A desired outcome tracked inside one Project. A Task has a globally unique,
 opaque UID and a stable human-facing key such as `ACME-42`. It records lifecycle
 state, objective, dependencies, requirements, acceptance criteria, context,
 optimistic version, and attribution. A Task cannot move between Projects.
+V1 has no parent/child Task hierarchy: decomposition uses ordinary Tasks and
+same-Project blocking dependencies.
 
 ## Attempt
 
-One Agent Subject's expiring execution claim on a Task. An Attempt has its own
+One Agent Subject's expiring execution claim on a Task. Humans do not receive
+synthetic Attempts for manual work. An Attempt has its own
 identifier, owner, status, start and end timestamps, and Lease expiry. Every
 reclaim creates a new Attempt, including a reclaim by the same Agent.
 
@@ -76,17 +82,21 @@ background scheduler or client clock.
 
 ## Result
 
-Structured evidence submitted for a Task by the current Attempt. A Result may
-record a summary, acceptance-criterion outcomes, artifact references and
-hashes, and proposed follow-up tasks. Workaholic AI stores artifact references,
-not the artifact contents.
+Structured evidence submitted for a Task. A Human Result records the
+authenticated Human and a null Attempt; an Agent Result requires the current
+owned Attempt. A Result may record a comment, summary, acceptance-criterion
+outcomes, artifact references and hashes, and proposed follow-ups. Proposed
+follow-ups are inert data and do not automatically create Tasks or
+relationships. Workaholic AI stores artifact references, not artifact
+contents.
 
 ## TaskEvent
 
 An immutable, typed, append-only record of a Task mutation or activity. A
 TaskEvent records its event and task identities, authenticated Subject,
 Subject kind, Attempt when applicable, request identity, structured payload,
-timestamp, and ordered Instance cursor.
+timestamp, and ordered Instance cursor. One semantic mutation may append
+multiple consecutive TaskEvents while incrementing the Task version once.
 
 ## Session
 

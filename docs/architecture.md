@@ -533,7 +533,7 @@ For example:
 ready =
     state == open
     AND dependencies satisfied
-    AND available_at <= now
+    AND (available_at is absent OR available_at <= now)
     AND no active attempt
 ```
 
@@ -542,6 +542,11 @@ running =
     state == open
     AND active attempt lease has not expired
 ```
+
+`scheduled` means an otherwise open Task has a future `available_at`.
+`awaiting_review` means stored state `review`. Phase 3 has no Attempts, so
+`running` and `stale` are always false until Agent execution arrives in Phase
+4.
 
 A minimal task looks like:
 
@@ -565,13 +570,11 @@ demonstrate a separate need beyond dependencies and provenance.
   "state": "open",
   "priority": 70,
   "available_at": null,
+  "approval": "human",
 
   "depends_on": ["tsk_01K9P..."],
-
-  "requirements": {
-    "capabilities": ["sql", "data-analysis"],
-    "approval": "human"
-  },
+  "blocking_reason": null,
+  "current_result_id": null,
 
   "acceptance": [
     {
@@ -588,7 +591,6 @@ demonstrate a separate need beyond dependencies and provenance.
     }
   ],
 
-  "active_attempt_id": null,
   "version": 4,
 
   "created_by": "sub_01K9...",
@@ -604,13 +606,35 @@ state defaults to `open`; the initial optimistic version is `1`. Version
 increments and stale-update rejection begin with the update commands in
 Phase 3.
 
+Every Phase 3 mutation of an existing Task supplies a positive expected
+version at the Session, application, and persistence boundaries. Success
+increments the version exactly once, even when the semantic operation appends
+multiple events. A stale version returns `VERSION_CONFLICT` without changing
+the Task, Result, dependency graph, TaskEvents, or idempotency state. Neither
+the application nor an official client refreshes and silently retries.
+
+Generic Task update changes only title, objective, priority, availability,
+approval requirement, the complete ordered acceptance set, or the complete
+ordered context-reference set. It cannot accept state, dependencies, blocking
+reason, Result, version, identity, actor, request, event, or timestamp fields.
+Those values belong to explicit semantic operations.
+
 Phase 1 task listing is project-scoped and ordered by task number ascending.
 It uses an opaque project-bound cursor, defaults to 100 records, and accepts a
 maximum limit of 500. Reads do not mutate domain state.
 
 V1 supports blocking dependencies only within one project.
 
-A dependency is satisfied only when it is `done`. A cancelled dependency makes the dependent task non-ready and surfaces an `UNSATISFIABLE_DEPENDENCY` reason until an operator changes the dependency graph.
+A dependency is satisfied only when it is `done`. Dependency edges are unique,
+directed, same-Project, and acyclic; a Task cannot depend on itself. A cancelled
+dependency makes the dependent Task non-ready and surfaces an
+`UNSATISFIABLE_DEPENDENCY` reason until an operator changes the dependency
+graph. Changing an edge versions only the dependant Task. Prerequisite state
+changes never rewrite dependant rows.
+
+Ready ordering is priority descending, availability ascending with absent
+availability first, then Task number ascending. An all-Project view inserts
+immutable Project key before Task number as the final tie-breaker.
 
 ## 8. Attempts and leases
 
@@ -658,7 +682,8 @@ Correctness does not depend on a background scheduler. Lease expiry is evaluated
 
 ## 9. Results and review
 
-Submission returns structured evidence:
+Submission returns structured evidence. A summary is optional for a Human
+manual submission:
 
 ```json
 {
@@ -690,6 +715,15 @@ Submission returns structured evidence:
 
 Workaholic AI stores artifact references and hashes, not large artifact contents.
 
+Attempts are Agent-only. A Phase 3 Human submits directly as the authenticated
+Subject, and the Result records `attempt_id = null`. A Human comment and a
+structured Result file are independently optional. Phase 4 Agent submission
+uses the same Result model but requires the current owned Attempt; an Agent
+cannot submit with a null Attempt.
+
+Proposed follow-ups are inert Result data. They do not create Tasks,
+dependencies, or another relationship model.
+
 Submission behavior:
 
 ```text
@@ -706,7 +740,15 @@ Rejected:
     review → open
 ```
 
-A rejection closes the previous attempt and returns the task to the queue with a typed review event.
+Human submission requires `open` and satisfied dependencies. Availability is a
+scheduling constraint and does not prohibit a deliberate Human submission.
+Rejection retains the rejected Result for audit, clears it as the current
+review selection, and returns the Task to `open` with a typed review event. For
+Agent Results beginning in Phase 4, rejection also ends the reviewed Attempt.
+
+No-approval submission appends `result_submitted` then `task_completed`.
+Approval appends `review_approved` then `task_completed`. Each pair belongs to
+one semantic mutation and increments the Task version once.
 
 ## 10. Events
 
@@ -715,12 +757,6 @@ Events are append-only and typed:
 ```text
 task_created
 task_updated
-task_claimed
-lease_renewed
-attempt_released
-attempt_expired
-progress_reported
-observation_added
 task_blocked
 task_unblocked
 result_submitted
@@ -728,6 +764,17 @@ review_approved
 review_rejected
 task_completed
 task_cancelled
+```
+
+Phase 4 extends that set with Agent execution events:
+
+```text
+task_claimed
+lease_renewed
+attempt_released
+attempt_expired
+progress_reported
+observation_added
 ```
 
 Each event records:
@@ -757,6 +804,10 @@ The initial implementation may poll:
 ```bash
 workaholic task events ACME-142 --follow
 ```
+
+JSON and non-interactive clients read bounded snapshot pages and poll
+explicitly with the last cursor. Human `--follow` is a presentation convenience
+and does not define a streaming JSON contract.
 
 No message broker or WebSocket infrastructure is required in v1.
 
@@ -825,6 +876,12 @@ This is intentionally optimized for simplicity and inspection rather than high t
 SQLite is the default for local use.
 
 Each CLI invocation opens a short-lived connection. Compound operations such as number allocation, claiming, event creation, and idempotency recording occur in one write transaction.
+
+Phase 3 introduces disposable SQLite schema version `3` for lifecycle state,
+dependencies, Results, reviews, and expanded events. It rejects Phase 2 version
+`2` unchanged and provides no migration, conversion, import, export, or
+automatic reset. The current `0.2.0a1` implementation remains on version `2`
+until that complete Phase 3 slice is delivered.
 
 ### PostgreSQL backend
 
@@ -965,9 +1022,9 @@ Phase 2 implements the public automation contract for `up`, `status`,
 `context`, `project create`, `project bind`, `project list`, `task add`,
 `task list`, and `task show`, including JSON-only stdout, non-interactive
 operation, stable error identifiers, exit-code categories, explicit
-profile/Project selection, and documented mutation idempotency. Phase 4
-extends that contract with agent-execution commands and large structured
-inputs.
+profile/Project selection, and documented mutation idempotency. Phase 3 adds
+Human lifecycle mutations, structured Task and Result input, derived views,
+and TaskEvent history. Phase 4 extends that contract with Agent execution.
 
 Representative commands:
 
@@ -1033,11 +1090,60 @@ the `v2.` prefix and bind their canonical payload to profile, Instance, Subject,
 selection kind, selected Project when present, and last ordering position.
 Cross-binding or noncanonical cursor reuse returns `INVALID_INPUT`.
 
+The accepted Phase 3 lifecycle signatures are:
+
+```text
+workaholic task add TITLE [--objective TEXT] [--priority INTEGER]
+  [--available-at TIMESTAMP] [--approval none|human]
+  [--input-file PATH|-] [--project KEY] [--idempotency-key KEY]
+workaholic task update TASK
+  [--title TEXT] [--objective TEXT] [--priority INTEGER]
+  [--available-at TIMESTAMP | --clear-available-at]
+  [--approval none|human] [--input-file PATH|-]
+  [--expected-version INTEGER] [--idempotency-key KEY]
+workaholic task block TASK --reason TEXT
+  [--expected-version INTEGER] [--idempotency-key KEY]
+workaholic task unblock TASK
+  [--expected-version INTEGER] [--idempotency-key KEY]
+workaholic task add-dependency TASK PREREQUISITE
+  [--expected-version INTEGER] [--idempotency-key KEY]
+workaholic task remove-dependency TASK PREREQUISITE
+  [--expected-version INTEGER] [--idempotency-key KEY]
+workaholic task submit TASK [--comment TEXT] [--result-file PATH|-]
+  [--expected-version INTEGER] [--idempotency-key KEY]
+workaholic task approve TASK [--comment TEXT]
+  [--expected-version INTEGER] [--idempotency-key KEY]
+workaholic task reject TASK --reason TEXT
+  [--expected-version INTEGER] [--idempotency-key KEY]
+workaholic task cancel TASK [--reason TEXT]
+  [--expected-version INTEGER] [--idempotency-key KEY]
+workaholic task events TASK [--after INTEGER] [--limit INTEGER] [--follow]
+```
+
+All retain JSON, non-interactive, and applicable explicit Project selection.
+Every existing-Task mutation has an optional CLI spelling for
+`--expected-version` only to support a real terminal Human: when absent, the
+CLI reads the current Task, shows its key, state, version, and intended action,
+then asks once before sending that exact version. JSON, non-interactive, and
+non-terminal invocation require the option. A conflict is returned without
+automatic retry.
+
+`task list --view` accepts `all`, `ready`, `scheduled`, `blocked`, `review`,
+`done`, or `cancelled`. Phase 3 view cursors use the `v3.` prefix and bind the
+profile, Instance, Subject, selection, view, and view-specific ordering
+position. `task events` JSON output is a bounded snapshot page. Human
+`--follow` cannot be combined with JSON or non-interactive operation.
+
 Phase 2 adds `PROFILE_NOT_FOUND`, `PROFILE_INVALID`,
 `PROFILE_UNSUPPORTED`, `PROJECT_NOT_FOUND`, and
 `WORKSPACE_BINDING_CONFLICT` to the established CLI exit categories. The
 normative [CLI automation contract](cli-contract.md) owns their fixed safe
 messages and command-specific surfaces.
+
+Phase 3 adds `VERSION_CONFLICT`, `INVALID_TRANSITION`,
+`DEPENDENCY_CONFLICT`, `DEPENDENCY_CYCLE`,
+`UNSATISFIABLE_DEPENDENCY`, and `RESULT_INVALID`. These are semantic errors,
+not adapter or SQLite exceptions.
 
 ### Agent-safe behavior
 
