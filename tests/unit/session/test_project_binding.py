@@ -328,7 +328,7 @@ def test_bind_project_resolves_authority_before_durable_context_write() -> None:
     )
 
     assert result.mode == "embedded"
-    assert result.schema_version == 2
+    assert result.schema_version == 3
     assert result.profile == "local"
     assert result.instance.id == InstanceId("ins_local")
     assert result.project == _project(project_id="prj_beta", key="BETA")

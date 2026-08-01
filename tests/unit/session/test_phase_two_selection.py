@@ -512,7 +512,7 @@ def test_discovered_context_reports_canonical_authoritative_selection() -> None:
 
     assert result.mode == "embedded"
     assert result.profile == "local"
-    assert result.schema_version == 2
+    assert result.schema_version == 3
     assert result.instance.id == InstanceId("ins_local")
     assert result.project.key == "ACME"
     assert result.subject.id == SubjectId("sub_local")

@@ -84,7 +84,7 @@ class StatusResult(_ResultModel):
 
     mode: Literal["embedded"] = "embedded"
     profile: str = "local"
-    schema_version: Literal[2] = 2
+    schema_version: Literal[3] = 3
     instance: Instance
     project: Project
     subject: Subject
@@ -155,7 +155,7 @@ class ContextResult(_ResultModel):
 
     mode: Literal["embedded"] = "embedded"
     profile: str
-    schema_version: Literal[2] = 2
+    schema_version: Literal[3] = 3
     instance: Instance
     project: Project
     subject: Subject

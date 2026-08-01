@@ -70,7 +70,7 @@ _CURSOR_KEYS: Final = frozenset(
 _CURSOR_VERSION: Final = 2
 _MAX_SQLITE_INTEGER: Final = 9_223_372_036_854_775_807
 _SUBJECT_FIELD_COUNT: Final = 5
-_PROJECT_ORDERED_TASK_FIELD_COUNT: Final = 13
+_PROJECT_ORDERED_TASK_FIELD_COUNT: Final = 19
 _ALL_PROJECT_POSITION_FIELD_COUNT: Final = 2
 _Selection = Literal["project", "all_projects"]
 
@@ -315,7 +315,9 @@ def list_tasks(database_path: Path, command: ListTasks) -> TaskPage:
                 """
                 SELECT
                     uid, project_id, number, key, title, objective, state,
-                    priority, version, created_by, created_at, updated_at
+                    priority, available_at, approval, acceptance_json,
+                    context_json, blocking_reason, current_result_id, version,
+                    created_by, created_at, updated_at
                 FROM tasks
                 WHERE project_id = ? AND number > ?
                 ORDER BY number ASC
@@ -395,7 +397,9 @@ def list_tasks_for_instance(
                 SELECT
                     p.key,
                     t.uid, t.project_id, t.number, t.key, t.title, t.objective,
-                    t.state, t.priority, t.version, t.created_by, t.created_at,
+                    t.state, t.priority, t.available_at, t.approval,
+                    t.acceptance_json, t.context_json, t.blocking_reason,
+                    t.current_result_id, t.version, t.created_by, t.created_at,
                     t.updated_at
                 FROM tasks AS t
                 JOIN projects AS p ON p.id = t.project_id
@@ -474,7 +478,9 @@ def get_task(database_path: Path, command: GetTask) -> Task:
                     """
                     SELECT
                         uid, project_id, number, key, title, objective, state,
-                        priority, version, created_by, created_at, updated_at
+                        priority, available_at, approval, acceptance_json,
+                        context_json, blocking_reason, current_result_id, version,
+                        created_by, created_at, updated_at
                     FROM tasks
                     WHERE project_id = ? AND uid = ?
                     """,
@@ -485,7 +491,9 @@ def get_task(database_path: Path, command: GetTask) -> Task:
                     """
                     SELECT
                         uid, project_id, number, key, title, objective, state,
-                        priority, version, created_by, created_at, updated_at
+                        priority, available_at, approval, acceptance_json,
+                        context_json, blocking_reason, current_result_id, version,
+                        created_by, created_at, updated_at
                     FROM tasks
                     WHERE project_id = ? AND key = ?
                     """,

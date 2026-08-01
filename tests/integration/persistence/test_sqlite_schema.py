@@ -1,7 +1,8 @@
-"""Integration tests for the fixed Phase 2 SQLite schema boundary."""
+"""Integration tests for the fixed Phase 3 SQLite schema boundary."""
 
 from __future__ import annotations
 
+import json
 import sqlite3
 import stat
 from concurrent.futures import ThreadPoolExecutor
@@ -22,11 +23,16 @@ from workaholic.persistence.sqlite import (
     validate_store_schema,
 )
 from workaholic.persistence.sqlite._driver import _connect
+from workaholic.persistence.sqlite._records import (
+    EVENT_PAYLOAD_JSON_MAX_LENGTH,
+    IDEMPOTENCY_OUTCOME_JSON_MAX_LENGTH,
+    STRUCTURED_COLLECTION_JSON_MAX_LENGTH,
+)
 
 if TYPE_CHECKING:
     from contextlib import AbstractContextManager
 
-_TIMESTAMP = "2026-07-30T10:30:00Z"
+_TIMESTAMP = "2026-07-30T10:30:00.000000Z"
 _APPLICATION_TABLES = {
     "idempotency_records",
     "instances",
@@ -34,9 +40,25 @@ _APPLICATION_TABLES = {
     "projects",
     "store_metadata",
     "subjects",
+    "task_dependencies",
     "task_events",
+    "task_results",
     "tasks",
 }
+_IDEMPOTENCY_OPERATIONS = (
+    "bootstrap.local_project",
+    "project.create",
+    "task.create",
+    "task.update",
+    "task.block",
+    "task.unblock",
+    "task.cancel",
+    "task.dependency.add",
+    "task.dependency.remove",
+    "task.result.submit",
+    "task.result.approve",
+    "task.result.reject",
+)
 _EXPECTED_COLUMNS = {
     "idempotency_records": (
         "subject_scope",
@@ -64,16 +86,36 @@ _EXPECTED_COLUMNS = {
         "enabled",
         "is_instance_admin",
     ),
+    "task_dependencies": ("task_uid", "prerequisite_uid", "project_id"),
     "task_events": (
         "cursor",
         "id",
         "task_uid",
         "project_id",
         "actor_subject_id",
+        "actor_kind",
+        "attempt_id",
         "request_id",
         "event_type",
         "occurred_at",
         "payload_json",
+    ),
+    "task_results": (
+        "id",
+        "task_uid",
+        "submitted_by",
+        "attempt_id",
+        "submitted_at",
+        "comment",
+        "summary",
+        "criteria_json",
+        "artifacts_json",
+        "proposed_follow_ups_json",
+        "review_status",
+        "reviewed_by",
+        "reviewed_at",
+        "review_comment",
+        "rejection_reason",
     ),
     "tasks": (
         "uid",
@@ -84,6 +126,12 @@ _EXPECTED_COLUMNS = {
         "objective",
         "state",
         "priority",
+        "available_at",
+        "approval",
+        "acceptance_json",
+        "context_json",
+        "blocking_reason",
+        "current_result_id",
         "version",
         "created_by",
         "created_at",
@@ -206,6 +254,7 @@ def _insert_task(
     connection: sqlite3.Connection,
     *,
     uid: str = "tsk_first",
+    project_id: str = "prj_acme",
     number: int = 1,
     key: str = "ACME-1",
 ) -> None:
@@ -214,6 +263,7 @@ def _insert_task(
     Args:
         connection: Connection owning the test transaction.
         uid: Canonical Task identity.
+        project_id: Owning Project identity.
         number: Project-local Task number.
         key: Stable Human-readable Task key.
 
@@ -227,7 +277,7 @@ def _insert_task(
         """,
         (
             uid,
-            "prj_acme",
+            project_id,
             number,
             key,
             "First task",
@@ -343,6 +393,17 @@ def test_empty_store_has_exact_columns_indexes_and_foreign_keys(
             for table in _APPLICATION_TABLES
         }
         assert actual_columns == _EXPECTED_COLUMNS
+        strict_tables = {
+            cast("str", row[0]): row[1]
+            for row in connection.execute(
+                """
+                SELECT name, strict
+                FROM pragma_table_list
+                WHERE schema = 'main' AND name NOT LIKE 'sqlite_%'
+                """
+            )
+        }
+        assert strict_tables == dict.fromkeys(_APPLICATION_TABLES, 1)
 
         expected_unique_indexes = {
             "idempotency_records": {
@@ -352,8 +413,10 @@ def test_empty_store_has_exact_columns_indexes_and_foreign_keys(
             "project_grants": {("subject_id", "project_id")},
             "projects": {("id",), ("instance_id", "key")},
             "store_metadata": set(),
-            "subjects": {("id",)},
+            "subjects": {("id",), ("id", "kind")},
+            "task_dependencies": {("task_uid", "prerequisite_uid")},
             "task_events": {("id",)},
+            "task_results": {("id",), ("id", "task_uid")},
             "tasks": {
                 ("key",),
                 ("project_id", "key"),
@@ -384,6 +447,56 @@ def test_empty_store_has_exact_columns_indexes_and_foreign_keys(
             }
         assert actual_unique_indexes == expected_unique_indexes
 
+        expected_query_indexes = {
+            "idx_task_dependencies_prerequisite": (
+                "prerequisite_uid",
+                "project_id",
+                "task_uid",
+            ),
+            "idx_task_events_project_cursor": ("project_id", "cursor"),
+            "idx_task_events_task_cursor": ("task_uid", "cursor"),
+            "idx_task_results_task": ("task_uid", "submitted_at", "id"),
+            "idx_tasks_readiness": (
+                "project_id",
+                "state",
+                "available_at",
+                "priority",
+                "number",
+            ),
+        }
+        actual_query_indexes = {
+            index_name: tuple(
+                row[0]
+                for row in connection.execute(
+                    "SELECT name FROM pragma_index_info(?) ORDER BY seqno",
+                    (index_name,),
+                )
+            )
+            for (index_name,) in connection.execute(
+                """
+                SELECT name
+                FROM sqlite_schema
+                WHERE type = 'index' AND name LIKE 'idx_%'
+                ORDER BY name
+                """
+            )
+        }
+        assert actual_query_indexes == expected_query_indexes
+        assert connection.execute(
+            """
+            SELECT name, [desc]
+            FROM pragma_index_xinfo('idx_tasks_readiness')
+            WHERE key = 1
+            ORDER BY seqno
+            """
+        ).fetchall() == [
+            ("project_id", 0),
+            ("state", 0),
+            ("available_at", 0),
+            ("priority", 1),
+            ("number", 0),
+        ]
+
         actual_foreign_keys = {
             (table, row[3], row[2], row[4], row[6])
             for table in _APPLICATION_TABLES
@@ -396,11 +509,26 @@ def test_empty_store_has_exact_columns_indexes_and_foreign_keys(
             ("project_grants", "project_id", "projects", "id", "RESTRICT"),
             ("project_grants", "subject_id", "subjects", "id", "RESTRICT"),
             ("projects", "instance_id", "instances", "id", "RESTRICT"),
+            (
+                "task_dependencies",
+                "prerequisite_uid",
+                "tasks",
+                "uid",
+                "RESTRICT",
+            ),
+            ("task_dependencies", "project_id", "tasks", "project_id", "RESTRICT"),
+            ("task_dependencies", "task_uid", "tasks", "uid", "RESTRICT"),
+            ("task_events", "actor_kind", "subjects", "kind", "RESTRICT"),
             ("task_events", "actor_subject_id", "subjects", "id", "RESTRICT"),
             ("task_events", "project_id", "tasks", "project_id", "RESTRICT"),
             ("task_events", "task_uid", "tasks", "uid", "RESTRICT"),
+            ("task_results", "reviewed_by", "subjects", "id", "RESTRICT"),
+            ("task_results", "submitted_by", "subjects", "id", "RESTRICT"),
+            ("task_results", "task_uid", "tasks", "uid", "RESTRICT"),
             ("tasks", "created_by", "subjects", "id", "RESTRICT"),
+            ("tasks", "current_result_id", "task_results", "id", "RESTRICT"),
             ("tasks", "project_id", "projects", "id", "RESTRICT"),
+            ("tasks", "uid", "task_results", "task_uid", "RESTRICT"),
         }
 
 
@@ -578,30 +706,385 @@ def test_project_name_round_trips_and_rejects_invalid_storage(
         connection.close()
 
 
-def test_idempotency_operation_constraint_includes_project_creation(
+def test_phase_three_task_state_schedule_review_and_json_constraints(
     tmp_path: Path,
 ) -> None:
-    """The closed semantic operation set includes Phase 2 Project creation."""
+    """Complete Task columns enforce lifecycle coupling and bounded JSON arrays."""
     database_path = tmp_path / "local.db"
     initialize_empty_store(database_path)
     connection = _open_physical_database(database_path)
     try:
+        _seed_authorization_graph(connection)
+        _insert_task(connection)
         connection.execute(
             """
-            INSERT INTO idempotency_records (
-                subject_scope, operation, caller_key, request_fingerprint,
-                outcome_json, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?)
+            UPDATE tasks
+            SET state = ?, available_at = ?, approval = ?, acceptance_json = ?,
+                context_json = ?, blocking_reason = ?, version = ?
+            WHERE uid = ?
             """,
             (
-                "sub_local",
-                "project.create",
-                "create-1",
-                "fingerprint",
-                '{"project_id":"prj_acme"}',
+                "blocked",
                 _TIMESTAMP,
+                "human",
+                '[{"id":"ac_done","required":true,"text":"Done"}]',
+                '[{"uri":"workspace://repo/spec.md","version":null}]',
+                "Waiting for input",
+                2,
+                "tsk_first",
             ),
         )
+        connection.commit()
+
+        assert connection.execute(
+            """
+            SELECT state, available_at, approval, acceptance_json, context_json,
+                   blocking_reason, current_result_id, version
+            FROM tasks WHERE uid = 'tsk_first'
+            """
+        ).fetchone() == (
+            "blocked",
+            _TIMESTAMP,
+            "human",
+            '[{"id":"ac_done","required":true,"text":"Done"}]',
+            '[{"uri":"workspace://repo/spec.md","version":null}]',
+            "Waiting for input",
+            None,
+            2,
+        )
+
+        invalid_updates = (
+            ("state = 'unknown'", ()),
+            ("state = 'open'", ()),
+            ("approval = 'agent'", ()),
+            ("available_at = '2026-07-30T10:30:00+00:00'", ()),
+            ("acceptance_json = '{}'", ()),
+            (
+                "context_json = ?",
+                (json.dumps(["x" * STRUCTURED_COLLECTION_JSON_MAX_LENGTH]),),
+            ),
+        )
+        for assignment, parameters in invalid_updates:
+            with pytest.raises(sqlite3.IntegrityError):
+                connection.execute(
+                    f"UPDATE tasks SET {assignment} WHERE uid = 'tsk_first'",  # noqa: S608
+                    parameters,
+                )
+            connection.rollback()
+    finally:
+        connection.close()
+
+
+def test_phase_three_dependency_constraints_enforce_identity_and_project(
+    tmp_path: Path,
+) -> None:
+    """Dependency edges are unique, non-self, and constrained to one Project."""
+    database_path = tmp_path / "local.db"
+    initialize_empty_store(database_path)
+    connection = _open_physical_database(database_path)
+    try:
+        _seed_authorization_graph(connection)
+        connection.execute(
+            """
+            INSERT INTO projects (
+                id, instance_id, key, name, next_task_number, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            ("prj_other", "ins_local", "OTHER", "Other", 2, _TIMESTAMP),
+        )
+        connection.execute(
+            """
+            INSERT INTO project_grants (subject_id, project_id, role)
+            VALUES (?, ?, ?)
+            """,
+            ("sub_local", "prj_other", "owner"),
+        )
+        _insert_task(connection)
+        _insert_task(connection, uid="tsk_second", number=2, key="ACME-2")
+        _insert_task(
+            connection,
+            uid="tsk_other",
+            project_id="prj_other",
+            key="OTHER-1",
+        )
+        connection.execute(
+            """
+            INSERT INTO task_dependencies (task_uid, prerequisite_uid, project_id)
+            VALUES (?, ?, ?)
+            """,
+            ("tsk_first", "tsk_second", "prj_acme"),
+        )
+        connection.commit()
+
+        assert connection.execute(
+            "SELECT task_uid, prerequisite_uid, project_id FROM task_dependencies"
+        ).fetchall() == [("tsk_first", "tsk_second", "prj_acme")]
+        for row in (
+            ("tsk_first", "tsk_second", "prj_acme"),
+            ("tsk_first", "tsk_first", "prj_acme"),
+            ("tsk_first", "tsk_other", "prj_acme"),
+            ("tsk_missing", "tsk_second", "prj_acme"),
+        ):
+            with pytest.raises(sqlite3.IntegrityError):
+                connection.execute(
+                    """
+                    INSERT INTO task_dependencies (
+                        task_uid, prerequisite_uid, project_id
+                    ) VALUES (?, ?, ?)
+                    """,
+                    row,
+                )
+            connection.rollback()
+    finally:
+        connection.close()
+
+
+def test_phase_three_result_review_and_current_selection_constraints(
+    tmp_path: Path,
+) -> None:
+    """Results retain closed content, normalized reviews, and Task ownership."""
+    database_path = tmp_path / "local.db"
+    initialize_empty_store(database_path)
+    connection = _open_physical_database(database_path)
+    try:
+        _seed_authorization_graph(connection)
+        _insert_task(connection)
+        connection.execute(
+            """
+            INSERT INTO task_results (
+                id, task_uid, submitted_by, attempt_id, submitted_at, comment,
+                summary, criteria_json, artifacts_json,
+                proposed_follow_ups_json, review_status, reviewed_by,
+                reviewed_at, review_comment, rejection_reason
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "res_pending",
+                "tsk_first",
+                "sub_local",
+                None,
+                _TIMESTAMP,
+                "Completed manually",
+                "Done",
+                "[]",
+                "[]",
+                "[]",
+                "pending",
+                None,
+                None,
+                None,
+                None,
+            ),
+        )
+        connection.execute(
+            "UPDATE tasks SET state = 'review', current_result_id = 'res_pending'"
+        )
+        connection.commit()
+
+        assert connection.execute(
+            "SELECT current_result_id FROM tasks WHERE uid = 'tsk_first'"
+        ).fetchone() == ("res_pending",)
+        with pytest.raises(sqlite3.IntegrityError):
+            connection.execute(
+                "UPDATE tasks SET current_result_id = 'res_missing' "
+                "WHERE uid = 'tsk_first'"
+            )
+        connection.rollback()
+
+        invalid_rows = (
+            ("res_status", "unknown", None, None, None, None, "[]"),
+            (
+                "res_pending_reviewed",
+                "pending",
+                "sub_local",
+                _TIMESTAMP,
+                None,
+                None,
+                "[]",
+            ),
+            (
+                "res_approved_unattributed",
+                "approved",
+                None,
+                None,
+                "Approved",
+                None,
+                "[]",
+            ),
+            (
+                "res_rejected_no_reason",
+                "rejected",
+                "sub_local",
+                _TIMESTAMP,
+                None,
+                None,
+                "[]",
+            ),
+            ("res_bad_json", "pending", None, None, None, None, "{}"),
+            (
+                "res_large_json",
+                "pending",
+                None,
+                None,
+                None,
+                None,
+                json.dumps(["x" * STRUCTURED_COLLECTION_JSON_MAX_LENGTH]),
+            ),
+        )
+        for (
+            result_id,
+            status,
+            reviewer,
+            reviewed_at,
+            review_comment,
+            reason,
+            criteria_json,
+        ) in invalid_rows:
+            with pytest.raises(sqlite3.IntegrityError):
+                connection.execute(
+                    """
+                    INSERT INTO task_results (
+                        id, task_uid, submitted_by, attempt_id, submitted_at,
+                        criteria_json, artifacts_json, proposed_follow_ups_json,
+                        review_status, reviewed_by, reviewed_at, review_comment,
+                        rejection_reason
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        result_id,
+                        "tsk_first",
+                        "sub_local",
+                        None,
+                        _TIMESTAMP,
+                        criteria_json,
+                        "[]",
+                        "[]",
+                        status,
+                        reviewer,
+                        reviewed_at,
+                        review_comment,
+                        reason,
+                    ),
+                )
+            connection.rollback()
+    finally:
+        connection.close()
+
+
+def test_phase_three_event_types_snapshots_and_payload_bounds(tmp_path: Path) -> None:
+    """Every Phase 3 event type accepts exact Human attribution and object JSON."""
+    database_path = tmp_path / "local.db"
+    initialize_empty_store(database_path)
+    connection = _open_physical_database(database_path)
+    try:
+        _seed_authorization_graph(connection)
+        _insert_task(connection)
+        event_types = (
+            "task_created",
+            "task_updated",
+            "task_blocked",
+            "task_unblocked",
+            "result_submitted",
+            "review_approved",
+            "review_rejected",
+            "task_completed",
+            "task_cancelled",
+        )
+        for index, event_type in enumerate(event_types):
+            connection.execute(
+                """
+                INSERT INTO task_events (
+                    id, task_uid, project_id, actor_subject_id, actor_kind,
+                    attempt_id, request_id, event_type, occurred_at, payload_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    f"evt_{index}",
+                    "tsk_first",
+                    "prj_acme",
+                    "sub_local",
+                    "human",
+                    None,
+                    f"req_{index}",
+                    event_type,
+                    _TIMESTAMP,
+                    "{}",
+                ),
+            )
+        connection.commit()
+        assert connection.execute(
+            "SELECT event_type FROM task_events ORDER BY cursor"
+        ).fetchall() == [(event_type,) for event_type in event_types]
+
+        invalid_rows = (
+            ("evt_kind", "agent", None, "task_updated", "{}"),
+            ("evt_attempt", "human", "bad", "task_updated", "{}"),
+            ("evt_type", "human", None, "task_claimed", "{}"),
+            ("evt_array", "human", None, "task_updated", "[]"),
+            (
+                "evt_large",
+                "human",
+                None,
+                "task_updated",
+                json.dumps({"value": "x" * EVENT_PAYLOAD_JSON_MAX_LENGTH}),
+            ),
+        )
+        for event_id, actor_kind, attempt_id, event_type, payload_json in invalid_rows:
+            with pytest.raises(sqlite3.IntegrityError):
+                connection.execute(
+                    """
+                    INSERT INTO task_events (
+                        id, task_uid, project_id, actor_subject_id, actor_kind,
+                        attempt_id, request_id, event_type, occurred_at,
+                        payload_json
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        event_id,
+                        "tsk_first",
+                        "prj_acme",
+                        "sub_local",
+                        actor_kind,
+                        attempt_id,
+                        f"req_{event_id}",
+                        event_type,
+                        _TIMESTAMP,
+                        payload_json,
+                    ),
+                )
+            connection.rollback()
+    finally:
+        connection.close()
+
+
+def test_idempotency_operation_constraint_includes_every_phase_three_mutation(
+    tmp_path: Path,
+) -> None:
+    """The closed semantic operation set includes every cumulative mutation."""
+    database_path = tmp_path / "local.db"
+    initialize_empty_store(database_path)
+    connection = _open_physical_database(database_path)
+    try:
+        for index, operation in enumerate(_IDEMPOTENCY_OPERATIONS):
+            connection.execute(
+                """
+                INSERT INTO idempotency_records (
+                    subject_scope, operation, caller_key, request_fingerprint,
+                    outcome_json, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    "sub_local",
+                    operation,
+                    f"operation-{index}",
+                    "fingerprint",
+                    "{}",
+                    _TIMESTAMP,
+                ),
+            )
+        assert connection.execute(
+            "SELECT operation FROM idempotency_records ORDER BY operation"
+        ).fetchall() == [(value,) for value in sorted(_IDEMPOTENCY_OPERATIONS)]
         with pytest.raises(sqlite3.IntegrityError):
             connection.execute(
                 """
@@ -619,6 +1102,30 @@ def test_idempotency_operation_constraint_includes_project_creation(
                     _TIMESTAMP,
                 ),
             )
+        for caller_key, outcome_json in (
+            ("invalid-shape", "[]"),
+            (
+                "invalid-size",
+                json.dumps({"value": "x" * IDEMPOTENCY_OUTCOME_JSON_MAX_LENGTH}),
+            ),
+        ):
+            with pytest.raises(sqlite3.IntegrityError):
+                connection.execute(
+                    """
+                    INSERT INTO idempotency_records (
+                        subject_scope, operation, caller_key,
+                        request_fingerprint, outcome_json, created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        "sub_local",
+                        "task.update",
+                        caller_key,
+                        "fingerprint",
+                        outcome_json,
+                        _TIMESTAMP,
+                    ),
+                )
     finally:
         connection.close()
 
@@ -803,7 +1310,7 @@ def _build_invalid_store(database_path: Path, scenario: str) -> None:
             )
             connection.executemany(
                 "INSERT INTO store_metadata VALUES (?, ?)",
-                [(1, 2), (2, 2)],
+                [(1, 3), (2, 3)],
             )
         else:
             connection.execute(
@@ -825,7 +1332,7 @@ def _build_invalid_store(database_path: Path, scenario: str) -> None:
 
 @pytest.mark.parametrize(
     "scenario",
-    ["missing", "malformed", "multiple", "0", "1", "3"],
+    ["missing", "malformed", "multiple", "0", "1", "2", "4"],
 )
 def test_schema_validation_rejects_without_modifying_the_store(
     scenario: str,
@@ -861,9 +1368,9 @@ def test_validation_runtime_checks_connection_type() -> None:
 
 
 def test_initialization_never_repairs_an_unsupported_store(tmp_path: Path) -> None:
-    """Calling initialization on version 1 leaves every schema object unchanged."""
-    database_path = tmp_path / "phase-one.db"
-    _build_invalid_store(database_path, "1")
+    """Calling initialization on version 2 leaves every schema object unchanged."""
+    database_path = tmp_path / "phase-two.db"
+    _build_invalid_store(database_path, "2")
     original_bytes = database_path.read_bytes()
     connection = sqlite3.connect(database_path)
     original_schema = connection.execute(
@@ -893,8 +1400,8 @@ def test_normal_open_rejects_an_unsupported_store(
     tmp_path: Path,
 ) -> None:
     """Every normal connection validates schema before exposing state."""
-    database_path = tmp_path / "phase-one.db"
-    _build_invalid_store(database_path, "1")
+    database_path = tmp_path / "phase-two.db"
+    _build_invalid_store(database_path, "2")
 
     with pytest.raises(SchemaUnsupportedError), opener(database_path):
         pytest.fail("unsupported state must not be exposed")
@@ -903,7 +1410,7 @@ def test_normal_open_rejects_an_unsupported_store(
 def test_concurrent_first_initialization_produces_one_valid_schema(
     tmp_path: Path,
 ) -> None:
-    """Concurrent creators serialize into a single complete version-2 store."""
+    """Concurrent creators serialize into a single complete version-3 store."""
     database_path = tmp_path / "concurrent" / "local.db"
 
     with ThreadPoolExecutor(max_workers=4) as executor:

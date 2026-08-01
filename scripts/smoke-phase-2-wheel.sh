@@ -280,7 +280,7 @@ require(
 require(all_list["next_cursor"] is None, "unexpected all-Project cursor")
 require(context["project"] == docs_project, "restarted context changed")
 require(context["workspace_root"] == sys.argv[11], "nearest Workspace changed")
-require(context["schema_version"] == 2, "schema version changed")
+require(context["schema_version"] == 3, "schema version changed")
 ' \
   "$phase_two_up_output" \
   "$phase_two_docs_output" \

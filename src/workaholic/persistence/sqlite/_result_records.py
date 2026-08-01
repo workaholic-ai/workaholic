@@ -1,0 +1,337 @@
+"""Canonical Phase 3 TaskResult serialization and strict row codecs."""
+
+from __future__ import annotations
+
+from collections.abc import Mapping, Sequence
+from typing import Final
+
+from workaholic.domain import (
+    ArtifactReference,
+    CriterionOutcome,
+    CriterionStatus,
+    ProposedFollowUp,
+    ResultId,
+    ResultReview,
+    ResultReviewStatus,
+    SubjectId,
+    TaskId,
+    TaskResult,
+)
+from workaholic.persistence.sqlite._records import (
+    STRUCTURED_COLLECTION_JSON_MAX_LENGTH,
+    canonical_json_value,
+    parse_json_array,
+    parse_optional_timestamp,
+    parse_timestamp,
+    require_optional_text,
+    require_text,
+    serialize_timestamp,
+)
+from workaholic.persistence.sqlite.errors import StorageUnavailableError
+
+TASK_RESULT_FIELDS: Final = (
+    "id",
+    "task_uid",
+    "submitted_by",
+    "attempt_id",
+    "submitted_at",
+    "comment",
+    "summary",
+    "criteria_json",
+    "artifacts_json",
+    "proposed_follow_ups_json",
+    "review_status",
+    "reviewed_by",
+    "reviewed_at",
+    "review_comment",
+    "rejection_reason",
+)
+TASK_RESULT_MAPPING_FIELDS: Final = (
+    "id",
+    "task_uid",
+    "submitted_by",
+    "attempt_id",
+    "submitted_at",
+    "comment",
+    "summary",
+    "criteria",
+    "artifacts",
+    "proposed_follow_ups",
+    "review",
+)
+TASK_RESULT_MAPPING_FIELD_SET: Final = frozenset(TASK_RESULT_MAPPING_FIELDS)
+_REVIEW_MAPPING_FIELDS: Final = frozenset(
+    ("status", "reviewed_by", "reviewed_at", "comment", "reason")
+)
+
+
+def task_result_mapping(result: TaskResult) -> dict[str, object]:
+    """Serialize one Result into its exact durable replay shape.
+
+    Args:
+        result: Validated Task Result.
+
+    Returns:
+        JSON-compatible stable Result mapping.
+
+    Raises:
+        StorageUnavailableError: If the runtime value is not a Human Result.
+
+    """
+    candidate: object = result
+    if not isinstance(candidate, TaskResult) or candidate.attempt_id is not None:
+        raise StorageUnavailableError
+    review = candidate.review
+    return {
+        "artifacts": [
+            {
+                "media_type": item.media_type,
+                "sha256": item.sha256,
+                "uri": item.uri,
+            }
+            for item in candidate.artifacts
+        ],
+        "attempt_id": None,
+        "comment": candidate.comment,
+        "criteria": [
+            {
+                "criterion_id": item.criterion_id,
+                "evidence": item.evidence,
+                "status": item.status.value,
+            }
+            for item in candidate.criteria
+        ],
+        "id": str(candidate.id),
+        "proposed_follow_ups": [
+            {"title": item.title} for item in candidate.proposed_follow_ups
+        ],
+        "review": {
+            "comment": review.comment,
+            "reason": review.reason,
+            "reviewed_at": (
+                None
+                if review.reviewed_at is None
+                else serialize_timestamp(review.reviewed_at)
+            ),
+            "reviewed_by": (
+                None if review.reviewed_by is None else str(review.reviewed_by)
+            ),
+            "status": review.status.value,
+        },
+        "submitted_at": serialize_timestamp(candidate.submitted_at),
+        "submitted_by": str(candidate.submitted_by),
+        "summary": candidate.summary,
+        "task_uid": str(candidate.task_uid),
+    }
+
+
+def task_result_row(result: TaskResult) -> tuple[object, ...]:
+    """Serialize one Result into exact ``TASK_RESULT_FIELDS`` order.
+
+    Args:
+        result: Validated Human Result.
+
+    Returns:
+        SQLite-compatible row values.
+
+    """
+    mapping = task_result_mapping(result)
+    review = _require_mapping(mapping["review"], fields=_REVIEW_MAPPING_FIELDS)
+    return (
+        mapping["id"],
+        mapping["task_uid"],
+        mapping["submitted_by"],
+        mapping["attempt_id"],
+        mapping["submitted_at"],
+        mapping["comment"],
+        mapping["summary"],
+        canonical_json_value(mapping["criteria"]),
+        canonical_json_value(mapping["artifacts"]),
+        canonical_json_value(mapping["proposed_follow_ups"]),
+        review["status"],
+        review["reviewed_by"],
+        review["reviewed_at"],
+        review["comment"],
+        review["reason"],
+    )
+
+
+def task_result_from_mapping(value: Mapping[str, object]) -> TaskResult:
+    """Deserialize one exact durable Result mapping.
+
+    Args:
+        value: Candidate Result mapping.
+
+    Returns:
+        Validated Human Result.
+
+    Raises:
+        StorageUnavailableError: If shape, values, or attribution are invalid.
+
+    """
+    candidate: object = value
+    if (
+        not isinstance(candidate, Mapping)
+        or set(candidate) != TASK_RESULT_MAPPING_FIELD_SET
+    ):
+        raise StorageUnavailableError
+    review = _require_mapping(candidate["review"], fields=_REVIEW_MAPPING_FIELDS)
+    return _build_result(
+        (
+            candidate["id"],
+            candidate["task_uid"],
+            candidate["submitted_by"],
+            candidate["attempt_id"],
+            candidate["submitted_at"],
+            candidate["comment"],
+            candidate["summary"],
+            candidate["criteria"],
+            candidate["artifacts"],
+            candidate["proposed_follow_ups"],
+            review["status"],
+            review["reviewed_by"],
+            review["reviewed_at"],
+            review["comment"],
+            review["reason"],
+        ),
+        collections_are_json=False,
+    )
+
+
+def task_result_from_row(value: Sequence[object]) -> TaskResult:
+    """Deserialize one Result selected in ``TASK_RESULT_FIELDS`` order.
+
+    Args:
+        value: SQLite row values in canonical Result field order.
+
+    Returns:
+        Validated Human Result.
+
+    Raises:
+        StorageUnavailableError: If row shape or values are malformed.
+
+    """
+    candidate: object = value
+    if not isinstance(candidate, Sequence) or isinstance(candidate, (str, bytes)):
+        raise StorageUnavailableError
+    if len(candidate) != len(TASK_RESULT_FIELDS):
+        raise StorageUnavailableError
+    return _build_result(candidate, collections_are_json=True)
+
+
+def _build_result(
+    value: Sequence[object],
+    *,
+    collections_are_json: bool,
+) -> TaskResult:
+    """Build one Result from shape-checked ordered values.
+
+    Args:
+        value: Ordered Result values.
+        collections_are_json: Whether collection values are serialized JSON.
+
+    Returns:
+        Validated Human Result.
+
+    Raises:
+        StorageUnavailableError: If any persisted value is invalid.
+
+    """
+    try:
+        if value[3] is not None:
+            raise StorageUnavailableError
+        collections = tuple(
+            parse_json_array(
+                value[index],
+                maximum=STRUCTURED_COLLECTION_JSON_MAX_LENGTH,
+            )
+            if collections_are_json
+            else value[index]
+            for index in (7, 8, 9)
+        )
+        reviewed_by_text = require_optional_text(value[11])
+        return TaskResult(
+            id=ResultId(require_text(value[0])),
+            task_uid=TaskId(require_text(value[1])),
+            submitted_by=SubjectId(require_text(value[2])),
+            attempt_id=None,
+            submitted_at=parse_timestamp(value[4]),
+            comment=require_optional_text(value[5]),
+            summary=require_optional_text(value[6]),
+            criteria=_criteria_from_sequence(collections[0]),
+            artifacts=_artifacts_from_sequence(collections[1]),
+            proposed_follow_ups=_follow_ups_from_sequence(collections[2]),
+            review=ResultReview(
+                status=ResultReviewStatus(require_text(value[10])),
+                reviewed_by=(
+                    None if reviewed_by_text is None else SubjectId(reviewed_by_text)
+                ),
+                reviewed_at=parse_optional_timestamp(value[12]),
+                comment=require_optional_text(value[13]),
+                reason=require_optional_text(value[14]),
+            ),
+        )
+    except (IndexError, TypeError, ValueError) as error:
+        raise StorageUnavailableError from error
+
+
+def _criteria_from_sequence(value: object) -> tuple[CriterionOutcome, ...]:
+    """Decode one closed ordered criterion-outcome sequence."""
+    items = _require_sequence(value)
+    result: list[CriterionOutcome] = []
+    fields = frozenset(("criterion_id", "status", "evidence"))
+    for item in items:
+        mapping = _require_mapping(item, fields=fields)
+        result.append(
+            CriterionOutcome(
+                criterion_id=require_text(mapping["criterion_id"]),
+                status=CriterionStatus(require_text(mapping["status"])),
+                evidence=require_optional_text(mapping["evidence"]),
+            )
+        )
+    return tuple(result)
+
+
+def _artifacts_from_sequence(value: object) -> tuple[ArtifactReference, ...]:
+    """Decode one closed ordered artifact-reference sequence."""
+    items = _require_sequence(value)
+    result: list[ArtifactReference] = []
+    fields = frozenset(("uri", "media_type", "sha256"))
+    for item in items:
+        mapping = _require_mapping(item, fields=fields)
+        result.append(
+            ArtifactReference(
+                uri=require_text(mapping["uri"]),
+                media_type=require_optional_text(mapping["media_type"]),
+                sha256=require_optional_text(mapping["sha256"]),
+            )
+        )
+    return tuple(result)
+
+
+def _follow_ups_from_sequence(value: object) -> tuple[ProposedFollowUp, ...]:
+    """Decode one closed ordered inert follow-up sequence."""
+    items = _require_sequence(value)
+    result: list[ProposedFollowUp] = []
+    for item in items:
+        mapping = _require_mapping(item, fields=frozenset(("title",)))
+        result.append(ProposedFollowUp(title=require_text(mapping["title"])))
+    return tuple(result)
+
+
+def _require_sequence(value: object) -> Sequence[object]:
+    """Require one non-text ordered collection."""
+    if not isinstance(value, Sequence) or isinstance(value, (str, bytes, bytearray)):
+        raise StorageUnavailableError
+    return value
+
+
+def _require_mapping(
+    value: object,
+    *,
+    fields: frozenset[str],
+) -> Mapping[str, object]:
+    """Require one exact closed string-keyed mapping."""
+    if not isinstance(value, Mapping) or set(value) != fields:
+        raise StorageUnavailableError
+    return value

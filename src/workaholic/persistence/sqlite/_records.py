@@ -5,11 +5,22 @@ from __future__ import annotations
 import json
 from collections.abc import Mapping, Sequence
 from datetime import datetime
+from typing import Final, cast
 
-from workaholic.domain import InstanceId, Project, ProjectId
+from workaholic.domain import (
+    DomainValidationError,
+    InstanceId,
+    Project,
+    ProjectId,
+    validate_json_value,
+)
 from workaholic.persistence.sqlite.errors import StorageUnavailableError
 
 _CANONICAL_TIMESTAMP_LENGTH = 27
+_MIN_JSON_DOCUMENT_LENGTH = 2
+EVENT_PAYLOAD_JSON_MAX_LENGTH: Final = 65_536
+STRUCTURED_COLLECTION_JSON_MAX_LENGTH: Final = 262_144
+IDEMPOTENCY_OUTCOME_JSON_MAX_LENGTH: Final = 2_097_152
 PROJECT_FIELDS = (
     "id",
     "instance_id",
@@ -127,12 +138,151 @@ def canonical_json(value: Mapping[str, object]) -> str:
         Canonical compact JSON with sorted keys.
 
     """
-    return json.dumps(
-        value,
-        ensure_ascii=True,
-        separators=(",", ":"),
-        sort_keys=True,
-    )
+    candidate: object = value
+    if not isinstance(candidate, Mapping):
+        raise StorageUnavailableError
+    return canonical_json_value(candidate)
+
+
+def canonical_json_value(value: object) -> str:
+    """Serialize one bounded JSON value deterministically.
+
+    Args:
+        value: Candidate recursive JSON value.
+
+    Returns:
+        Canonical compact JSON with sorted object keys.
+
+    Raises:
+        StorageUnavailableError: If the value violates the bounded JSON contract.
+
+    """
+    try:
+        validate_json_value(value, label="Persisted JSON")
+        return json.dumps(
+            _json_compatible_copy(value),
+            allow_nan=False,
+            ensure_ascii=True,
+            separators=(",", ":"),
+            sort_keys=True,
+        )
+    except (DomainValidationError, TypeError, ValueError) as error:
+        raise StorageUnavailableError from error
+
+
+def _json_compatible_copy(value: object) -> object:
+    """Copy validated Mapping and Sequence abstractions into JSON-native values."""
+    if isinstance(value, Mapping):
+        return {key: _json_compatible_copy(item) for key, item in value.items()}
+    if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
+        return [_json_compatible_copy(item) for item in value]
+    return value
+
+
+def parse_json_object(
+    value: object,
+    *,
+    maximum: int,
+) -> dict[str, object]:
+    """Parse one bounded canonical JSON object from SQLite.
+
+    Args:
+        value: Candidate SQLite text value.
+        maximum: Inclusive serialized character bound.
+
+    Returns:
+        New validated object mapping.
+
+    Raises:
+        StorageUnavailableError: If shape, bounds, keys, or encoding are invalid.
+
+    """
+    decoded = _parse_canonical_json(value, maximum=maximum)
+    if not isinstance(decoded, dict):
+        raise StorageUnavailableError
+    return cast("dict[str, object]", decoded)
+
+
+def parse_json_array(
+    value: object,
+    *,
+    maximum: int,
+) -> tuple[object, ...]:
+    """Parse one bounded canonical JSON array from SQLite.
+
+    Args:
+        value: Candidate SQLite text value.
+        maximum: Inclusive serialized character bound.
+
+    Returns:
+        Immutable top-level sequence of validated JSON values.
+
+    Raises:
+        StorageUnavailableError: If shape, bounds, keys, or encoding are invalid.
+
+    """
+    decoded = _parse_canonical_json(value, maximum=maximum)
+    if not isinstance(decoded, list):
+        raise StorageUnavailableError
+    return tuple(decoded)
+
+
+def _parse_canonical_json(value: object, *, maximum: int) -> object:
+    """Parse and validate one canonical bounded JSON document.
+
+    Args:
+        value: Candidate SQLite text value.
+        maximum: Inclusive serialized character bound.
+
+    Returns:
+        Decoded JSON value.
+
+    Raises:
+        StorageUnavailableError: If persistence contains noncanonical JSON.
+
+    """
+    text = require_text(value)
+    if (
+        type(maximum) is not int
+        or maximum < _MIN_JSON_DOCUMENT_LENGTH
+        or len(text) > maximum
+    ):
+        raise StorageUnavailableError
+    try:
+        decoded: object = json.loads(text, object_pairs_hook=_unique_json_object)
+        validate_json_value(decoded, label="Persisted JSON")
+        if canonical_json_value(decoded) != text:
+            raise StorageUnavailableError
+    except (
+        DomainValidationError,
+        json.JSONDecodeError,
+        TypeError,
+        ValueError,
+    ) as error:
+        raise StorageUnavailableError from error
+    return decoded
+
+
+def _unique_json_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
+    """Build a JSON object while rejecting duplicate serialized keys.
+
+    Args:
+        pairs: Ordered object pairs supplied by ``json.loads``.
+
+    Returns:
+        New object preserving the decoded values.
+
+    Raises:
+        ValueError: If one serialized key appears more than once.
+
+    """
+    result: dict[str, object] = {}
+    for key, item in pairs:
+        if key in result:
+            message = "Persisted JSON object keys must be unique."
+            raise ValueError(message)
+        result[key] = item
+    return result
 
 
 def serialize_timestamp(value: datetime) -> str:
@@ -172,6 +322,19 @@ def parse_timestamp(value: object) -> datetime:
     return datetime.fromisoformat(f"{text[:-1]}+00:00")
 
 
+def parse_optional_timestamp(value: object) -> datetime | None:
+    """Parse a nullable canonical UTC timestamp from SQLite.
+
+    Args:
+        value: Persisted timestamp text or ``None``.
+
+    Returns:
+        Timezone-aware UTC datetime or ``None``.
+
+    """
+    return None if value is None else parse_timestamp(value)
+
+
 def require_text(value: object) -> str:
     """Require one nonempty SQLite text value.
 
@@ -188,6 +351,22 @@ def require_text(value: object) -> str:
     if not isinstance(value, str) or not value:
         raise StorageUnavailableError
     return value
+
+
+def require_optional_text(value: object) -> str | None:
+    """Require nullable nonempty SQLite text.
+
+    Args:
+        value: Driver value.
+
+    Returns:
+        Nonempty text or ``None``.
+
+    Raises:
+        StorageUnavailableError: If a non-null value is not nonempty text.
+
+    """
+    return None if value is None else require_text(value)
 
 
 def require_integer(value: object, *, minimum: int = 1) -> int:

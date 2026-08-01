@@ -126,7 +126,7 @@ def test_local_cli_persists_complete_journey_across_fresh_processes(  # noqa: PL
     )
     status_data = require_object(require_success(status), context="status data")
     assert status_data["mode"] == "embedded"
-    assert status_data["schema_version"] == 2
+    assert status_data["schema_version"] == 3
     assert status_data["instance"] == instance
     assert status_data["project"] == project
     assert status_data["subject"] == subject

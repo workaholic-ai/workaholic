@@ -602,7 +602,9 @@ def test_result_models_validate_consistent_bootstrap_and_status() -> None:
     assert bootstrap.workspace.project_id == bootstrap.project.id
     assert status.mode == "embedded"
     assert status.profile == "local"
-    assert status.schema_version == 2
+    assert status.schema_version == 3
+    with pytest.raises(ValidationError):
+        StatusResult.model_validate({**status.model_dump(), "schema_version": 2})
 
 
 def test_phase_two_results_validate_creation_and_safe_context() -> None:
@@ -622,8 +624,10 @@ def test_phase_two_results_validate_creation_and_safe_context() -> None:
 
     assert creation.project is project
     assert context.mode == "embedded"
-    assert context.schema_version == 2
+    assert context.schema_version == 3
     assert context.profile == "team_1"
+    with pytest.raises(ValidationError):
+        ContextResult.model_validate({**context.model_dump(), "schema_version": 2})
     with pytest.raises(ValidationError, match="grant"):
         ProjectCreationResult(
             project=project,

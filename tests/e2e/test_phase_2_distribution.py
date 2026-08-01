@@ -679,7 +679,7 @@ def test_source_and_wheel_match_and_reject_phase_two_boundaries(  # noqa: PLR091
             "all_list": ["ACME-1", "DOCS-1"],
             "next_cursor": None,
             "restarted_project": "DOCS",
-            "schema_version": 2,
+            "schema_version": 3,
         }
     )
 

@@ -33,6 +33,7 @@ from workaholic.persistence.sqlite._task_records import (
     TASK_FIELD_SET,
     task_from_mapping,
     task_mapping,
+    task_row,
 )
 from workaholic.persistence.sqlite.connection import open_write_transaction
 from workaholic.persistence.sqlite.errors import StorageUnavailableError
@@ -284,23 +285,14 @@ def _insert_task(connection: sqlite3.Connection, task: Task) -> None:
         """
         INSERT INTO tasks (
             uid, project_id, number, key, title, objective, state, priority,
-            version, created_by, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            available_at, approval, acceptance_json, context_json,
+            blocking_reason, current_result_id, version, created_by,
+            created_at, updated_at
+        ) VALUES (
+            ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+        )
         """,
-        (
-            str(task.uid),
-            str(task.project_id),
-            task.number,
-            task.key,
-            task.title,
-            task.objective,
-            task.state.value,
-            task.priority,
-            task.version,
-            str(task.created_by),
-            serialize_timestamp(task.created_at),
-            serialize_timestamp(task.updated_at),
-        ),
+        task_row(task),
     )
 
 
