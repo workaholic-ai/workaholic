@@ -2,14 +2,22 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 from workaholic.persistence.sqlite import _queries as sqlite_queries
+from workaholic.persistence.sqlite import _task_views as sqlite_task_views
 from workaholic.persistence.sqlite._bootstrap import (
     bootstrap_local_project as _bootstrap_local_project,
 )
 from workaholic.persistence.sqlite._projects import create_project as _create_project
+from workaholic.persistence.sqlite._task_dependencies import (
+    add_task_dependency as _add_task_dependency,
+)
+from workaholic.persistence.sqlite._task_dependencies import (
+    remove_task_dependency as _remove_task_dependency,
+)
 from workaholic.persistence.sqlite._task_lifecycle import (
     block_task as _block_task,
 )
@@ -27,20 +35,26 @@ from workaholic.persistence.sqlite.schema import initialize_empty_store
 
 if TYPE_CHECKING:
     from workaholic.application import (
+        AddTaskDependencyMutation,
         BootstrapMutation,
         BootstrapResult,
+        Clock,
         GetLocalStatus,
         GetProjectByKey,
         GetTask,
+        GetTaskDetails,
         ListInstanceTasks,
         ListProjects,
         ListTasks,
+        ListTasksByView,
         ProjectCreationMutation,
         ProjectCreationResult,
+        RemoveTaskDependencyMutation,
         StatusResult,
         TaskBlockMutation,
         TaskCancelMutation,
         TaskCreationMutation,
+        TaskDetails,
         TaskMutationResult,
         TaskPage,
         TaskUnblockMutation,
@@ -49,14 +63,23 @@ if TYPE_CHECKING:
     from workaholic.domain import Project, Task
 
 
+class _UtcSystemClock:
+    """Supply authoritative UTC time for direct repository query use."""
+
+    def now(self) -> datetime:
+        """Return the current timezone-aware UTC timestamp."""
+        return datetime.now(UTC)
+
+
 class SQLiteRepository:
     """Cumulative SQLite implementation of atomic semantic operations."""
 
-    def __init__(self, database_path: Path) -> None:
+    def __init__(self, database_path: Path, *, clock: Clock | None = None) -> None:
         """Bind the adapter to one absolute local database path.
 
         Args:
             database_path: Absolute path to a schema-version-3 SQLite store.
+            clock: Optional authoritative clock for time-derived read views.
 
         Raises:
             TypeError: If the value is not an absolute Path.
@@ -66,7 +89,12 @@ class SQLiteRepository:
         if not isinstance(candidate_path, Path) or not candidate_path.is_absolute():
             message = "SQLite repository database_path must be an absolute Path."
             raise TypeError(message)
+        selected_clock = _UtcSystemClock() if clock is None else clock
+        if not callable(getattr(selected_clock, "now", None)):
+            message = "SQLite repository clock must provide now()."
+            raise TypeError(message)
         self._database_path = candidate_path
+        self._clock = selected_clock
 
     @property
     def database_path(self) -> Path:
@@ -157,6 +185,36 @@ class SQLiteRepository:
         """
         return _cancel_task(self._database_path, mutation)
 
+    def add_task_dependency(
+        self,
+        mutation: AddTaskDependencyMutation,
+    ) -> TaskMutationResult:
+        """Atomically add one same-Project prerequisite edge.
+
+        Args:
+            mutation: Validated optimistic dependency addition.
+
+        Returns:
+            The committed dependant Task and attributable update event.
+
+        """
+        return _add_task_dependency(self._database_path, mutation)
+
+    def remove_task_dependency(
+        self,
+        mutation: RemoveTaskDependencyMutation,
+    ) -> TaskMutationResult:
+        """Atomically remove one existing prerequisite edge.
+
+        Args:
+            mutation: Validated optimistic dependency removal.
+
+        Returns:
+            The committed dependant Task and attributable update event.
+
+        """
+        return _remove_task_dependency(self._database_path, mutation)
+
     def create_project(
         self,
         mutation: ProjectCreationMutation,
@@ -246,3 +304,35 @@ class SQLiteRepository:
 
         """
         return sqlite_queries.get_task(self._database_path, command)
+
+    def get_task_details(self, command: GetTaskDetails) -> TaskDetails:
+        """Read complete Task details with authoritative derived readiness.
+
+        Args:
+            command: Validated Project-scoped detail query.
+
+        Returns:
+            Complete Task details at one clock snapshot.
+
+        """
+        return sqlite_task_views.get_task_details(
+            self._database_path,
+            command,
+            now=self._clock.now(),
+        )
+
+    def list_tasks_by_view(self, command: ListTasksByView) -> TaskPage:
+        """Read one view-bound deterministic Phase 3 Task page.
+
+        Args:
+            command: Validated view, scope, and pagination query.
+
+        Returns:
+            Tasks and aligned readiness using a version-3 cursor.
+
+        """
+        return sqlite_task_views.list_tasks_by_view(
+            self._database_path,
+            command,
+            now=self._clock.now(),
+        )

@@ -383,8 +383,8 @@ class CoreQueryRepository(Protocol):
         ...
 
 
-class QueryRepository(CoreQueryRepository, Protocol):
-    """Read the cumulative query surface without mutation."""
+class TaskViewQueryRepository(CoreQueryRepository, Protocol):
+    """Read cumulative core queries plus Phase 3 Task readiness views."""
 
     def get_task_details(self, command: GetTaskDetails) -> TaskDetails:
         """Read complete Task definition, readiness, and selected Result details.
@@ -409,6 +409,10 @@ class QueryRepository(CoreQueryRepository, Protocol):
 
         """
         ...
+
+
+class QueryRepository(TaskViewQueryRepository, Protocol):
+    """Read the complete cumulative query surface without mutation."""
 
     def read_task_events_after(self, command: ReadTaskEvents) -> TaskEventPage:
         """Read one bounded TaskEvent snapshot after an Instance cursor.

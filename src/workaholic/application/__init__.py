@@ -70,6 +70,7 @@ from workaholic.application.ports import (
     QueryRepository,
     TaskCreationRepository,
     TaskRepository,
+    TaskViewQueryRepository,
     WorkaholicRepository,
 )
 from workaholic.application.projects import ProjectApplication
@@ -85,6 +86,7 @@ from workaholic.application.results import (
     TaskPage,
     TaskSubmissionResult,
 )
+from workaholic.application.task_dependencies import TaskDependencyApplication
 from workaholic.application.task_lifecycle import TaskLifecycleApplication
 from workaholic.application.tasks import TaskApplication
 
@@ -149,6 +151,7 @@ __all__ = [
     "TaskCancelMutation",
     "TaskCreationMutation",
     "TaskCreationRepository",
+    "TaskDependencyApplication",
     "TaskDetails",
     "TaskEventPage",
     "TaskLifecycleApplication",
@@ -162,6 +165,7 @@ __all__ = [
     "TaskUnblockMutation",
     "TaskUpdateMutation",
     "TaskUpdatePatch",
+    "TaskViewQueryRepository",
     "UnblockTaskInput",
     "UnsatisfiableDependencyError",
     "UpdateTaskInput",

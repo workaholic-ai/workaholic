@@ -13,11 +13,15 @@ from workaholic.application import (
     GetLocalStatus,
     GetProjectByKey,
     GetTask,
+    GetTaskDetails,
     ListInstanceTasks,
     ListProjects,
     ListTasks,
+    ListTasksByView,
     QueryApplication,
     StatusResult,
+    TaskDetails,
+    TaskListView,
     TaskNotFoundError,
     TaskPage,
 )
@@ -33,6 +37,7 @@ from workaholic.domain import (
     SubjectKind,
     Task,
     TaskId,
+    TaskReadiness,
     TaskState,
 )
 
@@ -170,6 +175,25 @@ class _RecordingRepository:
             next_cursor=None,
         )
         self.task_result: object = task
+        readiness = TaskReadiness(
+            ready=True,
+            running=False,
+            scheduled=False,
+            stale=False,
+            awaiting_review=False,
+            reasons=(),
+        )
+        self.details_result: object = TaskDetails(
+            task=task,
+            readiness=readiness,
+            prerequisites=(),
+            current_result=None,
+        )
+        self.view_tasks_result: object = TaskPage(
+            tasks=(task,),
+            readiness=(readiness,),
+            next_cursor=None,
+        )
         self.commands: list[object] = []
 
     def get_local_status(self, command: GetLocalStatus) -> object:
@@ -201,6 +225,16 @@ class _RecordingRepository:
         """Record and return the configured Task output."""
         self.commands.append(command)
         return self.task_result
+
+    def get_task_details(self, command: GetTaskDetails) -> object:
+        """Record and return the configured complete Task details."""
+        self.commands.append(command)
+        return self.details_result
+
+    def list_tasks_by_view(self, command: ListTasksByView) -> object:
+        """Record and return the configured Task-view page."""
+        self.commands.append(command)
+        return self.view_tasks_result
 
 
 class _MissingGetTaskRepository:
@@ -262,6 +296,15 @@ def test_queries_delegate_exact_validated_commands() -> None:
         subject_id=SubjectId("sub_local"),
         task=TaskId("tsk_first"),
     )
+    details_command = GetTaskDetails(
+        project_id=ProjectId("prj_acme"),
+        subject_id=SubjectId("sub_local"),
+        task=TaskId("tsk_first"),
+    )
+    view_command = ListTasksByView(
+        project_id=ProjectId("prj_acme"),
+        subject_id=SubjectId("sub_local"),
+    )
 
     assert application.status(status_command) is repository.status_result
     assert application.list_projects(projects_command) is repository.projects_result
@@ -272,6 +315,8 @@ def test_queries_delegate_exact_validated_commands() -> None:
         is repository.instance_tasks_result
     )
     assert application.get_task(task_command) is repository.task_result
+    assert application.get_task_details(details_command) is repository.details_result
+    assert application.list_tasks_by_view(view_command) is repository.view_tasks_result
     assert repository.commands == [
         status_command,
         projects_command,
@@ -279,6 +324,8 @@ def test_queries_delegate_exact_validated_commands() -> None:
         tasks_command,
         instance_tasks_command,
         task_command,
+        details_command,
+        view_command,
     ]
 
 
@@ -304,6 +351,8 @@ def test_each_method_runtime_validates_its_command_type() -> None:
             cast("ListInstanceTasks", object())
         ),
         lambda: application.get_task(cast("GetTask", object())),
+        lambda: application.get_task_details(cast("GetTaskDetails", object())),
+        lambda: application.list_tasks_by_view(cast("ListTasksByView", object())),
     )
 
     for invoke in invocations:
@@ -343,12 +392,23 @@ def test_invalid_repository_results_map_to_safe_internal_errors() -> None:
         subject_id=SubjectId("sub_local"),
         task="ACME-1",
     )
+    details_command = GetTaskDetails(
+        project_id=ProjectId("prj_acme"),
+        subject_id=SubjectId("sub_local"),
+        task="ACME-1",
+    )
+    view_command = ListTasksByView(
+        project_id=ProjectId("prj_acme"),
+        subject_id=SubjectId("sub_local"),
+    )
     repository.status_result = object()
     repository.projects_result = [_project()]
     repository.project_result = object()
     repository.tasks_result = object()
     repository.instance_tasks_result = object()
     repository.task_result = object()
+    repository.details_result = object()
+    repository.view_tasks_result = object()
     invocations: tuple[Callable[[], object], ...] = (
         lambda: application.status(status_command),
         lambda: application.list_projects(projects_command),
@@ -356,6 +416,8 @@ def test_invalid_repository_results_map_to_safe_internal_errors() -> None:
         lambda: application.list_tasks(tasks_command),
         lambda: application.list_tasks_for_instance(instance_tasks_command),
         lambda: application.get_task(task_command),
+        lambda: application.get_task_details(details_command),
+        lambda: application.list_tasks_by_view(view_command),
     )
 
     for invoke in invocations:
@@ -421,6 +483,34 @@ def test_type_correct_cross_selection_results_are_rejected() -> None:
     )
     repository.instance_tasks_result = object()
     repository.task_result = _task()
+    repository.details_result = TaskDetails(
+        task=_other_task(),
+        readiness=TaskReadiness(
+            ready=True,
+            running=False,
+            scheduled=False,
+            stale=False,
+            awaiting_review=False,
+            reasons=(),
+        ),
+        prerequisites=(),
+        current_result=None,
+    )
+    repository.view_tasks_result = TaskPage(
+        tasks=(_other_task(),),
+        readiness=(
+            TaskReadiness(
+                ready=True,
+                running=False,
+                scheduled=False,
+                stale=False,
+                awaiting_review=False,
+                reasons=(),
+            ),
+        ),
+        next_cursor=None,
+        view=TaskListView.ALL,
+    )
     invocations: tuple[Callable[[], object], ...] = (
         lambda: application.status(
             GetLocalStatus(
@@ -459,6 +549,19 @@ def test_type_correct_cross_selection_results_are_rejected() -> None:
                 project_id=ProjectId("prj_acme"),
                 subject_id=SubjectId("sub_local"),
                 task="ACME-404",
+            )
+        ),
+        lambda: application.get_task_details(
+            GetTaskDetails(
+                project_id=ProjectId("prj_acme"),
+                subject_id=SubjectId("sub_local"),
+                task="ACME-404",
+            )
+        ),
+        lambda: application.list_tasks_by_view(
+            ListTasksByView(
+                project_id=ProjectId("prj_acme"),
+                subject_id=SubjectId("sub_local"),
             )
         ),
     )

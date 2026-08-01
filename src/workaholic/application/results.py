@@ -398,9 +398,10 @@ class TaskEventPage(_ResultModel):
 
 
 class TaskPage(_ResultModel):
-    """One deterministic Project- or Instance-scoped ascending Task page."""
+    """One deterministic Project- or Instance-scoped Task page with readiness."""
 
     tasks: tuple[Task, ...]
+    readiness: tuple[TaskReadiness, ...] = ()
     next_cursor: str | None
     view: TaskListView = TaskListView.ALL
 
@@ -451,6 +452,9 @@ class TaskPage(_ResultModel):
             ValueError: If Tasks are not strictly ascending.
 
         """
+        if self.readiness and len(self.readiness) != len(self.tasks):
+            message = "Task page readiness must align one-for-one with Tasks."
+            raise ValueError(message)
         previous_position: tuple[object, ...] | None = None
         for task in self.tasks:
             project_key, separator, _number = task.key.rpartition("-")

@@ -8,26 +8,28 @@ from workaholic.application.commands import (
     GetLocalStatus,
     GetProjectByKey,
     GetTask,
+    GetTaskDetails,
     ListInstanceTasks,
     ListProjects,
     ListTasks,
+    ListTasksByView,
 )
 from workaholic.application.errors import (
     ApplicationError,
     ApplicationErrorCode,
     InvalidInputError,
 )
-from workaholic.application.results import StatusResult, TaskPage
+from workaholic.application.results import StatusResult, TaskDetails, TaskPage
 from workaholic.domain import Project, Task, TaskId
 
 if TYPE_CHECKING:
-    from workaholic.application.ports import CoreQueryRepository
+    from workaholic.application.ports import TaskViewQueryRepository
 
 
 class QueryApplication:
     """Validate query boundaries and delegate read-only repository operations."""
 
-    def __init__(self, repository: CoreQueryRepository) -> None:
+    def __init__(self, repository: TaskViewQueryRepository) -> None:
         """Initialize the query service with one semantic repository.
 
         Args:
@@ -44,6 +46,8 @@ class QueryApplication:
             "list_tasks",
             "list_tasks_for_instance",
             "get_task",
+            "get_task_details",
+            "list_tasks_by_view",
         ):
             _require_callable(repository, method_name)
         self._repository = repository
@@ -205,6 +209,66 @@ class QueryApplication:
         )
         if result.project_id != candidate.project_id or not selector_matches:
             _raise_invalid_result("Task query")
+        return result
+
+    def get_task_details(self, command: GetTaskDetails) -> TaskDetails:
+        """Return complete Task details with authoritative derived readiness.
+
+        Args:
+            command: Validated Project-scoped detail query.
+
+        Returns:
+            Complete Task, prerequisites, current Result, and readiness.
+
+        Raises:
+            ApplicationError: If input or repository output violates its contract.
+
+        """
+        candidate: object = command
+        if not isinstance(candidate, GetTaskDetails):
+            raise InvalidInputError
+        result: object = self._repository.get_task_details(candidate)
+        if not isinstance(result, TaskDetails):
+            _raise_invalid_result("Task details")
+        selector_matches = (
+            result.task.uid == candidate.task
+            if isinstance(candidate.task, TaskId)
+            else result.task.key == candidate.task
+        )
+        if result.task.project_id != candidate.project_id or not selector_matches:
+            _raise_invalid_result("Task details")
+        return result
+
+    def list_tasks_by_view(self, command: ListTasksByView) -> TaskPage:
+        """Return one view-bound page with aligned readiness projections.
+
+        Args:
+            command: Validated view, scope, and pagination query.
+
+        Returns:
+            Deterministic Task page using a version-3 view cursor.
+
+        Raises:
+            ApplicationError: If input or repository output violates its contract.
+
+        """
+        candidate: object = command
+        if not isinstance(candidate, ListTasksByView):
+            raise InvalidInputError
+        result: object = self._repository.list_tasks_by_view(candidate)
+        if not isinstance(result, TaskPage):
+            _raise_invalid_result("Task view page")
+        if (
+            result.view is not candidate.view
+            or len(result.readiness) != len(result.tasks)
+            or (
+                candidate.project_id is not None
+                and any(
+                    task.project_id != candidate.project_id for task in result.tasks
+                )
+            )
+        ):
+            _raise_invalid_result("Task view page")
         return result
 
 

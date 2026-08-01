@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import hashlib
 from dataclasses import dataclass, replace
-from typing import TYPE_CHECKING, Final, cast
+from typing import TYPE_CHECKING, Final, Protocol, cast
 
 from workaholic.application import (
     ApplicationError,
@@ -69,6 +69,9 @@ if TYPE_CHECKING:
         ApprovalRequirement,
         ContextReference,
         JsonValue,
+        RequestId,
+        SubjectId,
+        TaskEventId,
     )
 
 _MUTATION_OUTCOME_KEYS: Final = frozenset(("event", "task"))
@@ -76,6 +79,15 @@ _MUTATION_OUTCOME_KEYS: Final = frozenset(("event", "task"))
 type _LifecycleMutation = (
     TaskUpdateMutation | TaskBlockMutation | TaskUnblockMutation | TaskCancelMutation
 )
+
+
+class _TaskEventMutation(Protocol):
+    """Attribution fields shared by semantic Task-event mutations."""
+
+    event_id: TaskEventId
+    actor_subject_id: SubjectId
+    request_id: RequestId
+    occurred_at: datetime
 
 
 @dataclass(frozen=True, slots=True)
@@ -625,7 +637,7 @@ def _write_task_if_version(
 def _insert_task_event(
     connection: sqlite3.Connection,
     *,
-    mutation: _LifecycleMutation,
+    mutation: _TaskEventMutation,
     task: Task,
     event_type: TaskEventType,
     payload: Mapping[str, JsonValue],

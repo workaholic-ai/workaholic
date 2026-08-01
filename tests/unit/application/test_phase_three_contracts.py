@@ -836,9 +836,18 @@ def test_task_page_binds_view_and_uses_ready_ordering() -> None:
         available_at=_NOW + timedelta(hours=1),
     )
     low = _task(number=1, priority=10)
+    ready_projection = TaskReadiness(
+        ready=True,
+        running=False,
+        scheduled=False,
+        stale=False,
+        awaiting_review=False,
+        reasons=(),
+    )
 
     page = TaskPage(
         tasks=(high, scheduled, low),
+        readiness=(ready_projection, ready_projection, ready_projection),
         next_cursor="v3.ready",
         view=TaskListView.READY,
     )
@@ -846,6 +855,13 @@ def test_task_page_binds_view_and_uses_ready_ordering() -> None:
     with pytest.raises(ValidationError, match="ordered"):
         TaskPage(
             tasks=(scheduled, high),
+            next_cursor=None,
+            view=TaskListView.READY,
+        )
+    with pytest.raises(ValidationError, match="one-for-one"):
+        TaskPage(
+            tasks=(high, low),
+            readiness=(ready_projection,),
             next_cursor=None,
             view=TaskListView.READY,
         )

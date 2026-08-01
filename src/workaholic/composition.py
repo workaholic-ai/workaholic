@@ -16,7 +16,6 @@ from workaholic.application import (
     BootstrapApplication,
     BootstrapRepository,
     Clock,
-    CoreQueryRepository,
     IdentifierFactory,
     ProfileInvalidError,
     ProfileNotFoundError,
@@ -25,6 +24,7 @@ from workaholic.application import (
     QueryApplication,
     TaskApplication,
     TaskCreationRepository,
+    TaskViewQueryRepository,
 )
 from workaholic.cli.main import create_app
 from workaholic.context import (
@@ -74,7 +74,7 @@ class _ComposedRepository(
     BootstrapRepository,
     ProjectRepository,
     TaskCreationRepository,
-    CoreQueryRepository,
+    TaskViewQueryRepository,
     Protocol,
 ):
     """Expose only operations consumed by the current local composition."""
