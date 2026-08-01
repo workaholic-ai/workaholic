@@ -8,21 +8,32 @@ from datetime import UTC, datetime, timedelta, timezone
 import pytest
 
 from workaholic.domain import (
+    JSON_MAX_ARRAY_ITEMS,
+    JSON_MAX_DEPTH,
+    JSON_MAX_OBJECT_ITEMS,
+    JSON_MAX_STRING_LENGTH,
     DomainPermissionError,
     DomainValidationError,
     ProjectId,
     SubjectId,
     build_task_key,
+    normalize_bounded_printable_text,
     normalize_project_name,
     normalize_task_objective,
     normalize_task_title,
+    parse_rfc3339_utc_timestamp,
     require_phase_one_owner,
+    validate_acceptance_criterion_id,
     validate_json_scalar,
+    validate_json_value,
+    validate_lowercase_sha256,
+    validate_media_type,
     validate_positive_integer,
     validate_profile_name,
     validate_project_key,
     validate_task_key,
     validate_task_priority,
+    validate_uri_reference,
     validate_utc_timestamp,
     validate_workspace_root,
 )
@@ -482,3 +493,208 @@ def test_phase_one_owner_rule_rejects_unvalidated_structural_fields(
             grant=grant,
             target_project_id=target_project_id,
         )
+
+
+def test_bounded_printable_text_normalizes_unicode_and_custom_bounds() -> None:
+    """Shared Phase 3 text validation trims and NFC-normalizes Unicode."""
+    assert (
+        normalize_bounded_printable_text(
+            "  Cafe\u0301  ",
+            label="Text",
+            minimum=1,
+            maximum=4,
+        )
+        == "Café"
+    )
+
+
+@pytest.mark.parametrize(
+    ("value", "minimum", "maximum"),
+    [
+        ("", 1, 10),
+        ("too long", 1, 4),
+        ("line\nbreak", 1, 20),
+        (None, 1, 20),
+        ("ok", True, 20),
+        ("ok", 2, 1),
+        ("ok", -1, 2),
+    ],
+)
+def test_bounded_printable_text_rejects_invalid_values_and_bounds(
+    value: object,
+    minimum: object,
+    maximum: object,
+) -> None:
+    """Shared text validation rejects unsafe values and ambiguous bounds."""
+    with pytest.raises(DomainValidationError):
+        normalize_bounded_printable_text(
+            value,
+            label="Text",
+            minimum=minimum,  # type: ignore[arg-type]
+            maximum=maximum,  # type: ignore[arg-type]
+        )
+
+
+@pytest.mark.parametrize(
+    "value",
+    ["ac_a", "ac_0", "ac_A-b_2", "ac_" + ("a" * 64)],
+)
+def test_acceptance_criterion_id_accepts_exact_grammar(value: str) -> None:
+    """Criterion identifiers preserve stable, bounded opaque suffixes."""
+    assert validate_acceptance_criterion_id(value) == value
+
+
+@pytest.mark.parametrize(
+    "value",
+    ["ac_", "bad_a", "ac_ümlaut", "ac_a.b", "ac_" + ("a" * 65), None],
+)
+def test_acceptance_criterion_id_rejects_malformed_values(value: object) -> None:
+    """Criterion identifiers reject missing, unsafe, and oversized suffixes."""
+    with pytest.raises(DomainValidationError, match="criterion ID"):
+        validate_acceptance_criterion_id(value)
+
+
+def test_rfc3339_parser_accepts_canonical_utc_seconds_and_fraction() -> None:
+    """Canonical ``Z`` timestamps parse to timezone-aware UTC datetimes."""
+    assert parse_rfc3339_utc_timestamp(
+        "2026-08-01T12:00:00Z",
+        label="Timestamp",
+    ) == datetime(2026, 8, 1, 12, tzinfo=UTC)
+    assert (
+        parse_rfc3339_utc_timestamp(
+            "2026-08-01T12:00:00.123456Z",
+            label="Timestamp",
+        ).microsecond
+        == 123456
+    )
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "2026-08-01T12:00:00+00:00",
+        "2026-08-01T15:00:00+03:00",
+        "2026-02-30T12:00:00Z",
+        "2026-08-01 12:00:00Z",
+        "2026-08-01T12:00:00.1234567Z",
+        1,
+    ],
+)
+def test_rfc3339_parser_rejects_noncanonical_or_invalid_values(value: object) -> None:
+    """Structured timestamps do not accept offsets, coercion, or invalid dates."""
+    with pytest.raises(DomainValidationError, match="RFC 3339 UTC"):
+        parse_rfc3339_utc_timestamp(value, label="Timestamp")
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "workspace://repo/spec.md",
+        "https://example.com/a%20b",
+        "urn:example:task:42",
+        "file:/tmp/result.json",
+    ],
+)
+def test_uri_reference_accepts_inert_absolute_uris(value: str) -> None:
+    """URI validation accepts common absolute references without opening them."""
+    assert validate_uri_reference(value, label="URI") == value
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "relative/path",
+        "https://example.com/white space",
+        "https://example.com/bad%2",
+        "https:\\example.com",
+        "x:",
+        "line\nbreak:bad",
+        "x" * 2049,
+        None,
+    ],
+)
+def test_uri_reference_rejects_malformed_or_unbounded_values(value: object) -> None:
+    """URI references reject relative, ambiguous, unsafe, and oversized input."""
+    with pytest.raises(DomainValidationError, match="URI"):
+        validate_uri_reference(value, label="URI")
+
+
+@pytest.mark.parametrize(
+    "value",
+    ["text/plain", "application/vnd.api+json", "x-a/x_b"],
+)
+def test_media_type_accepts_lowercase_type_subtype_tokens(value: str) -> None:
+    """Artifact media types accept lowercase RFC-style tokens."""
+    assert validate_media_type(value) == value
+
+
+@pytest.mark.parametrize(
+    "value",
+    ["Text/plain", "text", "text/plain; charset=utf-8", "t/", "a" * 128, None],
+)
+def test_media_type_rejects_invalid_or_oversized_values(value: object) -> None:
+    """Artifact media types reject case, parameters, missing tokens, and coercion."""
+    with pytest.raises(DomainValidationError, match="type/subtype"):
+        validate_media_type(value)
+
+
+def test_sha256_accepts_exact_lowercase_hex_digest() -> None:
+    """Artifact digests preserve one canonical lowercase representation."""
+    assert validate_lowercase_sha256("0123456789abcdef" * 4) == ("0123456789abcdef" * 4)
+
+
+@pytest.mark.parametrize("value", ["a" * 63, "A" * 64, "g" * 64, None])
+def test_sha256_rejects_wrong_length_case_alphabet_or_type(value: object) -> None:
+    """Artifact digests reject every noncanonical representation."""
+    with pytest.raises(DomainValidationError, match="64 lowercase"):
+        validate_lowercase_sha256(value)
+
+
+def test_recursive_json_accepts_nested_finite_values_and_boolean_scalars() -> None:
+    """Bounded recursive JSON accepts objects, arrays, booleans, and finite numbers."""
+    validate_json_value(
+        {
+            "null": None,
+            "boolean": True,
+            "integer": 1,
+            "float": 1.5,
+            "string": "value",
+            "nested": [{"ok": False}],
+        },
+        label="Payload",
+    )
+
+
+@pytest.mark.parametrize(
+    ("value", "message"),
+    [
+        (float("nan"), "finite"),
+        (float("inf"), "finite"),
+        ("x" * (JSON_MAX_STRING_LENGTH + 1), "strings"),
+        ({f"k{i}": i for i in range(JSON_MAX_OBJECT_ITEMS + 1)}, "objects"),
+        ([None] * (JSON_MAX_ARRAY_ITEMS + 1), "arrays"),
+        ({" bad": 1}, "keys"),
+        ({"": 1}, "keys"),
+        ({"line\nbreak": 1}, "keys"),
+        ({"x" * 129: 1}, "keys"),
+        ({1: "value"}, "keys"),
+        ({1, 2}, "JSON value"),
+    ],
+)
+def test_recursive_json_rejects_unbounded_or_unsupported_values(
+    value: object,
+    message: str,
+) -> None:
+    """Recursive JSON rejects invalid numbers, shapes, keys, and collection sizes."""
+    with pytest.raises(DomainValidationError, match=message):
+        validate_json_value(value, label="Payload")
+
+
+def test_recursive_json_rejects_values_beyond_depth_limit() -> None:
+    """Nested input cannot exceed the explicit recursion-depth budget."""
+    value: object = None
+    for _ in range(JSON_MAX_DEPTH + 1):
+        value = [value]
+
+    with pytest.raises(DomainValidationError, match="depth"):
+        validate_json_value(value, label="Payload")

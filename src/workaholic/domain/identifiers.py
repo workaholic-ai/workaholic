@@ -1,4 +1,4 @@
-"""Opaque, prefixed identifier value objects for Phase 1 domain entities."""
+"""Opaque, prefixed identifier value objects for cumulative domain entities."""
 
 from __future__ import annotations
 
@@ -130,6 +130,26 @@ class TaskEventId:
     def __post_init__(self) -> None:
         """Validate the TaskEvent identifier at construction."""
         _validate_identifier(self.value, prefix="evt_", label="TaskEvent ID")
+
+    def __str__(self) -> str:
+        """Return the serialized identifier.
+
+        Returns:
+            The opaque prefixed identifier.
+
+        """
+        return self.value
+
+
+@dataclass(frozen=True, slots=True)
+class ResultId:
+    """Opaque identity of one submitted Task Result."""
+
+    value: str
+
+    def __post_init__(self) -> None:
+        """Validate the Result identifier at construction."""
+        _validate_identifier(self.value, prefix="res_", label="Result ID")
 
     def __str__(self) -> str:
         """Return the serialized identifier.
