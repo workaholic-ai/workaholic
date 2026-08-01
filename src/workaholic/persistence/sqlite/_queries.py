@@ -50,7 +50,7 @@ from workaholic.persistence.sqlite.errors import StorageUnavailableError
 
 if TYPE_CHECKING:
     import sqlite3
-    from collections.abc import Mapping
+    from collections.abc import Mapping, Sequence
     from pathlib import Path
 
     from workaholic.domain import Project
@@ -331,9 +331,16 @@ def list_tasks(database_path: Path, command: ListTasks) -> TaskPage:
             ).fetchall()
             has_more = len(rows) > candidate.limit
             selected_rows = rows[: candidate.limit]
+            dependency_ids = _load_task_dependencies(
+                connection,
+                tuple(TaskId(require_text(row[0])) for row in selected_rows),
+            )
             tasks = tuple(
                 _require_task_project_key(
-                    task_from_row(row),
+                    task_from_row(
+                        row,
+                        depends_on=dependency_ids[TaskId(require_text(row[0]))],
+                    ),
                     project_key=project.key,
                 )
                 for row in selected_rows
@@ -427,7 +434,17 @@ def list_tasks_for_instance(
             ).fetchall()
             has_more = len(rows) > candidate.limit
             selected_rows = rows[: candidate.limit]
-            tasks = tuple(_task_from_project_ordered_row(row) for row in selected_rows)
+            dependency_ids = _load_task_dependencies(
+                connection,
+                tuple(TaskId(require_text(row[1])) for row in selected_rows),
+            )
+            tasks = tuple(
+                _task_from_project_ordered_row(
+                    row,
+                    depends_on=dependency_ids[TaskId(require_text(row[1]))],
+                )
+                for row in selected_rows
+            )
             next_cursor = None
             if has_more:
                 last_row = selected_rows[-1]
@@ -501,8 +518,10 @@ def get_task(database_path: Path, command: GetTask) -> Task:
                 ).fetchone()
             if row is None:
                 raise TaskNotFoundError
+            task_uid = TaskId(require_text(row[0]))
+            dependency_ids = _load_task_dependencies(connection, (task_uid,))
             return _require_task_project_key(
-                task_from_row(row),
+                task_from_row(row, depends_on=dependency_ids[task_uid]),
                 project_key=project.key,
             )
     except ApplicationError:
@@ -662,11 +681,16 @@ def _subject_from_values(value: tuple[object, ...]) -> Subject:
     )
 
 
-def _task_from_project_ordered_row(value: tuple[object, ...]) -> Task:
+def _task_from_project_ordered_row(
+    value: tuple[object, ...],
+    *,
+    depends_on: Sequence[TaskId] = (),
+) -> Task:
     """Deserialize and cross-check one all-Projects ordered Task row.
 
     Args:
         value: Project key followed by canonical Task fields.
+        depends_on: Separately loaded prerequisite identities in stable key order.
 
     Returns:
         Validated Task whose key agrees with its Project ordering key.
@@ -678,8 +702,58 @@ def _task_from_project_ordered_row(value: tuple[object, ...]) -> Task:
     if len(value) != _PROJECT_ORDERED_TASK_FIELD_COUNT:
         raise StorageUnavailableError
     project_key = require_text(value[0])
-    task = task_from_row(value[1:_PROJECT_ORDERED_TASK_FIELD_COUNT])
+    task = task_from_row(
+        value[1:_PROJECT_ORDERED_TASK_FIELD_COUNT],
+        depends_on=depends_on,
+    )
     return _require_task_project_key(task, project_key=project_key)
+
+
+def _load_task_dependencies(
+    connection: sqlite3.Connection,
+    task_ids: Sequence[TaskId],
+) -> dict[TaskId, tuple[TaskId, ...]]:
+    """Load complete dependency identities for a bounded Task batch.
+
+    One batch query avoids page-size-dependent round trips. Ordering by the
+    prerequisite's immutable Human key gives all Task surfaces the same stable
+    dependency order required by later detail and readiness projections.
+
+    Args:
+        connection: Active validated read connection.
+        task_ids: Task identities selected by the owning query.
+
+    Returns:
+        Every requested Task identity mapped to its ordered prerequisites.
+
+    Raises:
+        StorageUnavailableError: If storage returns an unexpected Task identity.
+
+    """
+    ordered_ids = tuple(dict.fromkeys(task_ids))
+    dependencies: dict[TaskId, list[TaskId]] = {task_id: [] for task_id in ordered_ids}
+    if not ordered_ids:
+        return {}
+    placeholders = ", ".join("?" for _task_id in ordered_ids)
+    rows = connection.execute(
+        f"""
+        SELECT d.task_uid, d.prerequisite_uid, prerequisite.key
+        FROM task_dependencies AS d
+        LEFT JOIN tasks AS prerequisite
+          ON prerequisite.uid = d.prerequisite_uid
+         AND prerequisite.project_id = d.project_id
+        WHERE d.task_uid IN ({placeholders})
+        ORDER BY d.task_uid ASC, prerequisite.key ASC
+        """,  # noqa: S608 - only generated parameter placeholders are interpolated.
+        tuple(str(task_id) for task_id in ordered_ids),
+    ).fetchall()
+    for row in rows:
+        task_id = TaskId(require_text(row[0]))
+        if task_id not in dependencies:
+            raise StorageUnavailableError
+        require_text(row[2])
+        dependencies[task_id].append(TaskId(require_text(row[1])))
+    return {task_id: tuple(values) for task_id, values in dependencies.items()}
 
 
 def _require_task_project_key(task: Task, *, project_key: str) -> Task:

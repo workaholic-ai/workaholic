@@ -31,6 +31,7 @@ from workaholic.application import (
     WorkaholicRepository,
 )
 from workaholic.domain import (
+    ApprovalRequirement,
     Instance,
     InstanceId,
     Project,
@@ -363,7 +364,47 @@ def test_create_task_defaults_and_normalizes_fields() -> None:
     assert command.title == "First task"
     assert command.objective == "First task"
     assert command.priority == 50
+    assert command.available_at is None
+    assert command.approval is ApprovalRequirement.NONE
+    assert command.acceptance == ()
+    assert command.context == ()
     assert explicit_none.objective == "First task"
+
+
+def test_create_task_accepts_closed_ordered_phase_three_definition() -> None:
+    """Task creation validates structured values and preserves caller order."""
+    command = CreateTaskInput.model_validate(
+        {
+            "project_id": ProjectId("prj_acme"),
+            "subject_id": SubjectId("sub_local"),
+            "title": "First task",
+            "available_at": _NOW,
+            "approval": "human",
+            "acceptance": [
+                {"id": "ac_first", "text": "First condition", "required": True},
+                {
+                    "id": "ac_second",
+                    "text": "Second condition",
+                    "required": False,
+                },
+            ],
+            "context": [
+                {"uri": "workspace://repo/README.md"},
+                {"uri": "https://example.test/spec", "version": "v2"},
+            ],
+        }
+    )
+
+    assert command.available_at == _NOW
+    assert command.approval is ApprovalRequirement.HUMAN
+    assert tuple(item.id for item in command.acceptance) == (
+        "ac_first",
+        "ac_second",
+    )
+    assert tuple((item.uri, item.version) for item in command.context) == (
+        ("workspace://repo/README.md", None),
+        ("https://example.test/spec", "v2"),
+    )
 
 
 def test_create_task_rejects_non_mapping_model_input() -> None:
@@ -383,6 +424,30 @@ def test_create_task_rejects_non_mapping_model_input() -> None:
         ("priority", 101),
         ("priority", True),
         ("priority", "50"),
+        ("available_at", _NOW.replace(tzinfo=None)),
+        ("available_at", "2026-07-30T12:00:00Z"),
+        ("approval", None),
+        ("approval", "agent"),
+        (
+            "acceptance",
+            [
+                {"id": "ac_same", "text": "First", "required": True},
+                {"id": "ac_same", "text": "Second", "required": True},
+            ],
+        ),
+        (
+            "acceptance",
+            [{"id": "ac_open", "text": "Condition", "required": True, "x": 1}],
+        ),
+        ("acceptance", None),
+        (
+            "context",
+            [
+                {"uri": "workspace://repo/spec", "version": None},
+                {"uri": "workspace://repo/spec", "version": None},
+            ],
+        ),
+        ("context", None),
         ("idempotency_key", "bad key"),
     ],
 )
@@ -572,6 +637,10 @@ def test_task_creation_mutation_normalizes_and_validates_fields() -> None:
     assert mutation.title == "First task"
     assert mutation.objective == "Complete it."
     assert mutation.priority == 100
+    assert mutation.available_at is None
+    assert mutation.approval is ApprovalRequirement.NONE
+    assert mutation.acceptance == ()
+    assert mutation.context == ()
     with pytest.raises(ValidationError):
         TaskCreationMutation.model_validate(
             {

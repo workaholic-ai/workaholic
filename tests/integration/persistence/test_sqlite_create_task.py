@@ -14,11 +14,15 @@ import pytest
 from workaholic.application import (
     ApplicationErrorCode,
     BootstrapMutation,
+    GetTask,
     IdempotencyConflictError,
     PermissionDeniedError,
     TaskCreationMutation,
 )
 from workaholic.domain import (
+    AcceptanceCriterion,
+    ApprovalRequirement,
+    ContextReference,
     InstanceId,
     ProjectId,
     RequestId,
@@ -42,6 +46,24 @@ if TYPE_CHECKING:
 
 _NOW = datetime(2026, 7, 30, 12, 15, 30, 654321, tzinfo=UTC)
 _CANONICAL_NOW = "2026-07-30T12:15:30.654321Z"
+_AVAILABLE_AT = datetime(2026, 8, 2, 9, 0, 0, 123456, tzinfo=UTC)
+_CANONICAL_AVAILABLE_AT = "2026-08-02T09:00:00.123456Z"
+_ACCEPTANCE = (
+    AcceptanceCriterion(
+        id="ac_evidence",
+        text="Attach categorized evidence.",
+        required=True,
+    ),
+    AcceptanceCriterion(
+        id="ac_summary",
+        text="Summarize the three leading causes.",
+        required=False,
+    ),
+)
+_CONTEXT = (
+    ContextReference(uri="workspace://repo/data.csv", version="git:8f31c12"),
+    ContextReference(uri="https://example.test/spec"),
+)
 
 
 def _repository(tmp_path: Path) -> SQLiteRepository:
@@ -70,13 +92,17 @@ def _repository(tmp_path: Path) -> SQLiteRepository:
     return repository
 
 
-def _mutation(
+def _mutation(  # noqa: PLR0913 - explicit semantic fixture fields aid tests.
     suffix: str,
     *,
     title: str = "First task",
     objective: str = "First task",
     idempotency_key: str | None = None,
     occurred_at: datetime = _NOW,
+    available_at: datetime | None = None,
+    approval: ApprovalRequirement = ApprovalRequirement.NONE,
+    acceptance: tuple[AcceptanceCriterion, ...] = (),
+    context: tuple[ContextReference, ...] = (),
 ) -> TaskCreationMutation:
     """Build one valid Task creation mutation.
 
@@ -86,6 +112,10 @@ def _mutation(
         objective: Normalized desired outcome.
         idempotency_key: Optional caller retry key.
         occurred_at: Authoritative transaction timestamp.
+        available_at: Optional exact Task availability timestamp.
+        approval: Result approval requirement.
+        acceptance: Ordered acceptance criteria.
+        context: Ordered inert context references.
 
     Returns:
         Validated attributable mutation.
@@ -101,6 +131,10 @@ def _mutation(
         title=title,
         objective=objective,
         priority=50,
+        available_at=available_at,
+        approval=approval,
+        acceptance=acceptance,
+        context=context,
         idempotency_key=idempotency_key,
     )
 
@@ -216,6 +250,81 @@ def test_create_task_commits_stable_task_and_attributable_event(
     }.intersection(payload)
 
 
+def test_create_task_round_trips_complete_definition_and_timestamp_precision(
+    tmp_path: Path,
+) -> None:
+    """Structured creation survives restart without loss, reordering, or defaults."""
+    repository = _repository(tmp_path)
+
+    task = repository.create_task(
+        _mutation(
+            "complete",
+            title="Analyze causes",
+            objective="Identify the three leading causes.",
+            available_at=_AVAILABLE_AT,
+            approval=ApprovalRequirement.HUMAN,
+            acceptance=_ACCEPTANCE,
+            context=_CONTEXT,
+        )
+    )
+
+    assert task.available_at == _AVAILABLE_AT
+    assert task.approval is ApprovalRequirement.HUMAN
+    assert task.acceptance == _ACCEPTANCE
+    assert task.context == _CONTEXT
+    assert task.depends_on == ()
+    assert task.blocking_reason is None
+    assert task.current_result_id is None
+    with open_read_connection(repository.database_path) as connection:
+        row = connection.execute(
+            """
+            SELECT available_at, approval, acceptance_json, context_json,
+                   blocking_reason, current_result_id
+            FROM tasks
+            WHERE uid = ?
+            """,
+            (str(task.uid),),
+        ).fetchone()
+        child_counts = connection.execute(
+            """
+            SELECT
+                (SELECT count(*) FROM task_dependencies),
+                (SELECT count(*) FROM task_results)
+            """
+        ).fetchone()
+        event_actor = connection.execute(
+            """
+            SELECT actor_kind, attempt_id
+            FROM task_events
+            WHERE task_uid = ?
+            """,
+            (str(task.uid),),
+        ).fetchone()
+    assert row is not None
+    assert row[0:2] == (_CANONICAL_AVAILABLE_AT, "human")
+    assert json.loads(row[2]) == [
+        {"id": item.id, "required": item.required, "text": item.text}
+        for item in _ACCEPTANCE
+    ]
+    assert json.loads(row[3]) == [
+        {"uri": item.uri, "version": item.version} for item in _CONTEXT
+    ]
+    assert row[4:6] == (None, None)
+    assert child_counts == (0, 0)
+    assert event_actor == ("human", None)
+    reopened = SQLiteRepository(repository.database_path)
+    assert (
+        reopened.get_task(
+            GetTask(
+                project_id=ProjectId("prj_acme"),
+                subject_id=SubjectId("sub_local"),
+                task=task.uid,
+            )
+        )
+        == task
+    )
+
+
 def test_matching_idempotency_replay_returns_original_task_and_event(
     tmp_path: Path,
 ) -> None:
@@ -248,6 +357,91 @@ def test_matching_idempotency_replay_returns_original_task_and_event(
     assert decoded["task"]["uid"] == "tsk_first"
     assert decoded["task"]["key"] == "ACME-1"
     assert outcome[4] == _CANONICAL_NOW
+
+
+def test_complete_definition_is_part_of_idempotent_replay_outcome(
+    tmp_path: Path,
+) -> None:
+    """Matching structured input replays the original complete Task snapshot."""
+    repository = _repository(tmp_path)
+    first = repository.create_task(
+        _mutation(
+            "first",
+            available_at=_AVAILABLE_AT,
+            approval=ApprovalRequirement.HUMAN,
+            acceptance=_ACCEPTANCE,
+            context=_CONTEXT,
+            idempotency_key="task-complete-1",
+        )
+    )
+
+    replayed = repository.create_task(
+        _mutation(
+            "replay",
+            occurred_at=_NOW + timedelta(hours=1),
+            available_at=_AVAILABLE_AT,
+            approval=ApprovalRequirement.HUMAN,
+            acceptance=_ACCEPTANCE,
+            context=_CONTEXT,
+            idempotency_key="task-complete-1",
+        )
+    )
+
+    assert replayed == first
+    assert replayed.acceptance == _ACCEPTANCE
+    assert replayed.context == _CONTEXT
+    assert _task_counts(repository.database_path) == (1, 1, 2, 1)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("available_at", _AVAILABLE_AT + timedelta(seconds=1)),
+        ("approval", ApprovalRequirement.NONE),
+        (
+            "acceptance",
+            (
+                AcceptanceCriterion(
+                    id="ac_other",
+                    text="Different acceptance.",
+                    required=True,
+                ),
+            ),
+        ),
+        ("context", (ContextReference(uri="workspace://repo/other"),)),
+    ],
+)
+def test_complete_definition_changes_conflict_with_idempotency_key(
+    field: str,
+    value: object,
+    tmp_path: Path,
+) -> None:
+    """Every structured creation field participates in the semantic fingerprint."""
+    repository = _repository(tmp_path)
+    repository.create_task(
+        _mutation(
+            "first",
+            available_at=_AVAILABLE_AT,
+            approval=ApprovalRequirement.HUMAN,
+            acceptance=_ACCEPTANCE,
+            context=_CONTEXT,
+            idempotency_key="task-complete-1",
+        )
+    )
+    candidate = _mutation(
+        "conflict",
+        available_at=_AVAILABLE_AT,
+        approval=ApprovalRequirement.HUMAN,
+        acceptance=_ACCEPTANCE,
+        context=_CONTEXT,
+        idempotency_key="task-complete-1",
+    )
+    conflicting = candidate.model_copy(update={field: value})
+
+    with pytest.raises(IdempotencyConflictError):
+        repository.create_task(conflicting)
+
+    assert _task_counts(repository.database_path) == (1, 1, 2, 1)
 
 
 def test_conflicting_idempotency_reuse_changes_nothing(tmp_path: Path) -> None:
@@ -369,6 +563,14 @@ def test_failure_after_task_insert_rolls_back_task_event_and_number(
         repository.create_task(_mutation("failed", idempotency_key="failed-task"))
 
     assert _task_counts(repository.database_path) == (0, 0, 1, 0)
+    with open_read_connection(repository.database_path) as connection:
+        assert connection.execute(
+            """
+            SELECT
+                (SELECT count(*) FROM task_dependencies),
+                (SELECT count(*) FROM task_results)
+            """
+        ).fetchone() == (0, 0)
 
 
 def test_observer_cannot_see_uncommitted_task_without_event(

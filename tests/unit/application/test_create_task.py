@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, cast
 
@@ -15,6 +16,9 @@ from workaholic.application import (
     TaskCreationMutation,
 )
 from workaholic.domain import (
+    AcceptanceCriterion,
+    ApprovalRequirement,
+    ContextReference,
     InstanceId,
     ProjectId,
     RequestId,
@@ -29,6 +33,20 @@ if TYPE_CHECKING:
     from workaholic.application import TaskRepository
 
 _NOW = datetime(2026, 7, 30, 12, 0, tzinfo=UTC)
+_AVAILABLE_AT = datetime(2026, 8, 2, 9, 0, 0, 123456, tzinfo=UTC)
+_ACCEPTANCE = (
+    AcceptanceCriterion(
+        id="ac_evidence",
+        text="Attach the categorized evidence.",
+        required=True,
+    ),
+)
+_CONTEXT = (
+    ContextReference(
+        uri="workspace://repo/data/cancellations.csv",
+        version="git:8f31c12",
+    ),
+)
 
 
 def _task() -> Task:
@@ -146,6 +164,66 @@ def test_create_builds_one_attributable_mutation_with_command_defaults() -> None
     ]
 
 
+def test_create_preserves_complete_structured_task_definition() -> None:
+    """Application orchestration forwards every validated Phase 3 field exactly."""
+    expected = replace(
+        _task(),
+        available_at=_AVAILABLE_AT,
+        approval=ApprovalRequirement.HUMAN,
+        acceptance=_ACCEPTANCE,
+        context=_CONTEXT,
+    )
+    recording = _RecordingRepository(expected)
+    application = TaskApplication(
+        repository=cast("TaskRepository", recording),
+        clock=_Clock(),
+        identifiers=_Identifiers(),
+    )
+    command = CreateTaskInput.model_validate(
+        {
+            "project_id": ProjectId("prj_acme"),
+            "subject_id": SubjectId("sub_local"),
+            "title": "First task",
+            "available_at": _AVAILABLE_AT,
+            "approval": "human",
+            "acceptance": [
+                {
+                    "id": "ac_evidence",
+                    "text": "Attach the categorized evidence.",
+                    "required": True,
+                }
+            ],
+            "context": [
+                {
+                    "uri": "workspace://repo/data/cancellations.csv",
+                    "version": "git:8f31c12",
+                }
+            ],
+        }
+    )
+
+    actual = application.create(command)
+
+    assert actual is expected
+    assert recording.mutations == [
+        TaskCreationMutation(
+            task_id=TaskId("tsk_candidate"),
+            event_id=TaskEventId("evt_candidate"),
+            request_id=RequestId("req_candidate"),
+            project_id=ProjectId("prj_acme"),
+            actor_subject_id=SubjectId("sub_local"),
+            occurred_at=_NOW,
+            title="First task",
+            objective="First task",
+            priority=50,
+            available_at=_AVAILABLE_AT,
+            approval=ApprovalRequirement.HUMAN,
+            acceptance=_ACCEPTANCE,
+            context=_CONTEXT,
+        )
+    ]
+
+
 @pytest.mark.parametrize(
     ("repository", "clock", "identifiers"),
     [
@@ -214,6 +292,40 @@ def test_invalid_repository_result_is_a_safe_internal_error() -> None:
     """The application verifies concrete Task output at runtime."""
     application = TaskApplication(
         repository=cast("TaskRepository", _RecordingRepository(object())),
+        clock=_Clock(),
+        identifiers=_Identifiers(),
+    )
+
+    with pytest.raises(ApplicationError) as captured:
+        application.create(
+            CreateTaskInput(
+                project_id=ProjectId("prj_acme"),
+                subject_id=SubjectId("sub_local"),
+                title="First task",
+            )
+        )
+
+    assert captured.value.code is ApplicationErrorCode.INTERNAL_ERROR
+
+
+@pytest.mark.parametrize(
+    "result",
+    [
+        replace(_task(), available_at=_AVAILABLE_AT),
+        replace(_task(), approval=ApprovalRequirement.HUMAN),
+        replace(_task(), acceptance=_ACCEPTANCE),
+        replace(_task(), context=_CONTEXT),
+        replace(_task(), state=TaskState.DONE),
+        replace(_task(), version=2),
+        replace(_task(), created_by=SubjectId("sub_other")),
+    ],
+)
+def test_create_rejects_semantically_mismatched_repository_task(
+    result: Task,
+) -> None:
+    """Repository output must match caller semantics and initial Task invariants."""
+    application = TaskApplication(
+        repository=cast("TaskRepository", _RecordingRepository(result)),
         clock=_Clock(),
         identifiers=_Identifiers(),
     )

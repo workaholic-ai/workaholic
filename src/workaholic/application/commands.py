@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from datetime import datetime  # noqa: TC003
 from enum import StrEnum
+from typing import cast
 
 from pydantic import (
     BaseModel,
@@ -257,6 +258,10 @@ class CreateTaskInput(_CommandModel):
     title: str
     objective: str = ""
     priority: int = DEFAULT_TASK_PRIORITY
+    available_at: datetime | None = None
+    approval: ApprovalRequirement = ApprovalRequirement.NONE
+    acceptance: tuple[AcceptanceCriterion, ...] = ()
+    context: tuple[ContextReference, ...] = ()
     idempotency_key: str | None = None
 
     @model_validator(mode="before")
@@ -319,6 +324,76 @@ class CreateTaskInput(_CommandModel):
 
         """
         return validate_task_priority(value)
+
+    @field_validator("available_at", mode="before")
+    @classmethod
+    def _validate_available_at(cls, value: object) -> datetime | None:
+        """Validate optional UTC availability without datetime coercion.
+
+        Args:
+            value: Candidate availability timestamp or ``None``.
+
+        Returns:
+            The validated UTC timestamp or ``None``.
+
+        """
+        if value is None:
+            return None
+        return validate_utc_timestamp(value, label="Task creation available_at")
+
+    @field_validator("approval", mode="before")
+    @classmethod
+    def _validate_approval(cls, value: object) -> ApprovalRequirement:
+        """Validate the exact Task approval requirement.
+
+        Args:
+            value: Candidate approval enum or serialized value.
+
+        Returns:
+            The typed approval requirement.
+
+        """
+        return _validate_required_approval(value)
+
+    @field_validator("acceptance", mode="before")
+    @classmethod
+    def _validate_acceptance(
+        cls,
+        value: object,
+    ) -> tuple[AcceptanceCriterion, ...]:
+        """Validate the complete ordered acceptance definition.
+
+        Args:
+            value: Candidate acceptance-criterion collection.
+
+        Returns:
+            The immutable validated criterion collection.
+
+        """
+        return cast(
+            "tuple[AcceptanceCriterion, ...]",
+            _validate_acceptance_collection(value, optional=False),
+        )
+
+    @field_validator("context", mode="before")
+    @classmethod
+    def _validate_context(
+        cls,
+        value: object,
+    ) -> tuple[ContextReference, ...]:
+        """Validate the complete ordered inert context definition.
+
+        Args:
+            value: Candidate context-reference collection.
+
+        Returns:
+            The immutable validated reference collection.
+
+        """
+        return cast(
+            "tuple[ContextReference, ...]",
+            _validate_context_collection(value, optional=False),
+        )
 
     @field_validator("idempotency_key", mode="before")
     @classmethod
@@ -638,6 +713,10 @@ class TaskCreationMutation(_CommandModel):
     title: str
     objective: str
     priority: int
+    available_at: datetime | None = None
+    approval: ApprovalRequirement = ApprovalRequirement.NONE
+    acceptance: tuple[AcceptanceCriterion, ...] = ()
+    context: tuple[ContextReference, ...] = ()
     idempotency_key: str | None = None
 
     @field_validator("occurred_at", mode="before")
@@ -695,6 +774,76 @@ class TaskCreationMutation(_CommandModel):
 
         """
         return validate_task_priority(value)
+
+    @field_validator("available_at", mode="before")
+    @classmethod
+    def _validate_available_at(cls, value: object) -> datetime | None:
+        """Validate optional persisted availability without coercion.
+
+        Args:
+            value: Candidate UTC availability timestamp or ``None``.
+
+        Returns:
+            The validated UTC timestamp or ``None``.
+
+        """
+        if value is None:
+            return None
+        return validate_utc_timestamp(value, label="Task creation available_at")
+
+    @field_validator("approval", mode="before")
+    @classmethod
+    def _validate_approval(cls, value: object) -> ApprovalRequirement:
+        """Validate the exact persisted approval requirement.
+
+        Args:
+            value: Candidate approval enum or serialized value.
+
+        Returns:
+            The typed approval requirement.
+
+        """
+        return _validate_required_approval(value)
+
+    @field_validator("acceptance", mode="before")
+    @classmethod
+    def _validate_acceptance(
+        cls,
+        value: object,
+    ) -> tuple[AcceptanceCriterion, ...]:
+        """Validate the complete ordered acceptance definition.
+
+        Args:
+            value: Candidate acceptance-criterion collection.
+
+        Returns:
+            The immutable validated criterion collection.
+
+        """
+        return cast(
+            "tuple[AcceptanceCriterion, ...]",
+            _validate_acceptance_collection(value, optional=False),
+        )
+
+    @field_validator("context", mode="before")
+    @classmethod
+    def _validate_context(
+        cls,
+        value: object,
+    ) -> tuple[ContextReference, ...]:
+        """Validate the complete ordered inert context definition.
+
+        Args:
+            value: Candidate context-reference collection.
+
+        Returns:
+            The immutable validated reference collection.
+
+        """
+        return cast(
+            "tuple[ContextReference, ...]",
+            _validate_context_collection(value, optional=False),
+        )
 
     @field_validator("idempotency_key", mode="before")
     @classmethod
@@ -1582,6 +1731,26 @@ def _validate_optional_approval(value: object) -> ApprovalRequirement | None:
         message = "Task approval must be none or human."
         raise ValueError(message)  # noqa: TRY004 - Pydantic wraps ValueError.
     return ApprovalRequirement(value)
+
+
+def _validate_required_approval(value: object) -> ApprovalRequirement:
+    """Validate one non-null approval requirement.
+
+    Args:
+        value: Candidate approval enum or exact serialized value.
+
+    Returns:
+        The typed approval requirement.
+
+    Raises:
+        ValueError: If the value is null or unsupported.
+
+    """
+    validated = _validate_optional_approval(value)
+    if validated is None:
+        message = "Task approval must be none or human."
+        raise ValueError(message)
+    return validated
 
 
 def _validate_required_reason(value: object, *, label: str) -> str:

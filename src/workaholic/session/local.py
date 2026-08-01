@@ -29,7 +29,9 @@ from workaholic.domain import (
     ProjectId,
     Task,
     TaskId,
+    TaskState,
     WorkspaceBinding,
+    build_task_key,
     validate_profile_name,
 )
 from workaholic.session.base import (
@@ -530,6 +532,10 @@ class LocalSession:
                 title=candidate.title,
                 objective=objective,
                 priority=candidate.priority,
+                available_at=candidate.available_at,
+                approval=candidate.approval,
+                acceptance=candidate.acceptance,
+                context=candidate.context,
                 idempotency_key=candidate.idempotency_key,
             )
         except ValueError as error:
@@ -541,10 +547,21 @@ class LocalSession:
         if (
             not isinstance(result, Task)
             or result.project_id != selected.status.project.id
+            or result.key != build_task_key(selected.status.project.key, result.number)
             or result.created_by != identity.subject_id
             or result.title != command.title
             or result.objective != command.objective
             or result.priority != command.priority
+            or result.available_at != command.available_at
+            or result.approval is not command.approval
+            or result.acceptance != command.acceptance
+            or result.context != command.context
+            or result.state is not TaskState.OPEN
+            or result.version != 1
+            or result.depends_on != ()
+            or result.blocking_reason is not None
+            or result.current_result_id is not None
+            or result.created_at != result.updated_at
         ):
             _raise_internal_result("Task creation")
         return result

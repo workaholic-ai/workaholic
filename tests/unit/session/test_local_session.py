@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import ast
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
@@ -33,6 +33,9 @@ from workaholic.application import (
     TaskPage,
 )
 from workaholic.domain import (
+    AcceptanceCriterion,
+    ApprovalRequirement,
+    ContextReference,
     Instance,
     InstanceId,
     Project,
@@ -65,6 +68,15 @@ if TYPE_CHECKING:
     from collections.abc import Callable
 
 _NOW = datetime(2026, 7, 30, 15, 0, tzinfo=UTC)
+_AVAILABLE_AT = datetime(2026, 8, 2, 9, 0, 0, 123456, tzinfo=UTC)
+_ACCEPTANCE = (
+    AcceptanceCriterion(
+        id="ac_evidence",
+        text="Attach categorized evidence.",
+        required=True,
+    ),
+)
+_CONTEXT = (ContextReference(uri="workspace://repo/data.csv", version="git:8f31c12"),)
 
 
 def _binding(*, project_key: str = "ACME") -> WorkspaceBinding:
@@ -663,6 +675,63 @@ def test_successful_operations_supply_verified_subject_and_context() -> None:
     ]
 
 
+def test_task_creation_forwards_complete_phase_three_definition() -> None:
+    """Session derives trusted scope while preserving structured Task intent."""
+    _log, context, actors, bootstrap, queries, tasks = _dependencies()
+    tasks.result = replace(
+        _task(),
+        title="Complete task",
+        objective="Produce the requested evidence.",
+        priority=70,
+        available_at=_AVAILABLE_AT,
+        approval=ApprovalRequirement.HUMAN,
+        acceptance=_ACCEPTANCE,
+        context=_CONTEXT,
+    )
+    session = _session(context, actors, bootstrap, queries, tasks)
+    request = TaskCreateRequest.model_validate(
+        {
+            "title": "Complete task",
+            "objective": "Produce the requested evidence.",
+            "priority": 70,
+            "available_at": _AVAILABLE_AT,
+            "approval": "human",
+            "acceptance": [
+                {
+                    "id": "ac_evidence",
+                    "text": "Attach categorized evidence.",
+                    "required": True,
+                }
+            ],
+            "context": [
+                {
+                    "uri": "workspace://repo/data.csv",
+                    "version": "git:8f31c12",
+                }
+            ],
+            "idempotency_key": "task-complete-1",
+        }
+    )
+
+    result = session.create_task(request)
+
+    assert result is tasks.result
+    assert tasks.commands == [
+        CreateTaskInput(
+            project_id=ProjectId("prj_acme"),
+            subject_id=SubjectId("sub_local"),
+            title="Complete task",
+            objective="Produce the requested evidence.",
+            priority=70,
+            available_at=_AVAILABLE_AT,
+            approval=ApprovalRequirement.HUMAN,
+            acceptance=_ACCEPTANCE,
+            context=_CONTEXT,
+            idempotency_key="task-complete-1",
+        )
+    ]
+
+
 def test_context_failure_precedes_actor_and_application_invocation() -> None:
     """Every non-bootstrap operation reads exact context before other work."""
     log, context, actors, bootstrap, queries, tasks = _dependencies()
@@ -1005,6 +1074,10 @@ def test_request_models_are_strict_frozen_and_bounded() -> None:
     """Session requests reject coercion, extras, and unsupported page bounds."""
     assert TaskCreateRequest(title="First task").priority == 50
     assert TaskCreateRequest(title="First task").objective is None
+    assert TaskCreateRequest(title="First task").available_at is None
+    assert TaskCreateRequest(title="First task").approval is ApprovalRequirement.NONE
+    assert TaskCreateRequest(title="First task").acceptance == ()
+    assert TaskCreateRequest(title="First task").context == ()
     assert TaskCreateRequest(title=f" {'x' * 200} ").title.endswith(" ")
     assert TaskListRequest().limit == 100
     with pytest.raises(ValidationError):
@@ -1015,6 +1088,18 @@ def test_request_models_are_strict_frozen_and_bounded() -> None:
         TaskListRequest(limit=501)
     with pytest.raises(ValidationError):
         TaskCreateRequest(title="First task", priority=-1)
+    with pytest.raises(ValidationError):
+        TaskCreateRequest.model_validate(
+            {
+                "title": "First task",
+                "acceptance": [
+                    {"id": "ac_same", "text": "One", "required": True},
+                    {"id": "ac_same", "text": "Two", "required": True},
+                ],
+            }
+        )
+    with pytest.raises(ValidationError):
+        TaskCreateRequest(title="First task", available_at=_NOW.replace(tzinfo=None))
     request = UpRequest(project_key="ACME")
     with pytest.raises(ValidationError):
         request.project_key = "BETA"

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import json
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from functools import partial
 from typing import TYPE_CHECKING, cast
@@ -27,6 +28,9 @@ from workaholic.application import (
     TaskNotFoundError,
 )
 from workaholic.domain import (
+    AcceptanceCriterion,
+    ApprovalRequirement,
+    ContextReference,
     InstanceId,
     ProjectId,
     RequestId,
@@ -81,12 +85,16 @@ def _repository(
     return repository, result
 
 
-def _task_mutation(
+def _task_mutation(  # noqa: PLR0913 - explicit semantic fixture fields aid tests.
     suffix: str,
     *,
     project_id: ProjectId = _ACME_PROJECT_ID,
     title: str | None = None,
     seconds: int = 1,
+    available_at: datetime | None = None,
+    approval: ApprovalRequirement = ApprovalRequirement.NONE,
+    acceptance: tuple[AcceptanceCriterion, ...] = (),
+    context: tuple[ContextReference, ...] = (),
 ) -> TaskCreationMutation:
     """Build one deterministic attributable Task mutation.
 
@@ -95,6 +103,10 @@ def _task_mutation(
         project_id: Selected Project identity.
         title: Optional normalized title and objective.
         seconds: Timestamp offset from bootstrap.
+        available_at: Optional exact Task availability timestamp.
+        approval: Result approval requirement.
+        acceptance: Ordered acceptance criteria.
+        context: Ordered inert context references.
 
     Returns:
         Validated Task creation mutation.
@@ -111,6 +123,10 @@ def _task_mutation(
         title=task_title,
         objective=task_title,
         priority=50,
+        available_at=available_at,
+        approval=approval,
+        acceptance=acceptance,
+        context=context,
     )
 
 
@@ -586,6 +602,91 @@ def test_task_lookup_is_exact_and_project_isolated(tmp_path: Path) -> None:
         ),
     )
     assert beta_page.tasks == (beta_task,)
+
+
+def test_task_reads_hydrate_complete_definition_and_ordered_dependencies(
+    tmp_path: Path,
+) -> None:
+    """Detail and list paths expose one equal complete Task after restart."""
+    repository, bootstrap = _repository(tmp_path)
+    first = repository.create_task(_task_mutation("first", seconds=1))
+    second = repository.create_task(_task_mutation("second", seconds=2))
+    acceptance = (
+        AcceptanceCriterion(
+            id="ac_evidence",
+            text="Attach categorized evidence.",
+            required=True,
+        ),
+    )
+    context = (
+        ContextReference(uri="workspace://repo/data.csv", version="git:8f31c12"),
+    )
+    available_at = _NOW + timedelta(days=2, microseconds=333333)
+    created = repository.create_task(
+        _task_mutation(
+            "dependent",
+            title="Complete definition",
+            seconds=3,
+            available_at=available_at,
+            approval=ApprovalRequirement.HUMAN,
+            acceptance=acceptance,
+            context=context,
+        )
+    )
+    with open_write_transaction(repository.database_path) as connection:
+        # Insert reverse key order to prove reads own deterministic ordering.
+        connection.executemany(
+            """
+            INSERT INTO task_dependencies (task_uid, prerequisite_uid, project_id)
+            VALUES (?, ?, ?)
+            """,
+            (
+                (str(created.uid), str(second.uid), str(created.project_id)),
+                (str(created.uid), str(first.uid), str(created.project_id)),
+            ),
+        )
+    expected = replace(created, depends_on=(first.uid, second.uid))
+    command = GetTask(
+        project_id=bootstrap.project.id,
+        subject_id=bootstrap.subject.id,
+        task=created.uid,
+    )
+
+    assert (
+        _read_without_mutation(
+            repository,
+            partial(repository.get_task, command),
+        )
+        == expected
+    )
+    project_page = _read_without_mutation(
+        repository,
+        lambda: repository.list_tasks(
+            ListTasks(
+                project_id=bootstrap.project.id,
+                subject_id=bootstrap.subject.id,
+            )
+        ),
+    )
+    assert project_page.tasks[-1] == expected
+    instance_page = _read_without_mutation(
+        repository,
+        lambda: repository.list_tasks_for_instance(
+            ListInstanceTasks(
+                instance_id=bootstrap.instance.id,
+                subject_id=bootstrap.subject.id,
+            )
+        ),
+    )
+    assert instance_page.tasks[-1] == expected
+    reopened = SQLiteRepository(repository.database_path)
+    assert (
+        _read_without_mutation(
+            reopened,
+            partial(reopened.get_task, command),
+        )
+        == expected
+    )
 
 
 def test_task_pagination_is_empty_then_complete_stable_and_reopenable(

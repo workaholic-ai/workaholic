@@ -39,7 +39,7 @@ class SQLiteRepository:
         """Bind the adapter to one absolute local database path.
 
         Args:
-            database_path: Absolute path to a schema-version-2 SQLite store.
+            database_path: Absolute path to a schema-version-3 SQLite store.
 
         Raises:
             TypeError: If the value is not an absolute Path.
