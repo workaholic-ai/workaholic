@@ -19,8 +19,12 @@ from workaholic.application import (
     ProjectCreationMutation,
     ProjectCreationResult,
     ProjectKeyConflictError,
+    TaskMutationResult,
+    TaskUpdateMutation,
+    TaskUpdatePatch,
+    VersionConflictError,
 )
-from workaholic.domain import ProjectId, RequestId
+from workaholic.domain import ProjectId, RequestId, TaskEventId
 from workaholic.persistence.sqlite import (
     SQLiteRepository,
     open_read_connection,
@@ -166,6 +170,89 @@ def test_concurrent_distinct_project_keys_all_commit_independently(
     assert grant_count == (_WORKER_COUNT,)
 
 
+def test_concurrent_task_updates_have_exactly_one_optimistic_winner(
+    tmp_path: Path,
+) -> None:
+    """Two writers at one version cannot produce last-write-wins."""
+    database_path = tmp_path / "local.db"
+    repository = SQLiteRepository(database_path)
+    bootstrap = repository.bootstrap_local_project(bootstrap_mutation("bootstrap"))
+    task = repository.create_task(task_mutation(bootstrap, "target"))
+    barrier = Barrier(2)
+    arguments = tuple(
+        (database_path, bootstrap, task, index, None, barrier) for index in range(1, 3)
+    )
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        outcomes = tuple(executor.map(_update_task_or_conflict, arguments))
+
+    winners = tuple(item for item in outcomes if isinstance(item, TaskMutationResult))
+    conflicts = tuple(
+        item for item in outcomes if isinstance(item, VersionConflictError)
+    )
+    assert len(winners) == 1
+    assert len(conflicts) == 1
+    assert winners[0].task.version == 2
+    assert winners[0].task.title in {"Worker 1", "Worker 2"}
+    page = repository.list_tasks(
+        ListTasks(
+            project_id=bootstrap.project.id,
+            subject_id=bootstrap.subject.id,
+            limit=100,
+        )
+    )
+    assert page.tasks == (winners[0].task,)
+    with open_read_connection(database_path) as connection:
+        counts = connection.execute(
+            """
+            SELECT
+                (SELECT count(*) FROM task_events),
+                (
+                    SELECT count(*) FROM idempotency_records
+                    WHERE operation = 'task.update'
+                )
+            """
+        ).fetchone()
+    assert counts == (2, 0)
+
+
+def test_concurrent_matching_update_key_replays_one_committed_mutation(
+    tmp_path: Path,
+) -> None:
+    """Concurrent semantic retries share one Task version, event, and outcome."""
+    database_path = tmp_path / "local.db"
+    repository = SQLiteRepository(database_path)
+    bootstrap = repository.bootstrap_local_project(bootstrap_mutation("bootstrap"))
+    task = repository.create_task(task_mutation(bootstrap, "target"))
+    barrier = Barrier(2)
+    arguments = tuple(
+        (database_path, bootstrap, task, index, "update-once", barrier)
+        for index in range(1, 3)
+    )
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        outcomes = tuple(executor.map(_update_task_or_conflict, arguments))
+
+    assert all(isinstance(item, TaskMutationResult) for item in outcomes)
+    assert outcomes[0] == outcomes[1]
+    committed = outcomes[0]
+    assert isinstance(committed, TaskMutationResult)
+    assert committed.task.version == 2
+    assert committed.task.title == "Retried update"
+    with open_read_connection(database_path) as connection:
+        counts = connection.execute(
+            """
+            SELECT
+                (SELECT count(*) FROM task_events),
+                (
+                    SELECT count(*) FROM idempotency_records
+                    WHERE operation = 'task.update'
+                )
+            """
+        ).fetchone()
+    assert counts == (2, 1)
+
+
 def _create_task(
     arguments: tuple[Path, BootstrapResult, int, Barrier],
 ) -> Task:
@@ -188,6 +275,46 @@ def _create_task(
             occurred_at=later_timestamp(index),
         )
     )
+
+
+def _update_task_or_conflict(
+    arguments: tuple[
+        Path,
+        BootstrapResult,
+        Task,
+        int,
+        str | None,
+        Barrier,
+    ],
+) -> TaskMutationResult | VersionConflictError:
+    """Run one contended optimistic update through an independent connection.
+
+    Args:
+        arguments: Database, identity graph, Task, worker, caller key, and barrier.
+
+    Returns:
+        The committed or replayed mutation, or the expected stale-version error.
+
+    """
+    database_path, bootstrap, task, index, caller_key, barrier = arguments
+    repository = SQLiteRepository(database_path)
+    title = f"Worker {index}" if caller_key is None else "Retried update"
+    mutation = TaskUpdateMutation(
+        task_uid=task.uid,
+        project_id=bootstrap.project.id,
+        actor_subject_id=bootstrap.subject.id,
+        event_id=TaskEventId(f"evt_update_{index}"),
+        request_id=RequestId(f"req_update_{index}"),
+        occurred_at=later_timestamp(index),
+        expected_version=1,
+        patch=TaskUpdatePatch(title=title),
+        idempotency_key=caller_key,
+    )
+    barrier.wait(timeout=10)
+    try:
+        return repository.update_task_if_version(mutation)
+    except VersionConflictError as error:
+        return error
 
 
 def _create_project_or_conflict(

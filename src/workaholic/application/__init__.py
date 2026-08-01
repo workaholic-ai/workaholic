@@ -85,6 +85,7 @@ from workaholic.application.results import (
     TaskPage,
     TaskSubmissionResult,
 )
+from workaholic.application.task_lifecycle import TaskLifecycleApplication
 from workaholic.application.tasks import TaskApplication
 
 __all__ = [
@@ -150,6 +151,7 @@ __all__ = [
     "TaskCreationRepository",
     "TaskDetails",
     "TaskEventPage",
+    "TaskLifecycleApplication",
     "TaskListView",
     "TaskMutationResult",
     "TaskNotFoundError",

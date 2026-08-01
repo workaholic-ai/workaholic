@@ -10,6 +10,9 @@ from workaholic.persistence.sqlite._bootstrap import (
     bootstrap_local_project as _bootstrap_local_project,
 )
 from workaholic.persistence.sqlite._projects import create_project as _create_project
+from workaholic.persistence.sqlite._task_lifecycle import (
+    update_task_if_version as _update_task_if_version,
+)
 from workaholic.persistence.sqlite._tasks import create_task as _create_task
 from workaholic.persistence.sqlite.schema import initialize_empty_store
 
@@ -27,7 +30,9 @@ if TYPE_CHECKING:
         ProjectCreationResult,
         StatusResult,
         TaskCreationMutation,
+        TaskMutationResult,
         TaskPage,
+        TaskUpdateMutation,
     )
     from workaholic.domain import Project, Task
 
@@ -88,6 +93,21 @@ class SQLiteRepository:
 
         """
         return _create_task(self._database_path, mutation)
+
+    def update_task_if_version(
+        self,
+        mutation: TaskUpdateMutation,
+    ) -> TaskMutationResult:
+        """Atomically update Task definition fields at an expected version.
+
+        Args:
+            mutation: Validated optimistic Task update mutation.
+
+        Returns:
+            The committed Task and its attributable update event.
+
+        """
+        return _update_task_if_version(self._database_path, mutation)
 
     def create_project(
         self,
