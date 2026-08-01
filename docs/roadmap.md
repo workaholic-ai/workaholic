@@ -624,11 +624,15 @@ priority
 available_at
 acceptance criteria
 context references
-parent/child relationship
 dependencies
 approval requirement
 structured result
 ```
+
+V1 does not introduce a parent/child Task hierarchy. Decomposition uses
+ordinary Tasks with explicit same-Project dependencies where ordering or
+completion constraints exist. Attributable creation events and Results retain
+the provenance of follow-up work.
 
 Implement stored states:
 

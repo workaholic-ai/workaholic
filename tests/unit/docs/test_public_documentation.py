@@ -145,6 +145,20 @@ def test_canonical_documents_have_no_root_level_copies() -> None:
     assert not (_PROJECT_ROOT / "ROADMAP.md").exists()
 
 
+def test_v1_task_model_excludes_parent_child_hierarchy() -> None:
+    """V1 decomposition uses dependencies and provenance, not a hierarchy."""
+    architecture = _ARCHITECTURE.read_text(encoding="utf-8")
+    roadmap = _ROADMAP.read_text(encoding="utf-8")
+    product_scope = _PRODUCT_SCOPE.read_text(encoding="utf-8")
+
+    assert '"parent_uid"' not in architecture
+    assert "create permitted child tasks" not in architecture
+    assert "parent/child relationship" not in roadmap
+    assert "explicit same-Project dependencies" in architecture
+    assert "explicit same-Project dependencies" in roadmap
+    assert "parent/child Task hierarchies" in product_scope
+
+
 def test_glossary_defines_terms_used_by_architecture_and_roadmap() -> None:
     """Canonical planning documents use every required glossary term."""
     glossary = _GLOSSARY.read_text(encoding="utf-8")
