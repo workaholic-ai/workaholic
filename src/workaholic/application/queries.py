@@ -13,23 +13,29 @@ from workaholic.application.commands import (
     ListProjects,
     ListTasks,
     ListTasksByView,
+    ReadTaskEvents,
 )
 from workaholic.application.errors import (
     ApplicationError,
     ApplicationErrorCode,
     InvalidInputError,
 )
-from workaholic.application.results import StatusResult, TaskDetails, TaskPage
+from workaholic.application.results import (
+    StatusResult,
+    TaskDetails,
+    TaskEventPage,
+    TaskPage,
+)
 from workaholic.domain import Project, Task, TaskId
 
 if TYPE_CHECKING:
-    from workaholic.application.ports import TaskViewQueryRepository
+    from workaholic.application.ports import QueryRepository
 
 
 class QueryApplication:
     """Validate query boundaries and delegate read-only repository operations."""
 
-    def __init__(self, repository: TaskViewQueryRepository) -> None:
+    def __init__(self, repository: QueryRepository) -> None:
         """Initialize the query service with one semantic repository.
 
         Args:
@@ -48,6 +54,7 @@ class QueryApplication:
             "get_task",
             "get_task_details",
             "list_tasks_by_view",
+            "read_task_events_after",
         ):
             _require_callable(repository, method_name)
         self._repository = repository
@@ -269,6 +276,47 @@ class QueryApplication:
             )
         ):
             _raise_invalid_result("Task view page")
+        return result
+
+    def read_task_events_after(self, command: ReadTaskEvents) -> TaskEventPage:
+        """Return one polling-safe attributable TaskEvent snapshot.
+
+        Args:
+            command: Validated Task, Project, actor, cursor, and limit query.
+
+        Returns:
+            Events in strict Instance cursor order and next polling cursor.
+
+        Raises:
+            ApplicationError: If input or repository output violates its contract.
+
+        """
+        candidate: object = command
+        if not isinstance(candidate, ReadTaskEvents):
+            raise InvalidInputError
+        result: object = self._repository.read_task_events_after(candidate)
+        if not isinstance(result, TaskEventPage):
+            _raise_invalid_result("TaskEvent page")
+        if (
+            len(result.events) > candidate.limit
+            or (not result.events and result.next_cursor != candidate.after)
+            or (
+                result.events
+                and (
+                    result.events[0].cursor <= candidate.after
+                    or result.next_cursor <= candidate.after
+                )
+            )
+            or any(
+                event.project_id != candidate.project_id
+                or (
+                    isinstance(candidate.task, TaskId)
+                    and event.task_uid != candidate.task
+                )
+                for event in result.events
+            )
+        ):
+            _raise_invalid_result("TaskEvent page")
         return result
 
 

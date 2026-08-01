@@ -57,6 +57,7 @@ if TYPE_CHECKING:
         ListTasksByView,
         ProjectCreationMutation,
         ProjectCreationResult,
+        ReadTaskEvents,
         RejectResultMutation,
         RemoveTaskDependencyMutation,
         StatusResult,
@@ -65,6 +66,7 @@ if TYPE_CHECKING:
         TaskCancelMutation,
         TaskCreationMutation,
         TaskDetails,
+        TaskEventPage,
         TaskMutationResult,
         TaskPage,
         TaskSubmissionResult,
@@ -392,3 +394,15 @@ class SQLiteRepository:
             command,
             now=self._clock.now(),
         )
+
+    def read_task_events_after(self, command: ReadTaskEvents) -> TaskEventPage:
+        """Read one authorized bounded TaskEvent snapshot.
+
+        Args:
+            command: Validated Task, Project, actor, cursor, and limit query.
+
+        Returns:
+            Polling-safe attributable events in cursor order.
+
+        """
+        return sqlite_queries.read_task_events_after(self._database_path, command)

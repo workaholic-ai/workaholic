@@ -22,9 +22,9 @@ from workaholic.application import (
     ProjectApplication,
     ProjectRepository,
     QueryApplication,
+    QueryRepository,
     TaskApplication,
     TaskCreationRepository,
-    TaskViewQueryRepository,
 )
 from workaholic.cli.main import create_app
 from workaholic.context import (
@@ -75,7 +75,7 @@ class _ComposedRepository(
     BootstrapRepository,
     ProjectRepository,
     TaskCreationRepository,
-    TaskViewQueryRepository,
+    QueryRepository,
     Protocol,
 ):
     """Expose only operations consumed by the current local composition."""

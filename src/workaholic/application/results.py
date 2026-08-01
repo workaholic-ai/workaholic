@@ -2,24 +2,39 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+from datetime import datetime  # noqa: TC003
 from pathlib import Path  # noqa: TC003
 from typing import Literal, Self
 
-from pydantic import BaseModel, ConfigDict, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    field_serializer,
+    field_validator,
+    model_validator,
+)
 
 from workaholic.application.commands import TaskListView
 from workaholic.domain import (
     DomainValidationError,
     Instance,
+    JsonValue,
     Project,
     ProjectGrant,
+    ProjectId,
     ProjectRole,
+    RequestId,
     ResultReviewStatus,
     Subject,
+    SubjectId,
     SubjectKind,
     Task,
     TaskEvent,
+    TaskEventId,
     TaskEventType,
+    TaskId,
     TaskReadiness,
     TaskResult,
     TaskState,
@@ -360,10 +375,84 @@ class TaskSubmissionResult(_ResultModel):
         return self
 
 
+class TaskEventResult(_ResultModel):
+    """One flat attributable TaskEvent safe for application consumers."""
+
+    id: TaskEventId
+    cursor: int
+    task_uid: TaskId
+    project_id: ProjectId
+    actor_subject_id: SubjectId
+    actor_kind: SubjectKind
+    attempt_id: None = None
+    request_id: RequestId
+    event_type: TaskEventType = Field(serialization_alias="type")
+    occurred_at: datetime
+    payload: Mapping[str, JsonValue]
+
+    @field_serializer("payload")
+    def _serialize_payload(
+        self,
+        value: Mapping[str, JsonValue],
+    ) -> dict[str, object]:
+        """Serialize the immutable payload without exposing its backing copy.
+
+        Args:
+            value: Recursively frozen domain payload.
+
+        Returns:
+            A detached JSON-compatible mapping for boundary serialization.
+
+        """
+        return {key: _mutable_json_value(item) for key, item in value.items()}
+
+    @model_validator(mode="after")
+    def _validate_event(self) -> TaskEventResult:
+        """Validate core event fields and freeze payload recursively.
+
+        Returns:
+            The validated flat attributable event.
+
+        Raises:
+            ValueError: If core event data or Phase 3 attribution is invalid.
+
+        """
+        event = TaskEvent(
+            id=self.id,
+            cursor=self.cursor,
+            task_uid=self.task_uid,
+            project_id=self.project_id,
+            actor_subject_id=self.actor_subject_id,
+            request_id=self.request_id,
+            event_type=self.event_type,
+            occurred_at=self.occurred_at,
+            payload=self.payload,
+        )
+        object.__setattr__(self, "payload", event.payload)
+        return self
+
+
+def _mutable_json_value(value: JsonValue) -> object:
+    """Copy one immutable JSON value into serialization-friendly containers.
+
+    Args:
+        value: Validated recursive JSON value.
+
+    Returns:
+        Scalars unchanged, arrays as lists, and objects as detached dictionaries.
+
+    """
+    if isinstance(value, Mapping):
+        return {key: _mutable_json_value(item) for key, item in value.items()}
+    if isinstance(value, tuple):
+        return [_mutable_json_value(item) for item in value]
+    return value
+
+
 class TaskEventPage(_ResultModel):
     """One polling-safe, strictly ascending TaskEvent snapshot."""
 
-    events: tuple[TaskEvent, ...]
+    events: tuple[TaskEventResult, ...]
     next_cursor: int
 
     @field_validator("next_cursor", mode="before")

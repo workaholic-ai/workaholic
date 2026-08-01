@@ -20,7 +20,9 @@ from workaholic.application import (
     NotInitializedError,
     PermissionDeniedError,
     ProjectNotFoundError,
+    ReadTaskEvents,
     StatusResult,
+    TaskEventPage,
     TaskNotFoundError,
     TaskPage,
 )
@@ -528,6 +530,27 @@ def get_task(database_path: Path, command: GetTask) -> Task:
         raise
     except (IndexError, TypeError, ValueError) as error:
         raise StorageUnavailableError from error
+
+
+def read_task_events_after(
+    database_path: Path,
+    command: ReadTaskEvents,
+) -> TaskEventPage:
+    """Read one authorized TaskEvent snapshot through the focused adapter.
+
+    Args:
+        database_path: Absolute path to the validated SQLite store.
+        command: Validated TaskEvent cursor query.
+
+    Returns:
+        Polling-safe ascending TaskEvent page.
+
+    """
+    from workaholic.persistence.sqlite._event_queries import (  # noqa: PLC0415
+        read_task_events_after as read_focused_events,
+    )
+
+    return read_focused_events(database_path, command)
 
 
 def _require_instance(

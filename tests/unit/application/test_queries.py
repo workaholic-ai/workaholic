@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, cast
 
@@ -19,8 +20,11 @@ from workaholic.application import (
     ListTasks,
     ListTasksByView,
     QueryApplication,
+    ReadTaskEvents,
     StatusResult,
     TaskDetails,
+    TaskEventPage,
+    TaskEventResult,
     TaskListView,
     TaskNotFoundError,
     TaskPage,
@@ -32,10 +36,13 @@ from workaholic.domain import (
     ProjectGrant,
     ProjectId,
     ProjectRole,
+    RequestId,
     Subject,
     SubjectId,
     SubjectKind,
     Task,
+    TaskEventId,
+    TaskEventType,
     TaskId,
     TaskReadiness,
     TaskState,
@@ -141,6 +148,37 @@ def _other_task() -> Task:
     )
 
 
+def _event_result(
+    task: Task | None = None,
+    *,
+    cursor: int = 3,
+) -> TaskEventResult:
+    """Build one attributable TaskEvent application result.
+
+    Args:
+        task: Optional owning Task fixture.
+        cursor: Positive Instance event cursor.
+
+    Returns:
+        Valid flat Human-attributed event.
+
+    """
+    selected = _task() if task is None else task
+    return TaskEventResult(
+        id=TaskEventId(f"evt_{cursor}"),
+        cursor=cursor,
+        task_uid=selected.uid,
+        project_id=selected.project_id,
+        actor_subject_id=SubjectId("sub_local"),
+        actor_kind=SubjectKind.HUMAN,
+        attempt_id=None,
+        request_id=RequestId("req_event_query"),
+        event_type=TaskEventType.TASK_CREATED,
+        occurred_at=_NOW,
+        payload={"version": 1},
+    )
+
+
 def _status() -> StatusResult:
     """Build one internally consistent local status.
 
@@ -194,6 +232,10 @@ class _RecordingRepository:
             readiness=(readiness,),
             next_cursor=None,
         )
+        self.events_result: object = TaskEventPage(
+            events=(_event_result(task),),
+            next_cursor=3,
+        )
         self.commands: list[object] = []
 
     def get_local_status(self, command: GetLocalStatus) -> object:
@@ -235,6 +277,11 @@ class _RecordingRepository:
         """Record and return the configured Task-view page."""
         self.commands.append(command)
         return self.view_tasks_result
+
+    def read_task_events_after(self, command: ReadTaskEvents) -> object:
+        """Record and return the configured TaskEvent page."""
+        self.commands.append(command)
+        return self.events_result
 
 
 class _MissingGetTaskRepository:
@@ -305,6 +352,13 @@ def test_queries_delegate_exact_validated_commands() -> None:
         project_id=ProjectId("prj_acme"),
         subject_id=SubjectId("sub_local"),
     )
+    events_command = ReadTaskEvents(
+        project_id=ProjectId("prj_acme"),
+        subject_id=SubjectId("sub_local"),
+        task=TaskId("tsk_first"),
+        after=0,
+        limit=25,
+    )
 
     assert application.status(status_command) is repository.status_result
     assert application.list_projects(projects_command) is repository.projects_result
@@ -317,6 +371,9 @@ def test_queries_delegate_exact_validated_commands() -> None:
     assert application.get_task(task_command) is repository.task_result
     assert application.get_task_details(details_command) is repository.details_result
     assert application.list_tasks_by_view(view_command) is repository.view_tasks_result
+    assert (
+        application.read_task_events_after(events_command) is repository.events_result
+    )
     assert repository.commands == [
         status_command,
         projects_command,
@@ -326,6 +383,7 @@ def test_queries_delegate_exact_validated_commands() -> None:
         task_command,
         details_command,
         view_command,
+        events_command,
     ]
 
 
@@ -353,6 +411,7 @@ def test_each_method_runtime_validates_its_command_type() -> None:
         lambda: application.get_task(cast("GetTask", object())),
         lambda: application.get_task_details(cast("GetTaskDetails", object())),
         lambda: application.list_tasks_by_view(cast("ListTasksByView", object())),
+        lambda: application.read_task_events_after(cast("ReadTaskEvents", object())),
     )
 
     for invoke in invocations:
@@ -401,6 +460,11 @@ def test_invalid_repository_results_map_to_safe_internal_errors() -> None:
         project_id=ProjectId("prj_acme"),
         subject_id=SubjectId("sub_local"),
     )
+    events_command = ReadTaskEvents(
+        project_id=ProjectId("prj_acme"),
+        subject_id=SubjectId("sub_local"),
+        task=TaskId("tsk_first"),
+    )
     repository.status_result = object()
     repository.projects_result = [_project()]
     repository.project_result = object()
@@ -409,6 +473,7 @@ def test_invalid_repository_results_map_to_safe_internal_errors() -> None:
     repository.task_result = object()
     repository.details_result = object()
     repository.view_tasks_result = object()
+    repository.events_result = object()
     invocations: tuple[Callable[[], object], ...] = (
         lambda: application.status(status_command),
         lambda: application.list_projects(projects_command),
@@ -418,6 +483,7 @@ def test_invalid_repository_results_map_to_safe_internal_errors() -> None:
         lambda: application.get_task(task_command),
         lambda: application.get_task_details(details_command),
         lambda: application.list_tasks_by_view(view_command),
+        lambda: application.read_task_events_after(events_command),
     )
 
     for invoke in invocations:
@@ -570,6 +636,51 @@ def test_type_correct_cross_selection_results_are_rejected() -> None:
         with pytest.raises(ApplicationError) as captured:
             invoke()
         assert captured.value.code is ApplicationErrorCode.INTERNAL_ERROR
+
+
+@pytest.mark.parametrize("case", ["project", "task", "empty-cursor", "after", "limit"])
+def test_event_pages_must_match_exact_query_scope_and_bounds(case: str) -> None:
+    """Event output cannot cross scope, move backward, or exceed the limit."""
+    repository = _RecordingRepository()
+    application = QueryApplication(cast("QueryRepository", repository))
+    command = ReadTaskEvents(
+        project_id=ProjectId("prj_acme"),
+        subject_id=SubjectId("sub_local"),
+        task=TaskId("tsk_first"),
+        after=2,
+        limit=1,
+    )
+    if case == "project":
+        repository.events_result = TaskEventPage(
+            events=(_event_result(_other_task()),),
+            next_cursor=3,
+        )
+    elif case == "task":
+        same_project_other = replace(
+            _task(),
+            uid=TaskId("tsk_other_same_project"),
+        )
+        repository.events_result = TaskEventPage(
+            events=(_event_result(same_project_other),),
+            next_cursor=3,
+        )
+    elif case == "empty-cursor":
+        repository.events_result = TaskEventPage(events=(), next_cursor=3)
+    elif case == "after":
+        repository.events_result = TaskEventPage(
+            events=(_event_result(cursor=2),),
+            next_cursor=2,
+        )
+    else:
+        repository.events_result = TaskEventPage(
+            events=(_event_result(cursor=3), _event_result(cursor=4)),
+            next_cursor=4,
+        )
+
+    with pytest.raises(ApplicationError) as captured:
+        application.read_task_events_after(command)
+
+    assert captured.value.code is ApplicationErrorCode.INTERNAL_ERROR
 
 
 def test_typed_repository_error_propagates_unchanged() -> None:

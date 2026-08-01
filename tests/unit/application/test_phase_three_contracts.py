@@ -31,6 +31,7 @@ from workaholic.application import (
     TaskCreationMutation,
     TaskDetails,
     TaskEventPage,
+    TaskEventResult,
     TaskListView,
     TaskMutationResult,
     TaskPage,
@@ -60,6 +61,7 @@ from workaholic.domain import (
     ResultReview,
     ResultReviewStatus,
     SubjectId,
+    SubjectKind,
     Task,
     TaskEvent,
     TaskEventId,
@@ -145,6 +147,31 @@ def _event(
         event_type=event_type,
         occurred_at=_NOW,
         payload={},
+    )
+
+
+def _event_result(event: TaskEvent) -> TaskEventResult:
+    """Build one flat attributable event result from a domain event.
+
+    Args:
+        event: Valid core TaskEvent fixture.
+
+    Returns:
+        Phase 3 Human-attributed application event.
+
+    """
+    return TaskEventResult(
+        id=event.id,
+        cursor=event.cursor,
+        task_uid=event.task_uid,
+        project_id=event.project_id,
+        actor_subject_id=event.actor_subject_id,
+        actor_kind=SubjectKind.HUMAN,
+        attempt_id=None,
+        request_id=event.request_id,
+        event_type=event.event_type,
+        occurred_at=event.occurred_at,
+        payload=event.payload,
     )
 
 
@@ -831,21 +858,45 @@ def test_submission_result_rejects_unordered_or_mixed_attribution_events() -> No
 def test_task_event_page_requires_strict_scope_order_and_terminal_cursor() -> None:
     """Event pages are polling-safe for empty and nonempty snapshots."""
     task = _task()
-    first = _event(task, TaskEventType.TASK_UPDATED, cursor=3)
-    second = _event(task, TaskEventType.TASK_BLOCKED, cursor=4)
+    first = _event_result(_event(task, TaskEventType.TASK_UPDATED, cursor=3))
+    second = _event_result(_event(task, TaskEventType.TASK_BLOCKED, cursor=4))
 
     assert TaskEventPage(events=(), next_cursor=2).next_cursor == 2
     assert TaskEventPage(events=(first, second), next_cursor=4).events[-1] is second
     for events, cursor in (
         ((second, first), 3),
         ((first, second), 3),
-        ((first, replace(second, task_uid=TaskId("tsk_other"))), 4),
+        (
+            (
+                first,
+                second.model_copy(update={"task_uid": TaskId("tsk_other")}),
+            ),
+            4,
+        ),
     ):
         with pytest.raises(ValidationError):
             TaskEventPage(events=events, next_cursor=cursor)
     for cursor in (-1, True):
         with pytest.raises(ValidationError):
             TaskEventPage.model_validate({"events": (), "next_cursor": cursor})
+
+
+def test_task_event_result_is_flat_attributable_and_deeply_immutable() -> None:
+    """Application events include Human attribution and freeze payload content."""
+    task = _task()
+    core = replace(
+        _event(task, TaskEventType.TASK_UPDATED, cursor=3),
+        payload={"changes": ("title",)},
+    )
+    event = _event_result(core)
+
+    assert event.actor_kind is SubjectKind.HUMAN
+    assert event.attempt_id is None
+    assert event.model_dump(by_alias=True)["type"] is TaskEventType.TASK_UPDATED
+    with pytest.raises(TypeError):
+        event.payload["changes"] = ()  # type: ignore[index]
+    with pytest.raises(ValidationError):
+        TaskEventResult.model_validate({**event.model_dump(), "actor_kind": "agent"})
 
 
 def test_task_page_binds_view_and_uses_ready_ordering() -> None:
