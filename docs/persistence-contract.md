@@ -1,6 +1,6 @@
 # Workaholic AI Persistence Contract
 
-- Status: Accepted v1 contract through Phase 3 with Phase 3 SQLite implementation
+- Status: Accepted v1 contract through Phase 4 with Phase 3 SQLite implementation
 - Decision date: 2026-07-29
 - Contract scope: Observable semantics shared by JSON, SQLite, and PostgreSQL
 - Public API status: Internal architecture contract, not a third-party API
@@ -41,8 +41,8 @@ must produce identical externally observable outcomes for:
 
 - stable identifiers and task-number allocation;
 - Task lifecycle and optimistic versions;
-- readiness ordering and atomic claims;
-- Attempt ownership and Lease expiry;
+- readiness ordering and atomic Human/Agent Claims;
+- exclusive Claim ownership, Attempt identity, and Lease expiry;
 - Results and review transitions;
 - idempotent mutations;
 - append-only attributable TaskEvents;
@@ -90,8 +90,8 @@ reads do not change persisted state.
 
 Phase 1 supports optional durable idempotency for `up` and `task add`.
 Phase 2 extends context discovery, Phase 3 adds Task updates and their version
-increments, Phase 4 adds Attempts and Leases, and Phase 5 adds Tokens and
-general identity management. These deferrals do not weaken the Phase 1
+increments, Phase 4 adds Claims, Attempts, and Leases, and Phase 5 adds Tokens
+and general identity management. These deferrals do not weaken the Phase 1
 Subject, ProjectGrant, TaskEvent, schema-validation, or atomicity guarantees.
 
 ## Phase 2 SQLite contract
@@ -191,7 +191,8 @@ come from the operations and conformance tests below.
 
 Phase 3 remains Human-operated. A Human Result records the authenticated Human
 and a null Attempt identity. The adapter must reject any Phase 3 input that
-attempts to populate an Attempt. Agent Attempts and Leases begin in Phase 4.
+attempts to populate an Attempt. Human and Agent Claims, Agent Attempts, and
+Leases begin in Phase 4.
 
 The Phase 3 semantic operations are:
 
@@ -239,7 +240,7 @@ transaction commits all of:
 
 - validated state changes;
 - optimistic version increments;
-- Attempt and Lease changes where applicable;
+- Claim, Attempt, and Lease changes where applicable;
 - required TaskEvents;
 - ordered event cursor allocation;
 - idempotency record and outcome where applicable.
@@ -317,13 +318,13 @@ expected version. An equivalent replay returns the recorded outcome before
 comparing that historic version with the now-current Task; conflicting reuse
 still returns `IDEMPOTENCY_CONFLICT` and changes nothing.
 
-## Readiness and atomic claims
+## Readiness and atomic Claims
 
 Readiness is derived from Task state and related data. A ready Task is open,
 available at the authoritative time, has satisfied blocking dependencies, and
-has no current unexpired Attempt.
+has no current unexpired Claim.
 
-During Human-only Phase 3, there are no Attempts, so `running` and `stale` are
+During Human-only Phase 3, there are no Claims, so `running` and `stale` are
 always false. `scheduled` means an otherwise open Task has future
 `available_at`; `awaiting_review` means stored state `review`.
 
@@ -344,44 +345,75 @@ present timestamp. All-Project ready views add immutable Project key before
 Task number as the final tie-breaker. View cursors bind the view and its exact
 ordering position in addition to the Phase 2 identity and selection scope.
 
-One `claim_next_task` transaction:
+Phase 4 supports two Claim operations:
+
+- a Human targets one ready Task and creates a Claim with a null Attempt;
+- an Agent pulls the highest-ranked ready Task and creates a Claim with a new
+  non-null Attempt.
+
+A Human Claim uses a longer Lease window than an Agent Claim. Exact defaults,
+minimums, and maximums belong to the Phase 4 command contract.
+
+Human claiming is optional. Capability filtering is not part of v1. One
+`claim_task` or `claim_next_task` transaction:
 
 1. validates the authenticated Subject's Project access and claim permission;
-2. evaluates relevant expired Attempts at the transaction time;
-3. selects the highest-ranked eligible Task matching documented filters;
-4. verifies that no current unexpired Attempt owns it;
-5. creates a new Attempt with a new identifier and Lease;
-6. associates that Attempt with the Task;
-7. appends any required expiry event and one `task_claimed` TaskEvent;
-8. records idempotency where supplied;
-9. commits and returns the claimed task packet.
+2. evaluates relevant expired Claims at the transaction time;
+3. validates the targeted Task or selects the highest-ranked eligible Task;
+4. verifies that no current unexpired Claim owns it;
+5. creates the Human Claim or new Agent Attempt and Claim with one Lease;
+6. appends any required expiry event and one `task_claimed` TaskEvent;
+7. records idempotency where supplied;
+8. commits and returns the claimed Task packet with nullable Attempt identity.
 
-Two concurrent claims cannot successfully claim the same Task. Correctness must
-not depend on a background scheduler. Every reclaim creates a new Attempt,
-including a reclaim by the same Agent.
+Two concurrent Human or Agent claims cannot successfully claim the same Task.
+Correctness must not depend on a background scheduler. Every Agent reclaim
+creates a new Attempt, including a reclaim by the same Agent.
 
-## Attempt and Lease mutations
+## Claim, Attempt, and Lease mutations
 
-Heartbeat, progress, release, and Result submission atomically verify:
+Human renew/release and Agent heartbeat/progress/release/submit atomically
+verify:
 
 - target Project and Task;
 - authenticated Subject;
-- current Attempt identifier;
-- Attempt ownership by that Subject;
-- active status;
+- current Claim ownership by that Subject;
+- nullable Attempt identity and current Attempt status where applicable;
 - Lease validity at the transaction time;
 - operation-specific Task state and optimistic preconditions.
 
-A foreign, expired, ended, or superseded Attempt returns a Lease-lost or
-authorization outcome as appropriate and commits no state or TaskEvent.
+An unexpired Claim is an exclusive mutation lock. A non-owner Task mutation
+while the Claim remains unexpired returns a locked outcome and commits no Task,
+Claim, Attempt, Result, version, idempotency, or TaskEvent change. The Human
+owner may perform normal Human mutations without an Attempt ID. Definition,
+block/unblock, and dependency mutations retain the Human Claim; cancellation
+ends it. The Agent owner may only heartbeat, report progress, release, or submit
+through the current Attempt.
 
-A heartbeat extends only the current valid Attempt. Release ends the current
-Attempt and makes the Task eligible according to normal readiness rules.
-Submission records the Result and either completes the Task or moves it to
-review according to its approval requirement.
+Human `task renew` and Agent heartbeat invoke one `renew_claim` operation. A
+Human supplies no Attempt ID; an Agent supplies the exact current Attempt.
+Repeating a Claim returns it without extending the Lease, and reads or normal
+mutations never renew implicitly. Release ends the Claim and makes the Task
+eligible according to normal readiness rules.
+
+Lease validity uses authoritative transaction time and
+`now < lease_expires_at`. A foreign, expired, ended, or superseded Claim or
+Attempt returns a Lease-lost, locked, or authorization outcome as appropriate
+and commits no partial state.
+
+Agent Attempt states are exactly `active`, `released`, `expired`, and
+`submitted`; the last three are terminal and populate `ended_at`. Submission
+records the Result, ends the Claim, changes the Attempt to `submitted`, and
+either completes the Task or moves it to review. Approval and rejection never
+revive or close an already submitted Attempt.
 
 An old process cannot submit through an earlier Attempt after reclaim, even
 when the same Agent owns the new Attempt.
+
+Claim, renew, heartbeat, progress, release, and expiry do not increment the
+Task version. Agent claim returns the current Task version. Agent submission
+requires that expected version and the current Attempt, then increments the
+Task version exactly once on success.
 
 ## Results and review
 
@@ -392,15 +424,17 @@ identifiers and applicable attribution in the same transaction.
 A Phase 3 Human submission requires `open`, satisfied dependencies, the
 authenticated Human, a null Attempt, and the expected Task version. The Human
 comment and structured content are independently optional. Availability does
-not prohibit deliberate Human submission. A Phase 4 Agent submission instead
-requires the current valid Attempt.
+not prohibit deliberate Human submission. A Phase 4 Human may submit with or
+without first holding a Human Claim; when present, that null-Attempt Claim ends.
+A Phase 4 Agent submission instead requires the current valid Attempt and
+claimed Task version.
 
 - Submission without required approval moves the Task to done.
 - Submission requiring approval moves the Task to review.
 - Approval moves a review Task to done.
 - Rejection retains the Result for audit, clears it as the current review
-  selection, and returns the Task to open. If the Result belongs to a Phase 4
-  Agent Attempt, rejection also closes that reviewed Attempt.
+  selection, and returns the Task to open. The submitted Agent Attempt remains
+  terminal, and new execution requires a new Claim and Attempt.
 
 Each accepted transition appends its required attributable TaskEvent. An invalid
 transition leaves Result, Task, Attempt, version, and event state unchanged.
@@ -435,8 +469,9 @@ operations.
 
 Phase 3 event types are exactly `task_created`, `task_updated`,
 `task_blocked`, `task_unblocked`, `result_submitted`, `review_approved`,
-`review_rejected`, `task_completed`, and `task_cancelled`. Phase 4 adds Agent
-execution events without changing the Phase 3 records.
+`review_rejected`, `task_completed`, and `task_cancelled`. Phase 4 adds
+`task_claimed`, `claim_renewed`, `claim_released`, `claim_expired`,
+`progress_reported`, and `observation_added` without changing Phase 3 records.
 
 `read_task_events_after` is Task- and Project-authorized, accepts an optional
 nonnegative Instance cursor and a limit from 1 through 500, and returns a stable
@@ -481,7 +516,7 @@ performance but cannot be required for correctness.
 Adapters return typed semantic outcomes rather than driver exceptions for
 expected conditions, including:
 
-- missing Instance, Project, Task, Attempt, or Subject;
+- missing Instance, Project, Task, Claim, Attempt, or Subject;
 - conflicting Project key;
 - optimistic version conflict;
 - invalid lifecycle transition;
@@ -489,6 +524,7 @@ expected conditions, including:
 - cancelled prerequisite that makes completion unsatisfiable;
 - invalid Result or acceptance-criterion outcome;
 - no eligible Task to claim;
+- Task locked by another current Claim;
 - Lease lost through expiry, release, or supersession;
 - idempotency-key conflict;
 - unsupported schema version;
@@ -536,6 +572,7 @@ must cover:
 - dependency and availability readiness;
 - deterministic claim ordering;
 - real concurrent double-claim prevention;
+- Human Claim renewal and non-owner mutation rejection;
 - Lease expiry without a scheduler;
 - foreign, stale, and superseded Attempt rejection;
 - heartbeat, release, submission, approval, and rejection transitions;
@@ -572,6 +609,7 @@ Unsupported stores fail unchanged. See
 - [ADR 0009: No Storage Migrations in v1](adr/0009-no-storage-migrations-in-v1.md)
 - [ADR 0010: Single-Process, Single-Instance Server](adr/0010-single-process-single-instance-server.md)
 - [ADR 0011: Phase 3 Task Mutation and Human Submission](adr/0011-phase-three-task-mutation-and-human-submission.md)
+- [ADR 0012: Phase 4 Local Claim and Execution Model](adr/0012-phase-four-local-claim-and-execution-model.md)
 - [Compatibility policy](compatibility-policy.md)
 - [Threat model](threat-model.md)
 - [Architecture](architecture.md)

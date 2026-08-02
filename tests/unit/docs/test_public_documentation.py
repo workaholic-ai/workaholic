@@ -102,6 +102,7 @@ _REQUIRED_GLOSSARY_TERMS = frozenset(
     {
         "Agent",
         "Attempt",
+        "Claim",
         "Human",
         "Instance",
         "Lease",
@@ -126,7 +127,7 @@ _REQUIRED_THREATS = frozenset(
         "Secret exposure",
         "Stolen Token",
         "Token redirection",
-        "Unauthorized Attempt mutation",
+        "Unauthorized Claim or Attempt mutation",
     }
 )
 

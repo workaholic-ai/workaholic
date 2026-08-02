@@ -16,7 +16,7 @@ This avoids spending months building abstractions, server plumbing, and three st
 | 1     | Local Alpha           | Solo developer can create and inspect persistent tasks   | `0.1.0a1`         |
 | 2     | Multi-project Alpha   | Working-directory discovery and stable `ACME-1` IDs      | `0.2.0a1`         |
 | 3     | Workflow Alpha        | Full human task lifecycle, dependencies, results, events | `0.3.0a1`         |
-| 4     | Agent Alpha           | Agents claim, heartbeat, release, and submit through CLI | `0.4.0a1`         |
+| 4     | Agent Alpha           | Humans and Agents use exclusive expiring Claims through CLI | `0.4.0a1`      |
 | 5     | Identity Alpha        | Humans and agents authenticate with project roles        | `0.5.0a1`         |
 | 6     | Team Alpha            | Remote CLI and shared server work end to end             | `0.6.0a1`         |
 | 7     | Persistence Beta      | JSON, SQLite, and PostgreSQL pass the same contract      | `0.7.0b1`         |
@@ -654,7 +654,7 @@ stale
 awaiting_review
 ```
 
-`running` and `stale` will become meaningful once attempts arrive in Phase 4.
+`running` and `stale` will become meaningful once Claims arrive in Phase 4.
 
 Phase 3 replaces the disposable Phase 2 SQLite store with exact schema version
 `3`. Version `2` is rejected unchanged. No migration, conversion, import,
@@ -770,29 +770,48 @@ A human operator can create a small dependency graph, block and unblock work, su
 
 ---
 
-# Phase 4 — Agent execution and extended JSON CLI contract
+# Phase 4 — Local Claims, Agent execution, and extended JSON CLI contract
+
+The accepted ownership and execution semantics are recorded in
+[ADR 0012](adr/0012-phase-four-local-claim-and-execution-model.md).
 
 ## Goal
 
-Make Workaholic AI usable by autonomous local agents without exposing a public API.
+Make Workaholic AI usable by Human owners and autonomous local Agents through
+exclusive expiring Claims without exposing a public API.
 
 ## Scope
 
 Implement:
 
 ```text
+Claim
 Attempt
 atomic claim
 lease expiry
+Human renewal
 heartbeat
 release
 reclaim
 structured progress
 structured submission
-capability filtering
+exclusive mutation lock
 ```
 
-An attempt contains:
+A Claim contains:
+
+```text
+task UID
+owner subject ID
+nullable attempt ID
+claim and lease-expiry timestamps
+```
+
+A Human Claim has a null Attempt and a longer Lease. An Agent Claim has a
+non-null current Attempt and a shorter Lease. Capability filtering is not part
+of v1; a claimant is assumed capable of its selected Task.
+
+An Agent Attempt contains:
 
 ```text
 attempt ID
@@ -803,11 +822,27 @@ status
 start/end timestamps
 ```
 
+## Human commands
+
+```text
+workaholic task claim TASK [--lease DURATION]
+  [--project KEY] [--idempotency-key KEY]
+workaholic task renew TASK [--lease DURATION]
+  [--project KEY] [--idempotency-key KEY]
+workaholic task release TASK
+  [--project KEY] [--idempotency-key KEY]
+```
+
+Human claiming is optional and accepts one ready Task. Human commands never
+require an Attempt ID. Repeating an existing owned Claim returns it without
+extending the Lease; `task renew` explicitly extends it. Definition updates,
+block/unblock, and dependency changes retain the Human Claim. Release, expiry,
+submission, and cancellation end it.
+
 ## Agent commands
 
 ```bash
 workaholic task claim \
-  --capability code \
   --lease 15m \
   --json \
   --non-interactive
@@ -831,7 +866,6 @@ workaholic task progress ACME-42 \
 ```bash
 workaholic task release ACME-42 \
   --attempt atm_01... \
-  --reason capability-mismatch \
   --json \
   --non-interactive
 ```
@@ -839,11 +873,22 @@ workaholic task release ACME-42 \
 ```bash
 workaholic task submit ACME-42 \
   --attempt atm_01... \
+  --expected-version 4 \
   --result-file result.json \
   --idempotency-key run-238-submit \
   --json \
   --non-interactive
 ```
+
+An explicit Task operand selects Human claiming; omitting it selects Agent
+pull-next behavior. Phase 4 reuses the sole embedded bootstrap Subject for both
+paths. Attempt identity distinguishes Agent processes; distinct Agent Subjects,
+Tokens, and authenticated ownership remain Phase 5 work.
+
+An unexpired Claim rejects every non-owner mutation without partial writes.
+The Human owner may perform normal Human mutations without an Attempt ID. The
+Agent owner may only heartbeat, report progress, release, or submit through its
+current Attempt. Workaholic AI does not force-interrupt an external Agent.
 
 ## CLI automation contract extension
 
@@ -881,18 +926,29 @@ Example:
 
 The test suite must prove:
 
-1. Two concurrent agents cannot claim the same task.
-2. An expired attempt cannot heartbeat or submit.
-3. A stale attempt cannot submit after the task is reclaimed.
-4. The same agent reclaiming a task still receives a new attempt ID.
-5. An idempotently retried submission creates one result and one logical completion.
-6. Lease expiry correctness does not depend on a background scheduler.
+1. Two concurrent Human or Agent claimants cannot claim the same Task.
+2. Non-owner Task mutations fail while the current Claim is unexpired.
+3. An expired Agent Attempt cannot heartbeat or submit.
+4. A stale Attempt cannot submit after the Task is reclaimed.
+5. The same Agent reclaiming a Task still receives a new Attempt ID.
+6. Human renewal and Agent heartbeat share Lease rules without implicit renewal.
+7. Claim, renew, heartbeat, progress, release, and expiry do not increment the
+   Task version.
+8. Agent submission requires the claimed Task version, creates one Result,
+   increments the Task version once, ends the Claim, and leaves one logical
+   completion under idempotent retry.
+9. Submission ends the Attempt as `submitted` even when the Task enters review.
+10. Lease validity uses `now < lease_expires_at` and does not depend on a
+    background scheduler.
 
 Use actual concurrent processes against SQLite, not only mocked unit tests.
 
 ## Exit gate
 
-Two local agent processes race for one task. Exactly one receives it. That agent heartbeats and submits. A stale process receives a structured `LEASE_LOST` response.
+One Human process and two local Agent processes race for one Task. Exactly one
+receives it. Non-owners cannot mutate it. An Agent owner heartbeats and submits;
+a Human owner renews and submits without an Attempt ID. Submission releases the
+lock, and a stale Agent process receives a structured Lease-lost response.
 
 This is the first agent-usable Workaholic AI release.
 
@@ -1576,7 +1632,7 @@ Workaholic AI is v1-ready only when all of the following are true:
 2. Several working directories can bind to distinct projects in one instance.
 3. Stable task IDs such as `ACME-42` survive every supported operation.
 4. Human operators can use the complete task lifecycle.
-5. Agents can claim, heartbeat, release, and submit using only the CLI.
+5. Humans and Agents can claim, renew or heartbeat, release, and submit using only the CLI.
 6. Competing agents cannot double-claim or complete from stale attempts.
 7. Humans and agents have distinct authenticated identities and project roles.
 8. The same CLI works in embedded and remote modes.
@@ -1606,6 +1662,7 @@ Cross-project dependencies
 Horizontal server scaling
 SSO and OAuth
 Plugin system
+Capability-based Task scheduling and heterogeneous Agent queue routing
 Hosted Workaholic AI service
 ```
 

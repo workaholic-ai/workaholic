@@ -58,8 +58,9 @@ and distributed team coordination are required before v1 is complete.
 
 - Support task creation, editing, dependencies, blocking, review, completion,
   and cancellation.
-- Coordinate agents through atomic claims, expiring attempts, heartbeats,
-  releases, retries, and stale-attempt rejection.
+- Coordinate Humans and Agents through atomic exclusive Claims, with nullable
+  Agent Attempt attribution, distinct Lease windows, renewal, release, retries,
+  and stale-execution rejection.
 - Accept structured results and external artifact references without storing
   artifact contents.
 - Record typed, attributable, append-only task events.
@@ -129,6 +130,7 @@ The following capabilities must not delay v1:
   language;
 - managed blob or attachment storage;
 - a workflow designer or automated acceptance checker;
+- capability-based Task scheduling or heterogeneous Agent queue routing;
 - horizontal server scaling guarantees;
 - an official hosted service;
 - a self-contained native client or official OCI server image.
@@ -166,7 +168,9 @@ acceptable.
 
 Pre-1.0 compatibility and the contract-freeze process are defined in
 [Compatibility policy](compatibility-policy.md). Package and command naming are
-defined in [ADR 0001](adr/0001-package-and-executable-naming.md). The normative
+defined in [ADR 0001](adr/0001-package-and-executable-naming.md). Phase 4 Claim
+and execution semantics are defined in
+[ADR 0012](adr/0012-phase-four-local-claim-and-execution-model.md). The normative
 delivery boundaries are defined in the
 [CLI automation contract](cli-contract.md) and
 [persistence contract](persistence-contract.md).

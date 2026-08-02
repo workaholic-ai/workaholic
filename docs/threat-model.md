@@ -1,6 +1,6 @@
 # Workaholic AI Threat Model
 
-- Status: Accepted through Phase 3 implementation
+- Status: Accepted v1 model through Phase 4 with Phase 3 implementation
 - Decision date: 2026-07-29
 - Scope: Embedded and shared-server behavior required for v1
 - Security contact: [pg@ithesion.com](mailto:pg@ithesion.com)
@@ -17,7 +17,7 @@ append-only TaskEvents. It rejects schema version `2` unchanged. It does not
 implement bearer authentication, Agent execution, remote profiles,
 credentials, `RemoteSession`, or network services.
 
-Terms such as Subject, ProjectGrant, Attempt, Lease, and TaskEvent use their
+Terms such as Subject, ProjectGrant, Claim, Attempt, Lease, and TaskEvent use their
 canonical definitions in the [glossary](glossary.md).
 
 ## Security objectives
@@ -27,10 +27,10 @@ Workaholic AI must:
 - authenticate every independently operating Human and Agent Subject;
 - authorize every operation against instance and Project roles;
 - limit a compromised Subject or stolen Token to that Subject's grants;
-- preserve Task, Attempt, Lease, Result, and TaskEvent integrity;
+- preserve Task, Claim, Attempt, Lease, Result, and TaskEvent integrity;
 - prevent stale Task versions from overwriting accepted mutations;
 - attribute every mutation to the authenticated Subject and request;
-- prevent stale or foreign Attempts from mutating work;
+- prevent non-owners and stale or foreign Attempts from mutating claimed work;
 - keep credentials out of repository-controlled context and normal output;
 - apply the same authorization and audit rules through LocalSession and
   RemoteSession;
@@ -47,7 +47,8 @@ Security-sensitive assets include:
 - Task content, state, versions, dependencies, and stable identities;
 - Human Result attribution, review disposition, and external artifact
   references;
-- Attempt ownership, Lease expiry, Results, and idempotency records;
+- exclusive Claim ownership, Attempt identity, Lease expiry, Results, and
+  idempotency records;
 - attributable, append-only TaskEvents and their Instance ordering;
 - persisted state and backend credentials;
 - local Workspace paths and context;
@@ -77,9 +78,18 @@ Project. Every read and mutation is constrained by an Instance role or a
 ProjectGrant. Viewer, Agent, Operator, and Owner permissions apply only to the
 named Project.
 
-Subject kind and Project role are independent. Agent Capabilities affect
-scheduling only and never authorization. LocalSession and RemoteSession must
-call the same application authorization policy.
+Subject kind and Project role are independent. Capability-based scheduling is
+outside v1 and must not be mistaken for an authorization boundary if added
+later. LocalSession and RemoteSession must call the same application
+authorization policy.
+
+Phase 4 embedded Human and Agent commands reuse the sole bootstrap Subject.
+Human command shape and null Attempt attribution distinguish Human Claims;
+Attempt identity distinguishes local Agent processes. Phase 5 introduces
+distinct Subjects, Tokens, ProjectGrants, and authenticated ownership. Phase 4
+therefore prevents stale-process and non-owner command-path mutations but does
+not claim to distinguish different Human operators sharing the embedded
+operating-system account.
 
 ### Local filesystem and credential storage
 
@@ -167,6 +177,7 @@ The model considers:
 - an attacker who has stolen a Human or Agent Token;
 - a malicious or compromised repository controlling `.workaholic.env`;
 - an authenticated Subject attempting operations outside its role or Project;
+- a non-owner attempting to mutate a Task with a current unexpired Claim;
 - a stale Agent process attempting to mutate a reclaimed Task;
 - a stale Human or automation process attempting to overwrite a newer Task;
 - a network attacker observing, redirecting, replaying, or altering traffic;
@@ -183,16 +194,16 @@ administrator is outside the v1 application boundary.
 
 | Threat | Scenario | Required mitigations | Verification target |
 | --- | --- | --- | --- |
-| Compromised Agent | An Agent tries to read or mutate unrelated Projects or perform Operator actions. | Use one Subject per independent Agent; enforce ProjectGrant permissions on every application operation; treat Capabilities as scheduling labels only; record attribution. | Cross-Project and role-denial tests through LocalSession and RemoteSession. |
+| Compromised Agent | An Agent tries to read or mutate unrelated Projects or perform Operator actions. | From Phase 5, use one Subject per independent Agent and enforce ProjectGrant permissions on every application operation; in Phase 4, constrain the Agent command path to its current Attempt operations and record attribution. | Phase 4 command-path denial tests, then cross-Project and role-denial tests through LocalSession and RemoteSession. |
 | Stolen Token | An attacker replays a bearer Token until it expires or is revoked. | Store only Token hashes; support expiry, revocation, and Subject disablement; use narrow ProjectGrants and separate Agent identities; audit every accepted mutation. | Expiry, revocation, disablement, and least-privilege tests. |
 | Profile redirection | A repository or unsafe profile file redirects embedded storage to attacker-controlled state. | Forbid storage paths and profile definitions in `.workaholic.env`; read only a bounded regular non-symlink trusted profile file; require absolute canonical one-to-one data directories; validate context identities against selected persistence. | Hostile-context, unsafe-profile, aliasing, and authoritative-identity tests. |
 | Workspace path escape | A context uses `..` or a symlink to claim a Workspace outside its binding directory. | Canonicalize physical discovery; require an existing relative root contained by the context directory after lexical and symlink resolution; fail on the nearest invalid context. | Parent traversal, symlink escape, deep-directory, and invalid-nearer tests. |
 | Token redirection | A repository changes context so a later remote client sends its Token to an attacker endpoint. | Forbid URLs and credentials in `.workaholic.env`; reject all remote configuration in Phase 2; in Phases 5 and 6 resolve only a named trusted remote profile, require HTTPS, and compare the server's Instance identity before mutations. | Phase 2 remote-rejection tests, then hostile-context and unexpected-Instance tests in Phase 6. |
 | Secret exposure | Credentials appear in arguments, task data, events, logs, errors, or repository files. | Reject secrets in context; never accept Tokens in normal command arguments; redact diagnostics and structured logs; exclude raw Tokens from domain models and persistence; protect credential files. | Redaction tests and repository/history secret scans. |
 | Command injection | Context or task input triggers shell expansion or execution. | Parse context with a strict data parser and key allowlist; reject substitution and executable-path keys; never source `.workaholic.env`; use argument-vector subprocess calls at trusted adapter boundaries. | Malformed context, metacharacter, substitution, and unknown-key tests. |
-| Unauthorized Attempt mutation | A Subject heartbeats, releases, reports, or submits against another, expired, or superseded Attempt. | Authenticate the Subject; atomically verify Project access, Attempt owner, current Attempt ID, status, and Lease before mutation; reject stale Attempts without partial writes. | Concurrent claim, foreign owner, expiry, reclaim, and stale-submission tests. |
+| Unauthorized Claim or Attempt mutation | A non-owner changes a claimed Task, or a process heartbeats, releases, reports, or submits against another, expired, or superseded Attempt. | Atomically verify Project access, current Claim owner, Lease, command path, and current Attempt ID and status where applicable; reject non-owner and stale mutations without partial writes. Phase 5 additionally authenticates distinct Subject ownership. | Human/Agent claim races, non-owner mutation, foreign owner, expiry, reclaim, and stale-submission tests. |
 | Event forgery | A client supplies another actor, false timestamp, event type, or inconsistent TaskEvent. | Create TaskEvents only inside authenticated application transactions; derive actor and authoritative time server-side; validate typed payloads; commit state and event atomically; allocate ordered cursors in persistence. | Actor spoofing, invalid event, rollback, and ordering contract tests. |
-| Concurrent mutation overwrite | A stale Human or process updates an existing Task after another accepted mutation. | Require a positive expected version at every trusted mutation boundary; increment once per semantic mutation; return `VERSION_CONFLICT` without writes; never refresh and silently retry. | Two-writer, stale-version, multi-event single-increment, and no-retry CLI tests. |
+| Concurrent mutation overwrite | A stale Human or process updates an existing Task after another accepted mutation. | Reject non-owner writes while a Claim is current; otherwise require a positive expected version at every trusted mutation boundary, increment once per semantic mutation, return `VERSION_CONFLICT` without writes, and never refresh and silently retry. | Claimed-Task lock, two-writer, stale-version, multi-event single-increment, and no-retry CLI tests. |
 | Structured Task or Result abuse | Input attempts resource exhaustion, identity forgery, secret persistence, path execution, or automatic Task creation. | Require explicit bounded UTF-8 JSON input; cap bytes, depth, collections, and text; reject actor, Attempt, request, event, Result, cursor, and timestamp identities; treat URIs as inert references; never execute or fetch artifacts or proposed follow-ups. | Oversize, nesting, forged-field, metacharacter, artifact, and proposed-follow-up tests. |
 | Mutation replay | A lost response causes a client to repeat a state-changing request. | Require idempotency keys for retryable mutations; bind stored outcomes to the authenticated operation; combine idempotency with optimistic Task versions and Attempt checks. | Duplicate-request and conflicting-reuse tests. |
 | Persistence tampering or confusion | A process reads an unknown schema or exposes inconsistent state after a partial write. | Validate schema versions before access; fail without modifying unsupported stores; use transactional adapter operations and crash-safe JSON replacement; keep backend credentials outside task data. | Unknown-version, rollback, interrupted-write, and backend-contract tests. |
@@ -202,8 +213,10 @@ administrator is outside the v1 application boundary.
 
 An Agent is not trusted merely because its Token is valid. The Agent role may
 claim, heartbeat, report progress, release, and submit only within granted
-Projects and only for an Attempt it owns. It cannot grant roles, impersonate
-another Subject, choose event attribution, or mutate another Agent's Attempt.
+Projects and only for a Claim and Attempt it owns. It cannot redefine, block,
+cancel, or change dependencies on the claimed Task; grant roles; impersonate
+another Subject; choose event attribution; or mutate another owner's Claim or
+Attempt.
 
 Compromise can still expose every Project and operation legitimately granted to
 that Agent until its Token is revoked or expires. Operators should therefore
@@ -219,8 +232,9 @@ load, but deployment-level network controls, process supervision, storage
 capacity, and recovery remain required.
 
 Lease correctness must not depend on a scheduler continuing to run during
-overload. Claims, heartbeats, submissions, and relevant reads evaluate expiry
-transactionally using the authoritative runtime clock.
+overload. Claims, Human renewals, Agent heartbeats, submissions, mutations, and
+relevant reads evaluate expiry transactionally using the authoritative runtime
+clock and the half-open rule `now < lease_expires_at`.
 
 ## Verification by delivery phase
 
@@ -232,8 +246,10 @@ transactionally using the authoritative runtime clock.
   transition and dependency atomicity, Human Result attribution with null
   Attempt, bounded structured input, review behavior, event ordering, and
   idempotent lifecycle replay.
-- Phase 4 tests atomic claims, current Attempt ownership, Lease expiry, stale
-  submissions, idempotent Results, and bounded agent payloads.
+- Phase 4 tests atomic Human and Agent Claims, exclusive mutation locks, Human
+  renewal, current Attempt ownership, Lease expiry, version stability, stale
+  submissions, terminal Attempt states, idempotent Results, and bounded Agent
+  payloads.
 - Phase 5 tests Token storage, expiry, revocation, redaction, ProjectGrant
   isolation, and compromised-Agent containment.
 - Phase 6 tests authenticated RemoteSession behavior, expected Instance
@@ -268,5 +284,6 @@ the one organization served by an Instance.
 - [Product scope](product-scope.md)
 - [Compatibility policy](compatibility-policy.md)
 - [ADR 0011: Phase 3 Task Mutation and Human Submission](adr/0011-phase-three-task-mutation-and-human-submission.md)
+- [ADR 0012: Phase 4 Local Claim and Execution Model](adr/0012-phase-four-local-claim-and-execution-model.md)
 - [Glossary](glossary.md)
 - [Security reporting policy](../SECURITY.md)
