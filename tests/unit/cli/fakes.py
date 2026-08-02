@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Never
+from typing import TYPE_CHECKING
 
 from workaholic.application import (
     BootstrapResult,
@@ -12,11 +13,15 @@ from workaholic.application import (
     ProjectCreationResult,
     StatusResult,
     TaskDetails,
+    TaskEventPage,
+    TaskEventResult,
     TaskListView,
     TaskMutationResult,
     TaskPage,
+    TaskSubmissionResult,
 )
 from workaholic.domain import (
+    ApprovalRequirement,
     Instance,
     InstanceId,
     Project,
@@ -24,6 +29,9 @@ from workaholic.domain import (
     ProjectId,
     ProjectRole,
     RequestId,
+    ResultId,
+    ResultReview,
+    ResultReviewStatus,
     Subject,
     SubjectId,
     SubjectKind,
@@ -33,15 +41,12 @@ from workaholic.domain import (
     TaskEventType,
     TaskId,
     TaskReadiness,
+    TaskResult,
     TaskState,
     WorkspaceBinding,
 )
 
 if TYPE_CHECKING:
-    from workaholic.application import (
-        TaskEventPage,
-        TaskSubmissionResult,
-    )
     from workaholic.session import (
         ContextRequest,
         ProjectBindRequest,
@@ -253,6 +258,163 @@ def task() -> Task:
     )
 
 
+def task_submission_result(
+    status: ResultReviewStatus = ResultReviewStatus.NOT_REQUIRED,
+) -> TaskSubmissionResult:
+    """Build one internally consistent manual Result transition.
+
+    Args:
+        status: Review disposition represented by the returned transition.
+
+    Returns:
+        Validated deterministic submission or review result.
+
+    """
+    first_task = task()
+    result_id = ResultId("res_manual")
+    event_types: tuple[TaskEventType, ...]
+    if status is ResultReviewStatus.NOT_REQUIRED:
+        state = TaskState.DONE
+        version = 2
+        approval = ApprovalRequirement.NONE
+        current_result_id = result_id
+        review = ResultReview(status=status)
+        event_types = (
+            TaskEventType.RESULT_SUBMITTED,
+            TaskEventType.TASK_COMPLETED,
+        )
+        first_cursor = 2
+    elif status is ResultReviewStatus.PENDING:
+        state = TaskState.REVIEW
+        version = 2
+        approval = ApprovalRequirement.HUMAN
+        current_result_id = result_id
+        review = ResultReview(status=status)
+        event_types = (TaskEventType.RESULT_SUBMITTED,)
+        first_cursor = 2
+    elif status is ResultReviewStatus.APPROVED:
+        state = TaskState.DONE
+        version = 3
+        approval = ApprovalRequirement.HUMAN
+        current_result_id = result_id
+        review = ResultReview(
+            status=status,
+            reviewed_by=subject().id,
+            reviewed_at=_NOW,
+            comment="Looks good.",
+        )
+        event_types = (
+            TaskEventType.REVIEW_APPROVED,
+            TaskEventType.TASK_COMPLETED,
+        )
+        first_cursor = 3
+    else:
+        state = TaskState.OPEN
+        version = 3
+        approval = ApprovalRequirement.HUMAN
+        current_result_id = None
+        review = ResultReview(
+            status=status,
+            reviewed_by=subject().id,
+            reviewed_at=_NOW,
+            reason="Please address the missing evidence.",
+        )
+        event_types = (TaskEventType.REVIEW_REJECTED,)
+        first_cursor = 3
+    transitioned_task = replace(
+        first_task,
+        state=state,
+        version=version,
+        approval=approval,
+        current_result_id=current_result_id,
+        updated_at=_NOW,
+    )
+    result = TaskResult(
+        id=result_id,
+        task_uid=first_task.uid,
+        submitted_by=subject().id,
+        attempt_id=None,
+        submitted_at=_NOW,
+        comment=None,
+        summary=None,
+        criteria=(),
+        artifacts=(),
+        proposed_follow_ups=(),
+        review=review,
+    )
+    request_id = RequestId(f"req_{status.value}")
+    events = tuple(
+        TaskEvent(
+            id=TaskEventId(f"evt_{status.value}_{offset}"),
+            cursor=first_cursor + offset,
+            task_uid=first_task.uid,
+            project_id=first_task.project_id,
+            actor_subject_id=subject().id,
+            request_id=request_id,
+            event_type=event_type,
+            occurred_at=_NOW,
+            payload={},
+        )
+        for offset, event_type in enumerate(event_types)
+    )
+    return TaskSubmissionResult(
+        task=transitioned_task,
+        result=result,
+        events=events,
+    )
+
+
+def task_event_result(
+    *,
+    cursor: int = 1,
+    event_type: TaskEventType = TaskEventType.TASK_CREATED,
+) -> TaskEventResult:
+    """Build one attributable Human TaskEvent history record.
+
+    Args:
+        cursor: Positive Instance event cursor.
+        event_type: Semantic event kind.
+
+    Returns:
+        Validated flattened event result.
+
+    """
+    first_task = task()
+    return TaskEventResult(
+        id=TaskEventId(f"evt_history_{cursor}"),
+        cursor=cursor,
+        task_uid=first_task.uid,
+        project_id=first_task.project_id,
+        actor_subject_id=subject().id,
+        actor_kind=SubjectKind.HUMAN,
+        attempt_id=None,
+        request_id=RequestId(f"req_history_{cursor}"),
+        event_type=event_type,
+        occurred_at=_NOW,
+        payload={"version": cursor},
+    )
+
+
+def task_event_page(
+    *events: TaskEventResult,
+    next_cursor: int | None = None,
+) -> TaskEventPage:
+    """Build one validated event page with an inferred resumable cursor.
+
+    Args:
+        events: Ordered event records in the page.
+        next_cursor: Explicit cursor for an empty page or expected final cursor.
+
+    Returns:
+        Validated event snapshot page.
+
+    """
+    effective_cursor = (
+        events[-1].cursor if next_cursor is None and events else (next_cursor or 0)
+    )
+    return TaskEventPage(events=events, next_cursor=effective_cursor)
+
+
 class RecordingSession:
     """Configurable explicit fake for the cumulative Session boundary."""
 
@@ -317,6 +479,11 @@ class RecordingSession:
             next_cursor=None,
             view=TaskListView.ALL,
         )
+        self.task_submit_result = task_submission_result()
+        self.task_approve_result = task_submission_result(ResultReviewStatus.APPROVED)
+        self.task_reject_result = task_submission_result(ResultReviewStatus.REJECTED)
+        self.task_event_page_result = task_event_page(task_event_result())
+        self.task_event_page_results: list[TaskEventPage] = []
         self.failures: dict[str, Exception] = {}
         self.up_requests: list[UpRequest] = []
         self.status_requests: list[StatusRequest] = []
@@ -335,6 +502,10 @@ class RecordingSession:
         self.task_remove_dependency_requests: list[TaskRemoveDependencyRequest] = []
         self.task_details_requests: list[TaskDetailsRequest] = []
         self.task_view_requests: list[TaskListByViewRequest] = []
+        self.task_submit_requests: list[TaskSubmitRequest] = []
+        self.task_approve_requests: list[TaskApproveRequest] = []
+        self.task_reject_requests: list[TaskRejectRequest] = []
+        self.task_event_requests: list[TaskEventsRequest] = []
 
     def up(self, request: UpRequest) -> BootstrapResult:
         """Record and answer one bootstrap request."""
@@ -440,24 +611,30 @@ class RecordingSession:
 
     def submit_human_result(
         self,
-        _request: TaskSubmitRequest,
+        request: TaskSubmitRequest,
     ) -> TaskSubmissionResult:
-        """Fail an unexpected Phase 3 Human submission."""
-        self._unexpected_phase_three("submit Results")
+        """Record and answer one direct Human Result submission."""
+        self.task_submit_requests.append(request)
+        self._raise_failure("submit_human_result")
+        return self.task_submit_result
 
     def approve_result(
         self,
-        _request: TaskApproveRequest,
+        request: TaskApproveRequest,
     ) -> TaskSubmissionResult:
-        """Fail an unexpected Phase 3 Result approval."""
-        self._unexpected_phase_three("approve Results")
+        """Record and answer one Human Result approval."""
+        self.task_approve_requests.append(request)
+        self._raise_failure("approve_result")
+        return self.task_approve_result
 
     def reject_result(
         self,
-        _request: TaskRejectRequest,
+        request: TaskRejectRequest,
     ) -> TaskSubmissionResult:
-        """Fail an unexpected Phase 3 Result rejection."""
-        self._unexpected_phase_three("reject Results")
+        """Record and answer one Human Result rejection."""
+        self.task_reject_requests.append(request)
+        self._raise_failure("reject_result")
+        return self.task_reject_result
 
     def get_task_details(self, request: TaskDetailsRequest) -> TaskDetails:
         """Record and answer one complete Task-details query."""
@@ -471,23 +648,13 @@ class RecordingSession:
         self._raise_failure("list_tasks_by_view")
         return self.task_view_page_result
 
-    def read_task_events(self, _request: TaskEventsRequest) -> TaskEventPage:
-        """Fail an unexpected Phase 3 Task-event query."""
-        self._unexpected_phase_three("query Task events")
-
-    @staticmethod
-    def _unexpected_phase_three(operation: str) -> Never:
-        """Fail when a pre-Phase-3 CLI test crosses the newer Session surface.
-
-        Args:
-            operation: Short semantic operation description.
-
-        Raises:
-            AssertionError: Always, because the call is outside test scope.
-
-        """
-        message = f"Phase 2 CLI tests must not {operation}."
-        raise AssertionError(message)
+    def read_task_events(self, request: TaskEventsRequest) -> TaskEventPage:
+        """Record and answer one TaskEvent snapshot query."""
+        self.task_event_requests.append(request)
+        self._raise_failure("read_task_events")
+        if self.task_event_page_results:
+            return self.task_event_page_results.pop(0)
+        return self.task_event_page_result
 
     def _raise_failure(self, operation: str) -> None:
         """Raise the configured failure for one operation, if present.

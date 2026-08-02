@@ -26,8 +26,11 @@ if TYPE_CHECKING:
         ContextResult,
         StatusResult,
         TaskDetails,
+        TaskEventPage,
+        TaskEventResult,
         TaskMutationResult,
         TaskPage,
+        TaskSubmissionResult,
     )
 
 _CONTEXT_FILENAME = ".workaholic.env"
@@ -343,6 +346,105 @@ def task_mutation_data(result: TaskMutationResult) -> dict[str, JsonValue]:
         "task": task_data(result.task),
         "events": [task_event_data(event) for event in result.events],
     }
+
+
+def task_submission_data(result: TaskSubmissionResult) -> dict[str, JsonValue]:
+    """Serialize one Human submission or review transition outcome.
+
+    Args:
+        result: Validated Task, retained Result, and attributable event batch.
+
+    Returns:
+        Complete public submission or review result object.
+
+    """
+    return {
+        "task": task_data(result.task),
+        "result": task_result_data(result.result),
+        "events": [task_event_data(event) for event in result.events],
+    }
+
+
+def task_submission_summary(result: TaskSubmissionResult) -> str:
+    """Render one concise Human submission or review outcome.
+
+    Args:
+        result: Validated Task submission or review transition outcome.
+
+    Returns:
+        Stable two-line Task and Result disposition summary.
+
+    """
+    return "\n".join(
+        (
+            task_summary(result.task),
+            f"Result: {result.result.id}\treview={result.result.review.status.value}",
+        )
+    )
+
+
+def task_event_result_data(event: TaskEventResult) -> dict[str, JsonValue]:
+    """Serialize one flat attributable TaskEvent history record.
+
+    Args:
+        event: Session-returned event containing complete actor attribution.
+
+    Returns:
+        Complete public TaskEvent object.
+
+    """
+    return {
+        "id": str(event.id),
+        "cursor": event.cursor,
+        "task_uid": str(event.task_uid),
+        "project_id": str(event.project_id),
+        "actor_subject_id": str(event.actor_subject_id),
+        "actor_kind": event.actor_kind.value,
+        "attempt_id": event.attempt_id,
+        "request_id": str(event.request_id),
+        "type": event.event_type.value,
+        "occurred_at": normalize_json_value(event.occurred_at),
+        "payload": normalize_json_value(event.payload),
+    }
+
+
+def task_event_page_data(page: TaskEventPage) -> dict[str, JsonValue]:
+    """Serialize one polling-safe TaskEvent snapshot page.
+
+    Args:
+        page: Validated strictly ordered Session event page.
+
+    Returns:
+        Public event collection and resumable Instance cursor.
+
+    """
+    return {
+        "events": [task_event_result_data(event) for event in page.events],
+        "next_cursor": page.next_cursor,
+    }
+
+
+def task_event_summary(event: TaskEventResult) -> str:
+    """Render one safe deterministic Human TaskEvent line.
+
+    Args:
+        event: Session-returned attributable event.
+
+    Returns:
+        Stable tab-delimited event summary with escaped JSON payload.
+
+    """
+    occurred_at = normalize_json_value(event.occurred_at)
+    payload = json.dumps(
+        normalize_json_value(event.payload),
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+    return (
+        f"{event.cursor}\t{event.event_type.value}\t{occurred_at}"
+        f"\tactor={event.actor_subject_id}\tpayload={payload}"
+    )
 
 
 def task_page_data(page: TaskPage) -> dict[str, JsonValue]:

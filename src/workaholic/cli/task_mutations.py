@@ -166,7 +166,7 @@ def register_task_mutation_commands(
         non_interactive: NonInteractiveOption = False,  # noqa: FBT002
     ) -> None:
         """Replace one or more editable Task definition fields."""
-        _require_version_mode_or_exit(
+        require_task_mutation_version_or_exit(
             expected_version,
             json_mode=json_mode,
             non_interactive=non_interactive,
@@ -212,7 +212,7 @@ def register_task_mutation_commands(
             )
         except StructuredInputError, ValidationError:
             write_invalid_input("Task-update input is invalid.", json_mode=json_mode)
-        prepared = _prepare_or_exit(
+        prepared = prepare_task_mutation_or_exit(
             session_provider,
             task=task,
             project=project,
@@ -222,7 +222,7 @@ def register_task_mutation_commands(
         )
         if prepared is None:
             return
-        request = _replace_expected_version(
+        request = replace_task_expected_version(
             provisional,
             TaskUpdateRequest,
             prepared.expected_version,
@@ -460,7 +460,7 @@ def _run_simple_mutation[  # noqa: PLR0913 - explicit shared mutation contract
         non_interactive: Whether terminal convenience is disabled.
 
     """
-    _require_version_mode_or_exit(
+    require_task_mutation_version_or_exit(
         expected_version,
         json_mode=json_mode,
         non_interactive=non_interactive,
@@ -475,7 +475,7 @@ def _run_simple_mutation[  # noqa: PLR0913 - explicit shared mutation contract
         project_value is None or isinstance(project_value, str)
     ):
         write_invalid_input("Task-mutation input is invalid.", json_mode=json_mode)
-    prepared = _prepare_or_exit(
+    prepared = prepare_task_mutation_or_exit(
         provider,
         task=task_value,
         project=project_value,
@@ -485,7 +485,7 @@ def _run_simple_mutation[  # noqa: PLR0913 - explicit shared mutation contract
     )
     if prepared is None:
         return
-    request = _replace_expected_version(
+    request = replace_task_expected_version(
         provisional,
         request_type,
         prepared.expected_version,
@@ -496,13 +496,23 @@ def _run_simple_mutation[  # noqa: PLR0913 - explicit shared mutation contract
     )
 
 
-def _require_version_mode_or_exit(
+def require_task_mutation_version_or_exit(
     expected_version: int | None,
     *,
     json_mode: bool,
     non_interactive: bool,
 ) -> None:
-    """Render one stable invalid-input failure for unsafe version omission."""
+    """Render one stable invalid-input failure for unsafe version omission.
+
+    Args:
+        expected_version: Explicit caller version, when supplied.
+        json_mode: Whether machine-readable output was selected.
+        non_interactive: Whether interaction was explicitly disabled.
+
+    Raises:
+        typer.Exit: If automation-safe execution requires an explicit version.
+
+    """
     try:
         require_explicit_version_for_automation(
             expected_version,
@@ -513,7 +523,7 @@ def _require_version_mode_or_exit(
         write_expected_task_version_required(json_mode=json_mode)
 
 
-def _prepare_or_exit(  # noqa: PLR0913 - mirrors preparation inputs
+def prepare_task_mutation_or_exit(  # noqa: PLR0913 - mirrors preparation inputs
     provider: SessionProvider,
     *,
     task: str,
@@ -522,7 +532,23 @@ def _prepare_or_exit(  # noqa: PLR0913 - mirrors preparation inputs
     action: str,
     json_mode: bool,
 ) -> PreparedMutation | None:
-    """Prepare one mutation while redacting every Session boundary failure."""
+    """Prepare one mutation while redacting every Session boundary failure.
+
+    Args:
+        provider: Command-scoped Session factory.
+        task: Caller-selected Task key or UID.
+        project: Optional explicit Project selection.
+        expected_version: Explicit version or ``None`` for Human convenience.
+        action: Stable command-owned intended-action description.
+        json_mode: Whether machine-readable output was selected.
+
+    Returns:
+        Prepared Session and exact version, or ``None`` after Human decline.
+
+    Raises:
+        typer.Exit: If Session acquisition or convenience fetching fails.
+
+    """
     try:
         return prepare_task_mutation(
             provider,
@@ -535,14 +561,24 @@ def _prepare_or_exit(  # noqa: PLR0913 - mirrors preparation inputs
         write_failure(error, json_mode=json_mode)
 
 
-def _replace_expected_version[
+def replace_task_expected_version[
     RequestT: BaseModel,
 ](
     request: RequestT,
     request_type: type[RequestT],
     expected_version: int,
 ) -> RequestT:
-    """Revalidate one provisional request with its confirmed exact version."""
+    """Revalidate one provisional request with its confirmed exact version.
+
+    Args:
+        request: Strict provisional existing-Task Session request.
+        request_type: Exact request model used to preserve the boundary type.
+        expected_version: Explicit or Human-confirmed positive Task version.
+
+    Returns:
+        Revalidated request containing the exact mutation version.
+
+    """
     values = request.model_dump(exclude_unset=True)
     values["expected_version"] = expected_version
     return request_type.model_validate(values)

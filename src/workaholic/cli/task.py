@@ -38,7 +38,9 @@ from workaholic.cli.structured_input import (
     merge_structured_fields,
     parse_utc_timestamp_field,
 )
+from workaholic.cli.task_events import register_task_event_commands
 from workaholic.cli.task_mutations import register_task_mutation_commands
+from workaholic.cli.task_results import register_task_result_commands
 from workaholic.session import (
     TaskCreateRequest,
     TaskDetailsRequest,
@@ -236,6 +238,14 @@ def register_task_commands(
             write_failure(error, json_mode=json_mode)
 
     register_task_mutation_commands(
+        application,
+        session_provider=session_provider,
+    )
+    register_task_result_commands(
+        application,
+        session_provider=session_provider,
+    )
+    register_task_event_commands(
         application,
         session_provider=session_provider,
     )

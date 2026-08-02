@@ -223,11 +223,15 @@ def test_task_group_help_and_show_non_interactive_are_side_effect_free(
     for command in (
         "add",
         "add-dependency",
+        "approve",
         "block",
         "cancel",
+        "events",
         "list",
+        "reject",
         "remove-dependency",
         "show",
+        "submit",
         "unblock",
         "update",
     ):
