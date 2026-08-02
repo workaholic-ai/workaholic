@@ -10,18 +10,26 @@ import pytest
 
 from tests.golden import (
     SubprocessGoldenJourneyRunner,
+    _isolated_cli_environment,
     require_error,
+    require_integer,
     require_object,
     require_success,
 )
 
 
-def _completed(*, returncode: int, stdout: str) -> CompletedProcess[str]:
+def _completed(
+    *,
+    returncode: int,
+    stdout: str,
+    stderr: str = "",
+) -> CompletedProcess[str]:
     """Build a completed command result without invoking a process.
 
     Args:
         returncode: Process exit status.
         stdout: Captured standard output.
+        stderr: Captured standard error.
 
     Returns:
         A deterministic completed-process value.
@@ -31,7 +39,7 @@ def _completed(*, returncode: int, stdout: str) -> CompletedProcess[str]:
         args=("workaholic", "--json", "--non-interactive"),
         returncode=returncode,
         stdout=stdout,
-        stderr="",
+        stderr=stderr,
     )
 
 
@@ -92,6 +100,41 @@ def test_require_success_rejects_contract_violations(
     """Malformed success output cannot satisfy a golden journey."""
     with pytest.raises(AssertionError):
         require_success(_completed(returncode=returncode, stdout=stdout))
+
+
+def test_json_helpers_reject_any_stderr_output() -> None:
+    """Machine-readable success and failure never mix in diagnostics."""
+    success = _completed(
+        returncode=0,
+        stdout='{"schema":"workaholic.cli/v1","ok":true,"data":{}}\n',
+        stderr="warning\n",
+    )
+    failure = _completed(
+        returncode=3,
+        stdout=(
+            '{"schema":"workaholic.cli/v1","ok":false,'
+            '"error":{"code":"TASK_NOT_FOUND","message":"Missing.",'
+            '"retryable":false}}\n'
+        ),
+        stderr="warning\n",
+    )
+
+    with pytest.raises(AssertionError, match="stderr"):
+        require_success(success)
+    with pytest.raises(AssertionError, match="stderr"):
+        require_error(failure, expected_code="TASK_NOT_FOUND")
+
+
+@pytest.mark.parametrize("value", [True, 1.5, "1", None, -1])
+def test_require_integer_rejects_non_integer_or_below_bound(value: object) -> None:
+    """Cursor assertions cannot accept booleans, coercions, or negatives."""
+    with pytest.raises(AssertionError):
+        require_integer(value, context="cursor", minimum=0)  # type: ignore[arg-type]
+
+
+def test_require_integer_returns_a_bounded_integer() -> None:
+    """A valid event cursor is narrowed without coercion."""
+    assert require_integer(7, context="cursor", minimum=0) == 7
 
 
 def test_require_error_validates_machine_readable_failure() -> None:
@@ -291,6 +334,36 @@ def test_subprocess_runner_accepts_only_exact_owned_paths_and_valid_profile(
     )
 
     assert result.returncode == 0
+
+
+def test_subprocess_runner_does_not_inherit_credentials_or_arbitrary_state(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Only a small platform allowlist reaches fresh golden CLI processes."""
+    monkeypatch.setenv("PATH", "/test-owned/path")
+    monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "private")
+    monkeypatch.setenv("GITHUB_TOKEN", "private")
+    monkeypatch.setenv("PYTHONPATH", "/untrusted/imports")
+    monkeypatch.setenv("ARBITRARY_PARENT_STATE", "private")
+
+    environment = _isolated_cli_environment(
+        tmp_path / "data",
+        tmp_path / "config",
+        None,
+    )
+
+    assert environment["PATH"] == "/test-owned/path"
+    assert environment["NO_COLOR"] == "1"
+    assert environment["WORKAHOLIC_DATA_DIR"] == str(tmp_path / "data")
+    assert environment["WORKAHOLIC_CONFIG_DIR"] == str(tmp_path / "config")
+    for forbidden in (
+        "AWS_SECRET_ACCESS_KEY",
+        "GITHUB_TOKEN",
+        "PYTHONPATH",
+        "ARBITRARY_PARENT_STATE",
+    ):
+        assert forbidden not in environment
 
 
 def test_future_golden_operations_remain_explicitly_unsupported(
