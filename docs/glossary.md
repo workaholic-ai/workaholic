@@ -65,20 +65,29 @@ optimistic version, and attribution. A Task cannot move between Projects.
 V1 has no parent/child Task hierarchy: decomposition uses ordinary Tasks and
 same-Project blocking dependencies.
 
+## Claim
+
+The current exclusive, expiring ownership record for one Task. A Claim records
+its Task, owning Subject, Lease, and nullable Attempt identity. A Human Claim
+has a null Attempt; an Agent Claim has the current non-null Attempt. No current
+Claim means the Task is unclaimed. Capability filtering is not part of v1.
+
 ## Attempt
 
-One Agent Subject's expiring execution claim on a Task. Humans do not receive
-synthetic Attempts for manual work. An Attempt has its own
-identifier, owner, status, start and end timestamps, and Lease expiry. Every
+One Agent execution associated with an Agent Claim. Humans do not receive
+synthetic Attempts for manual work. An Attempt has its own identifier, owner,
+status, start and end timestamps, and Lease expiry. Its states are `active`,
+`released`, `expired`, and `submitted`; the last three are terminal. Every
 reclaim creates a new Attempt, including a reclaim by the same Agent.
 
 ## Lease
 
-The time-bounded right attached to the current Attempt to perform
-attempt-scoped mutations. A heartbeat may extend a Lease only for its owning
-Subject while that Attempt remains current and unexpired. Lease validity is
-decided transactionally using the authoritative runtime clock, not by a
-background scheduler or client clock.
+The time-bounded right attached to the current Claim. A Human renews a Claim;
+an Agent heartbeats its current Attempt. Renewal succeeds only for the owner
+while the Claim remains current and unexpired. Lease validity is decided
+transactionally using the authoritative runtime clock, not by a background
+scheduler or client clock. Human Claims use longer Lease windows than Agent
+Claims.
 
 ## Result
 
@@ -142,6 +151,7 @@ authentication, authorization, optimistic versions, or Attempt validation.
 
 A scheduling label used to match an Agent with suitable work. A Capability does
 not grant authorization and must never be interpreted as a Project role.
+Capability-based Task scheduling is outside v1.
 
 ## Related documents
 

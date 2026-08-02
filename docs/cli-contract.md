@@ -1,6 +1,6 @@
 # Workaholic AI CLI Automation Contract
 
-- Status: Accepted v1 contract through Phase 3 with Phase 3 implementation
+- Status: Accepted v1 contract through Phase 4 with Phase 3 implementation
 - Decision date: 2026-07-29
 - Contract family: `workaholic.cli/v1`
 - Public surface: Documented JSON output of the `workaholic` executable
@@ -16,7 +16,7 @@ It includes existing-Task mutations, dependencies, readiness views, Human
 Results and review, and TaskEvent history. No compatibility guarantee applies
 before `1.0.0`.
 
-The alpha does not run Agents, create Attempts or Leases, issue Tokens, use
+The alpha does not create Claims, run Agents, create Attempts or Leases, issue Tokens, use
 remote profiles or credentials, use `RemoteSession`, start a server, archive
 Projects, migrate schemas, or select JSON or PostgreSQL adapters. Those later
 command contracts remain normative roadmap requirements, not current
@@ -289,7 +289,8 @@ contents.
 - Later authenticated remote profiles or runtimes own endpoint and credential
   configuration beginning in Phases 5 and 6.
 - Every mutation is attributed to the authenticated Subject and request.
-- Agent Capabilities affect scheduling, not authorization.
+- Capability-based scheduling is outside v1 and, if later introduced, must not
+  affect authorization.
 - LocalSession and RemoteSession must enforce the same ProjectGrant and Attempt
   rules.
 - Human-readable messages and JSON diagnostics must redact Tokens, backend
@@ -1249,6 +1250,109 @@ Phase 3 embedded commands require exact SQLite schema version `3`. A version
 Leases, claims, heartbeat, progress, release, `--attempt`, Tokens, remote
 profiles, and servers are not Phase 3 command surfaces.
 
+## Accepted Phase 4 Claim and execution contract
+
+This section records the owner-approved Phase 4 boundary. It is not implemented
+by `0.3.0a1`; the Phase 4 implementation plan must add exact success objects,
+Lease bounds, safe errors, exit categories, and idempotency fingerprints
+without changing these semantics.
+
+### Shared Claim object
+
+Every successful Claim read or mutation returns a closed Claim object containing
+at least:
+
+```json
+{
+  "task_uid": "tsk_01K9Q...",
+  "task_key": "ACME-42",
+  "subject_id": "sub_01K9...",
+  "attempt_id": null,
+  "claimed_at": "2026-08-02T09:00:00Z",
+  "lease_expires_at": "2026-08-02T17:00:00Z"
+}
+```
+
+An existing Claim with `attempt_id = null` is Human-owned. A non-null Attempt
+identifies Agent execution. Claim absence, rather than null Attempt alone,
+means unclaimed. Human Lease windows are longer than Agent Lease windows.
+
+### Human Claim commands
+
+```text
+workaholic task claim TASK [--lease DURATION]
+  [--project KEY] [--idempotency-key KEY]
+workaholic task renew TASK [--lease DURATION]
+  [--project KEY] [--idempotency-key KEY]
+workaholic task release TASK
+  [--project KEY] [--idempotency-key KEY]
+```
+
+Human claiming is optional and targets one ready Task. It returns a Claim with
+null Attempt attribution. Human renewal and release derive ownership from the
+active Session Subject and never accept or display an Attempt ID. Repeating
+`task claim TASK` for an already owned current Claim returns it without
+extending the Lease. Only `task renew` extends it; reads and other mutations do
+not renew implicitly.
+
+The Human owner may update, block, unblock, change dependencies, release,
+cancel, or submit. Update, block/unblock, and dependency changes retain the
+Claim. Release, expiry, cancel, and submit end it.
+
+### Agent Claim and execution commands
+
+```text
+workaholic task claim [--lease DURATION]
+  [--project KEY] [--idempotency-key KEY]
+workaholic task heartbeat TASK --attempt ATTEMPT [--lease DURATION]
+  [--project KEY] [--idempotency-key KEY]
+workaholic task progress TASK --attempt ATTEMPT --input-file PATH|-
+  [--project KEY] [--idempotency-key KEY]
+workaholic task release TASK --attempt ATTEMPT
+  [--project KEY] [--idempotency-key KEY]
+workaholic task submit TASK --attempt ATTEMPT --expected-version INTEGER
+  --result-file PATH|- [--project KEY] [--idempotency-key KEY]
+```
+
+Omitting the Task operand from `task claim` selects Agent pull-next behavior.
+It atomically selects the highest-ranked ready Task and returns its packet,
+current Task version, new Attempt, and Agent Claim. Capability filtering is
+outside v1; the claimant is assumed capable of its selected Task.
+
+An Agent owner may only heartbeat, report progress, release, or submit through
+the current Attempt. It cannot update, block, cancel, or change dependencies on
+the claimed Task. Agent submission requires both the current Attempt and the
+expected Task version returned by claim.
+
+### Lock, renewal, version, and terminal rules
+
+An unexpired Claim is an exclusive mutation lock. A non-owner mutation fails
+without changing Task, Claim, Attempt, Result, version, idempotency, or event
+state. Reads remain available. Workaholic AI has no force-interrupt command for
+an external Agent process.
+
+Human `task renew` and Agent heartbeat share one semantic renewal operation.
+Lease validity uses authoritative transaction time and
+`now < lease_expires_at`; expiry requires no daemon.
+
+Claim, renew, heartbeat, progress, release, and expiry do not change the Task
+version. Existing Human Task mutations retain the expected-version convenience
+and increment rules. Successful Human or Agent submission ends the Claim and
+increments the Task version once.
+
+Agent Attempt states are exactly `active`, `released`, `expired`, and
+`submitted`. The last three are terminal and populate `ended_at`. Submission
+always produces `submitted`, including when the Task enters review. Approval
+and rejection operate on the Result and never revive the Attempt; rejection
+requires a new Claim and Attempt.
+
+### Phase delivery boundary
+
+Phase 4 embedded Human and Agent commands reuse the sole bootstrap Subject.
+Human command shape and null Attempt attribution distinguish the Human path;
+Attempt identity distinguishes Agent processes. Phase 5 introduces additional
+Human and Agent Subjects, Tokens, ProjectGrants, and authenticated ownership.
+
 ## Conformance requirements
 
 Contract tests must verify at least:
@@ -1270,6 +1374,7 @@ Contract tests must verify at least:
 
 - [ADR 0003: CLI JSON as the Public Automation Contract](adr/0003-cli-json-automation-contract.md)
 - [ADR 0011: Phase 3 Task Mutation and Human Submission](adr/0011-phase-three-task-mutation-and-human-submission.md)
+- [ADR 0012: Phase 4 Local Claim and Execution Model](adr/0012-phase-four-local-claim-and-execution-model.md)
 - [ADR 0002: Local and Remote Sessions](adr/0002-local-and-remote-sessions.md)
 - [ADR 0004: Private Versioned Client/Server Protocol](adr/0004-private-versioned-client-server-protocol.md)
 - [Compatibility policy](compatibility-policy.md)

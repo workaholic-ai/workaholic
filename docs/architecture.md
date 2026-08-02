@@ -33,8 +33,8 @@ these adapters in-process, performs one operation, and exits; no daemon is
 started.
 
 The remaining diagrams and decisions describe the accepted v1 destination, not
-the current feature inventory. `0.3.0a1` does not implement Agents, Attempts,
-Leases, Tokens, remote profiles, credentials, `RemoteSession`, a server,
+the current feature inventory. `0.3.0a1` does not implement Agents, Claims,
+Attempts, Leases, Tokens, remote profiles, credentials, `RemoteSession`, a server,
 JSON/PostgreSQL adapters, Project archival, parent/child Task hierarchy, or
 schema migration. Proposed Result follow-ups never create Tasks automatically.
 Alpha storage and automation remain disposable.
@@ -464,6 +464,7 @@ The primary persistent entities are:
 | Token             | Authentication credential belonging to a subject |
 | ProjectGrant      | Subject role within a project                    |
 | Task              | Desired outcome and lifecycle state              |
+| Claim             | Current exclusive, expiring Task ownership       |
 | Attempt           | One agent’s leased execution attempt             |
 | Result            | Structured submitted outcome and review          |
 | TaskEvent         | Append-only audit and activity record            |
@@ -540,19 +541,19 @@ ready =
     state == open
     AND dependencies satisfied
     AND (available_at is absent OR available_at <= now)
-    AND no active attempt
+    AND no active claim
 ```
 
 ```text
 running =
     state == open
-    AND active attempt lease has not expired
+    AND current claim lease has not expired
 ```
 
 `scheduled` means an otherwise open Task has a future `available_at`.
-`awaiting_review` means stored state `review`. Phase 3 has no Attempts, so
-`running` and `stale` are always false until Agent execution arrives in Phase
-4.
+`awaiting_review` means stored state `review`. Phase 3 has no Claims, so
+`running` and `stale` are always false until expiring Human and Agent Claims
+arrive in Phase 4.
 
 A minimal task looks like:
 
@@ -642,9 +643,35 @@ Ready ordering is priority descending, availability ascending with absent
 availability first, then Task number ascending. An all-Project view inserts
 immutable Project key before Task number as the final tie-breaker.
 
-## 8. Attempts and leases
+## 8. Claims, Attempts, and Leases
 
-A task assignment is an expiring attempt, not a permanent assignee:
+The owner-approved Phase 4 model is recorded in
+[ADR 0012](adr/0012-phase-four-local-claim-and-execution-model.md).
+
+A task assignment is an exclusive, expiring Claim rather than a permanent
+assignee:
+
+```json
+{
+  "task_uid": "tsk_01K9Q...",
+  "subject_id": "sub_01K9A...",
+  "attempt_id": "atm_01K9R...",
+  "claimed_at": "2026-07-29T14:15:00Z",
+  "lease_expires_at": "2026-07-29T14:30:00Z"
+}
+```
+
+A Human Claim has `attempt_id = null` and a longer Lease window. An Agent Claim
+has a non-null current Attempt ID and a shorter Lease window. At most one
+unexpired Claim owns a Task. An unexpired Claim prevents every non-owner Task
+mutation while reads remain available.
+
+Human claiming is optional and targets one ready Task. The Human owner may
+update, block, unblock, change dependencies, release, cancel, or submit without
+handling an Attempt ID. Definition, block/unblock, and dependency mutations
+retain the Claim; release, expiry, cancellation, and submission end it.
+
+Agent claiming pulls the highest-ranked ready Task and creates an Attempt:
 
 ```json
 {
@@ -658,12 +685,12 @@ A task assignment is an expiring attempt, not a permanent assignee:
 }
 ```
 
-Claiming a task atomically:
+Agent claiming a task atomically:
 
-1. Expires any stale attempt that affects selection.
+1. Expires any stale Claim that affects selection.
 2. Selects the highest-ranked ready task.
-3. Creates a new attempt.
-4. Associates it with the task.
+3. Creates a new Attempt and Agent Claim.
+4. Associates both with the task.
 5. Appends a `task_claimed` event.
 6. Commits the operation.
 7. Returns the task packet and attempt ID.
@@ -676,15 +703,46 @@ available_at ascending
 task number ascending
 ```
 
-A heartbeat extends the lease only when:
+A Human `task renew` and Agent `task heartbeat` share one renewal operation.
+Renewal extends the Lease only when:
 
-* the authenticated subject owns the attempt;
-* the attempt ID is still current;
-* the lease has not already been superseded.
+* the active Subject owns the Claim;
+* any supplied Attempt ID matches the current Agent Claim;
+* the Lease remains current and unexpired.
+
+Human renewal supplies no Attempt ID. Agent renewal requires the current
+Attempt. Repeating `task claim` for an already owned Task returns the current
+Claim without extending it, and normal reads and mutations never renew a Claim
+implicitly.
+
+An Agent owner may heartbeat, report progress, release, or submit. It cannot
+redefine, block, cancel, or change dependencies on its claimed Task. Workaholic
+AI has no force-interrupt command: an operator must stop or coordinate with the
+external process, then wait for release or expiry before mutating its Task.
+
+Attempt states are exactly `active`, `released`, `expired`, and `submitted`.
+The last three are terminal and populate `ended_at`. Submission always ends
+the Claim and moves the Attempt to `submitted`, including when the Task enters
+review. Approval and rejection operate on the Result and never revive the old
+Attempt.
 
 A stale process cannot submit using an old attempt ID, even when the same agent identity later reclaims the task.
 
-Correctness does not depend on a background scheduler. Lease expiry is evaluated transactionally during claims, heartbeats, submissions, and relevant queries. A server may perform housekeeping, but it is an optimization rather than a requirement.
+Correctness does not depend on a background scheduler. Lease validity uses
+authoritative transaction time and the half-open rule
+`now < lease_expires_at`. Expiry is evaluated during claims, renewals,
+heartbeats, submissions, mutations, and relevant queries. A server may perform
+housekeeping, but it is an optimization rather than a requirement.
+
+Phase 4 local Human and Agent commands use the sole embedded bootstrap Subject.
+Human command shape and null Attempt attribution distinguish Human Claims;
+Attempt identity distinguishes Agent processes. Distinct Agent Subjects,
+Tokens, grants, and authenticated ownership arrive in Phase 5.
+
+Claim, renewal, heartbeat, progress, release, and expiry do not increment the
+Task version. Agent claim returns the current version, and Agent submission
+requires that expected version plus the current Attempt. Successful Human or
+Agent submission increments the Task version once.
 
 ## 9. Results and review
 
@@ -723,9 +781,10 @@ Workaholic AI stores artifact references and hashes, not large artifact contents
 
 Attempts are Agent-only. A Phase 3 Human submits directly as the authenticated
 Subject, and the Result records `attempt_id = null`. A Human comment and a
-structured Result file are independently optional. Phase 4 Agent submission
-uses the same Result model but requires the current owned Attempt; an Agent
-cannot submit with a null Attempt.
+structured Result file are independently optional. A Phase 4 Human may first
+hold a Claim whose Attempt is also null. Phase 4 Agent submission uses the same
+Result model but requires the current owned Attempt and expected Task version;
+an Agent cannot submit with a null Attempt.
 
 Proposed follow-ups are inert Result data. They do not create Tasks,
 dependencies, or another relationship model.
@@ -749,8 +808,9 @@ Rejected:
 Human submission requires `open` and satisfied dependencies. Availability is a
 scheduling constraint and does not prohibit a deliberate Human submission.
 Rejection retains the rejected Result for audit, clears it as the current
-review selection, and returns the Task to `open` with a typed review event. For
-Agent Results beginning in Phase 4, rejection also ends the reviewed Attempt.
+review selection, and returns the Task to `open` with a typed review event. An
+Agent Attempt is already terminal at submission, so rejection never revives or
+closes it. The returned Task must be claimed again with a new Attempt.
 
 No-approval submission appends `result_submitted` then `task_completed`.
 Approval appends `review_approved` then `task_completed`. Each pair belongs to
@@ -772,13 +832,13 @@ task_completed
 task_cancelled
 ```
 
-Phase 4 extends that set with Agent execution events:
+Phase 4 extends that set with Claim and Agent execution events:
 
 ```text
 task_claimed
-lease_renewed
-attempt_released
-attempt_expired
+claim_renewed
+claim_released
+claim_expired
 progress_reported
 observation_added
 ```
@@ -831,9 +891,10 @@ Representative operations:
 create_project_and_allocate_key
 create_task_and_allocate_number
 update_task_if_version
+claim_task
 claim_next_task
-renew_attempt
-release_attempt
+renew_claim
+release_claim
 append_event
 submit_result
 approve_result
@@ -899,7 +960,8 @@ The same conformance suite runs against every backend and verifies:
 
 * unique project task numbers;
 * no double claims;
-* correct lease expiry;
+* correct Human and Agent Claim expiry;
+* non-owner mutation lock rejection;
 * stale-attempt rejection;
 * optimistic version conflicts;
 * idempotent retry behavior;
@@ -975,7 +1037,7 @@ Tokens never appear in `.workaholic.env` or normal command arguments.
 
 | Role                   | Main permissions                                                                 |
 | ---------------------- | -------------------------------------------------------------------------------- |
-| Viewer                 | Read tasks, projects, attempts, and events                                       |
+| Viewer                 | Read tasks, projects, claims, attempts, and events                               |
 | Agent                  | Claim, heartbeat, report progress, release, submit                               |
 | Operator               | Create and edit tasks, block/unblock, review, cancel                             |
 | Owner                  | Operator rights plus project settings and grants                                 |
@@ -1051,6 +1113,7 @@ workaholic task list
 workaholic task show
 workaholic task update
 workaholic task claim
+workaholic task renew
 workaholic task heartbeat
 workaholic task progress
 workaholic task block
@@ -1151,6 +1214,38 @@ Phase 3 adds `VERSION_CONFLICT`, `INVALID_TRANSITION`,
 `UNSATISFIABLE_DEPENDENCY`, and `RESULT_INVALID`. These are semantic errors,
 not adapter or SQLite exceptions.
 
+The accepted Phase 4 Claim signatures are:
+
+```text
+workaholic task claim TASK [--lease DURATION]
+  [--project KEY] [--idempotency-key KEY]
+workaholic task renew TASK [--lease DURATION]
+  [--project KEY] [--idempotency-key KEY]
+workaholic task release TASK
+  [--project KEY] [--idempotency-key KEY]
+
+workaholic task claim [--lease DURATION]
+  [--project KEY] [--idempotency-key KEY]
+workaholic task heartbeat TASK --attempt ATTEMPT [--lease DURATION]
+  [--project KEY] [--idempotency-key KEY]
+workaholic task progress TASK --attempt ATTEMPT --input-file PATH|-
+  [--project KEY] [--idempotency-key KEY]
+workaholic task release TASK --attempt ATTEMPT
+  [--project KEY] [--idempotency-key KEY]
+workaholic task submit TASK --attempt ATTEMPT --expected-version INTEGER
+  --result-file PATH|- [--project KEY] [--idempotency-key KEY]
+```
+
+An explicit Task operand selects the Human Claim path and returns null Attempt
+attribution. Omitting it selects the Agent pull-next path and returns a new
+Attempt. Human `renew` and Agent `heartbeat` share one renewal operation;
+Human commands never require an Attempt ID. Capability filtering is not part
+of v1.
+
+Phase 4 embedded Human and Agent operations reuse the bootstrap Subject.
+Attempt identity distinguishes Agent processes, while different Human
+identities and authenticated Subject ownership arrive in Phase 5.
+
 ### Agent-safe behavior
 
 Every agent-facing command supports:
@@ -1198,7 +1293,6 @@ Representative agent workflow:
 
 ```bash
 workaholic task claim \
-  --capability code \
   --lease 15m \
   --json \
   --non-interactive
@@ -1214,6 +1308,7 @@ workaholic task heartbeat ACME-142 \
 ```bash
 workaholic task submit ACME-142 \
   --attempt atm_01K9R \
+  --expected-version 4 \
   --result-file result.json \
   --idempotency-key agent-run-238-submit \
   --json \
@@ -1379,9 +1474,9 @@ native packaging easier.
 
 The following should be treated as architectural invariants rather than optional implementation details:
 
-1. **A task is claimed atomically.** Two agents cannot successfully claim the same ready task.
+1. **A task is claimed atomically.** Two Humans or Agents cannot successfully claim the same ready task.
 2. **Task identity is stable.** `ACME-142` never refers to another task.
-3. **Lease expiry needs no daemon.** Expired attempts are invalid based on timestamps and transactional checks.
+3. **Lease expiry needs no daemon.** Expired Human and Agent Claims are invalid based on timestamps and transactional checks.
 4. **Attempt identity prevents stale completion.** An old attempt cannot submit after a reclaim.
 5. **Every mutation is attributable.** Subject, request, attempt, and timestamp are recorded.
 6. **Every write is idempotency-aware.**
@@ -1392,7 +1487,7 @@ The following should be treated as architectural invariants rather than optional
 11. **The CLI JSON schema is the public automation contract.**
 12. **The network protocol remains private but versioned.**
 13. **Artifact contents remain outside the task manager.**
-14. **Capabilities affect scheduling, not authorization.**
+14. **A current Claim is an exclusive mutation lock.** Non-owner writes cannot change its Task.
 15. **Cross-project dependencies are not part of v1.**
 
 ## 17. V1 scope
@@ -1411,8 +1506,8 @@ The following should be treated as architectural invariants rather than optional
 * Human and agent authentication.
 * Project-scoped roles.
 * Tasks, dependencies, blocking, review, and cancellation.
-* Atomic claims and expiring attempts.
-* Heartbeats, releases, and retries.
+* Atomic Human and Agent Claims with expiring Leases.
+* Agent Attempts, Human renewal, heartbeats, releases, and retries.
 * Structured results and artifact references.
 * Typed append-only events.
 * Optimistic task versions.
@@ -1437,12 +1532,13 @@ The following should be treated as architectural invariants rather than optional
 * Workflow designer.
 * Plugin system.
 * Automated acceptance checkers.
+* Capability-based Task scheduling and heterogeneous Agent queue routing.
 * Horizontal server scaling guarantees.
 * Hosted Workaholic AI service.
 
 ## Final architecture statement
 
-> **Workaholic AI is a CLI-first, agent-native task coordination engine that runs directly over local storage for solo developers or behind an authenticated server for distributed teams. Projects are discovered from safe, nontracked working-directory metadata; tasks have stable project-prefixed identities; work is coordinated through atomic expiring attempts; and humans, agents, the future TUI, and later native clients all share one domain and session model.**
+> **Workaholic AI is a CLI-first, agent-native task coordination engine that runs directly over local storage for solo developers or behind an authenticated server for distributed teams. Projects are discovered from safe, nontracked working-directory metadata; tasks have stable project-prefixed identities; work is coordinated through atomic exclusive Claims and Agent Attempts; and humans, agents, the future TUI, and later native clients all share one domain and session model.**
 
 The v1 architecture supports immediate `uvx` adoption without committing the product to Python-based client distribution permanently, while preserving a direct path to a containerized server and self-contained CLI/TUI client.
 

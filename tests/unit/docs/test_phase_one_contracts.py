@@ -60,11 +60,11 @@ def test_roadmap_assigns_phase_one_foundations_only_once() -> None:
     phase_three = _section(
         roadmap,
         "# Phase 3 — Complete task lifecycle and audit model",
-        "# Phase 4 — Agent execution and extended JSON CLI contract",
+        "# Phase 4 — Local Claims, Agent execution, and extended JSON CLI contract",
     )
     phase_four = _section(
         roadmap,
-        "# Phase 4 — Agent execution and extended JSON CLI contract",
+        "# Phase 4 — Local Claims, Agent execution, and extended JSON CLI contract",
         "# Phase 5 — Identity, authentication, and authorization",
     )
     phase_five = _section(
