@@ -33,6 +33,7 @@ from workaholic.persistence.sqlite._task_records import (
     TASK_FIELD_SET,
     task_from_mapping,
     task_mapping,
+    task_row,
 )
 from workaholic.persistence.sqlite.connection import open_write_transaction
 from workaholic.persistence.sqlite.errors import StorageUnavailableError
@@ -129,6 +130,10 @@ def _create_task_in_transaction(
         objective=mutation.objective,
         state=TaskState.OPEN,
         priority=mutation.priority,
+        available_at=mutation.available_at,
+        approval=mutation.approval,
+        acceptance=mutation.acceptance,
+        context=mutation.context,
         version=INITIAL_TASK_VERSION,
         created_by=mutation.actor_subject_id,
         created_at=mutation.occurred_at,
@@ -197,7 +202,20 @@ def _task_fingerprint(mutation: TaskCreationMutation) -> str:
     """
     encoded = canonical_json(
         {
+            "acceptance": [
+                {"id": item.id, "required": item.required, "text": item.text}
+                for item in mutation.acceptance
+            ],
             "actor_subject_id": str(mutation.actor_subject_id),
+            "approval": mutation.approval.value,
+            "available_at": (
+                None
+                if mutation.available_at is None
+                else serialize_timestamp(mutation.available_at)
+            ),
+            "context": [
+                {"uri": item.uri, "version": item.version} for item in mutation.context
+            ],
             "objective": mutation.objective,
             "priority": mutation.priority,
             "project_id": str(mutation.project_id),
@@ -254,7 +272,9 @@ def _read_idempotent_task(
         raise StorageUnavailableError
     event = connection.execute(
         """
-        SELECT e.task_uid, e.project_id, e.actor_subject_id, e.event_type
+        SELECT
+            e.task_uid, e.project_id, e.actor_subject_id, e.actor_kind,
+            e.attempt_id, e.event_type
         FROM task_events AS e
         JOIN tasks AS t
           ON t.uid = e.task_uid AND t.project_id = e.project_id
@@ -266,6 +286,8 @@ def _read_idempotent_task(
         str(task.uid),
         str(task.project_id),
         str(task.created_by),
+        SubjectKind.HUMAN.value,
+        None,
         TaskEventType.TASK_CREATED.value,
     ):
         raise StorageUnavailableError
@@ -284,23 +306,14 @@ def _insert_task(connection: sqlite3.Connection, task: Task) -> None:
         """
         INSERT INTO tasks (
             uid, project_id, number, key, title, objective, state, priority,
-            version, created_by, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            available_at, approval, acceptance_json, context_json,
+            blocking_reason, current_result_id, version, created_by,
+            created_at, updated_at
+        ) VALUES (
+            ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+        )
         """,
-        (
-            str(task.uid),
-            str(task.project_id),
-            task.number,
-            task.key,
-            task.title,
-            task.objective,
-            task.state.value,
-            task.priority,
-            task.version,
-            str(task.created_by),
-            serialize_timestamp(task.created_at),
-            serialize_timestamp(task.updated_at),
-        ),
+        task_row(task),
     )
 
 
@@ -333,15 +346,17 @@ def _insert_task_event(
     inserted = connection.execute(
         """
         INSERT INTO task_events (
-            id, task_uid, project_id, actor_subject_id, request_id, event_type,
-            occurred_at, payload_json
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            id, task_uid, project_id, actor_subject_id, actor_kind, attempt_id,
+            request_id, event_type, occurred_at, payload_json
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             str(mutation.event_id),
             str(task.uid),
             str(task.project_id),
             str(mutation.actor_subject_id),
+            SubjectKind.HUMAN.value,
+            None,
             str(mutation.request_id),
             TaskEventType.TASK_CREATED.value,
             serialize_timestamp(mutation.occurred_at),

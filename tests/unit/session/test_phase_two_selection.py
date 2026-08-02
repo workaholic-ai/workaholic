@@ -9,6 +9,7 @@ from typing import cast
 
 import pytest
 
+from tests.unit.session.fakes import UnavailablePhaseThreeServices
 from workaholic.application import (
     ApplicationError,
     ApplicationErrorCode,
@@ -19,14 +20,19 @@ from workaholic.application import (
     GetLocalStatus,
     GetProjectByKey,
     GetTask,
+    GetTaskDetails,
     ListInstanceTasks,
     ListProjects,
     ListTasks,
+    ListTasksByView,
     ProfileInvalidError,
     ProfileNotFoundError,
     ProfileUnsupportedError,
     ProjectCreationResult,
+    ReadTaskEvents,
     StatusResult,
+    TaskDetails,
+    TaskEventPage,
     TaskPage,
 )
 from workaholic.domain import (
@@ -320,6 +326,18 @@ class _Queries:
         """Fail if a selection test unexpectedly queries one Task."""
         pytest.fail("This selection test must not query one Task")
 
+    def get_task_details(self, _command: GetTaskDetails) -> TaskDetails:
+        """Fail if a selection test requests complete Task details."""
+        pytest.fail("This selection test must not request Task details")
+
+    def list_tasks_by_view(self, _command: ListTasksByView) -> TaskPage:
+        """Fail if a selection test requests a Task view."""
+        pytest.fail("This selection test must not request a Task view")
+
+    def read_task_events_after(self, _command: ReadTaskEvents) -> TaskEventPage:
+        """Fail if a selection test requests TaskEvent history."""
+        pytest.fail("This selection test must not request Task events")
+
 
 class _Tasks:
     """Strict recording Task application fake."""
@@ -363,6 +381,9 @@ def _runtime(*, profile: str = "local") -> _RuntimeBundle:
             projects=projects,
             queries=queries,
             tasks=tasks,
+            lifecycle=UnavailablePhaseThreeServices(),
+            dependencies=UnavailablePhaseThreeServices(),
+            results=UnavailablePhaseThreeServices(),
         ),
         identity=identity,
         bootstrap=bootstrap,
@@ -512,7 +533,7 @@ def test_discovered_context_reports_canonical_authoritative_selection() -> None:
 
     assert result.mode == "embedded"
     assert result.profile == "local"
-    assert result.schema_version == 2
+    assert result.schema_version == 3
     assert result.instance.id == InstanceId("ins_local")
     assert result.project.key == "ACME"
     assert result.subject.id == SubjectId("sub_local")
@@ -759,6 +780,9 @@ def test_local_runtime_validates_profile_and_capabilities() -> None:
             projects=valid.projects,
             queries=valid.queries,
             tasks=valid.tasks,
+            lifecycle=UnavailablePhaseThreeServices(),
+            dependencies=UnavailablePhaseThreeServices(),
+            results=UnavailablePhaseThreeServices(),
         )
     with pytest.raises(TypeError, match=r"select\(\)"):
         LocalRuntime(
@@ -768,4 +792,7 @@ def test_local_runtime_validates_profile_and_capabilities() -> None:
             projects=valid.projects,
             queries=valid.queries,
             tasks=valid.tasks,
+            lifecycle=UnavailablePhaseThreeServices(),
+            dependencies=UnavailablePhaseThreeServices(),
+            results=UnavailablePhaseThreeServices(),
         )

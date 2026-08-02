@@ -29,8 +29,18 @@ from workaholic.domain import (
     ProjectId,
     Task,
     TaskId,
+    TaskState,
     WorkspaceBinding,
+    build_task_key,
     validate_profile_name,
+)
+from workaholic.session._phase_three import (
+    LocalTaskOperations,
+    PhaseThreeDependencyService,
+    PhaseThreeLifecycleService,
+    PhaseThreeQueryService,
+    PhaseThreeResultService,
+    PhaseThreeScope,
 )
 from workaholic.session.base import (
     LocalIdentity,
@@ -49,10 +59,33 @@ from workaholic.session.models import (
 )
 
 if TYPE_CHECKING:
+    from workaholic.application import (
+        GetTaskDetails,
+        ListTasksByView,
+        ReadTaskEvents,
+        TaskDetails,
+        TaskEventPage,
+        TaskMutationResult,
+        TaskSubmissionResult,
+    )
     from workaholic.session.base import (
         LocalRuntimeOpener,
         ProfileResolver,
         WorkspaceContextGateway,
+    )
+    from workaholic.session.models import (
+        TaskAddDependencyRequest,
+        TaskApproveRequest,
+        TaskBlockRequest,
+        TaskCancelRequest,
+        TaskDetailsRequest,
+        TaskEventsRequest,
+        TaskListByViewRequest,
+        TaskRejectRequest,
+        TaskRemoveDependencyRequest,
+        TaskSubmitRequest,
+        TaskUnblockRequest,
+        TaskUpdateRequest,
     )
 
 
@@ -171,6 +204,42 @@ class _QueryService(Protocol):
         """
         ...
 
+    def get_task_details(self, command: GetTaskDetails) -> TaskDetails:
+        """Return complete Phase 3 Task details.
+
+        Args:
+            command: Validated Task detail query.
+
+        Returns:
+            Complete immutable Task details.
+
+        """
+        ...
+
+    def list_tasks_by_view(self, command: ListTasksByView) -> TaskPage:
+        """Return one deterministic Phase 3 Task view.
+
+        Args:
+            command: Validated view query.
+
+        Returns:
+            View-bound Task page.
+
+        """
+        ...
+
+    def read_task_events_after(self, command: ReadTaskEvents) -> TaskEventPage:
+        """Return one bounded attributable TaskEvent page.
+
+        Args:
+            command: Validated event-history query.
+
+        Returns:
+            Polling-safe TaskEvent page.
+
+        """
+        ...
+
 
 class _TaskService(Protocol):
     """Application capability required for attributable Task creation."""
@@ -198,6 +267,9 @@ class LocalRuntime:
     projects: _ProjectService
     queries: _QueryService
     tasks: _TaskService
+    lifecycle: PhaseThreeLifecycleService
+    dependencies: PhaseThreeDependencyService
+    results: PhaseThreeResultService
 
     def __post_init__(self) -> None:
         """Validate the runtime's explicit stable capability surface."""
@@ -216,9 +288,18 @@ class LocalRuntime:
             "list_tasks",
             "list_tasks_for_instance",
             "get_task",
+            "get_task_details",
+            "list_tasks_by_view",
+            "read_task_events_after",
         ):
             _require_callable(self.queries, method_name, "query service")
         _require_callable(self.tasks, "create", "Task service")
+        for method_name in ("update", "block", "unblock", "cancel"):
+            _require_callable(self.lifecycle, method_name, "lifecycle service")
+        for method_name in ("add", "remove"):
+            _require_callable(self.dependencies, method_name, "dependency service")
+        for method_name in ("submit", "approve", "reject"):
+            _require_callable(self.results, method_name, "Result service")
         object.__setattr__(self, "profile", profile)
 
 
@@ -268,6 +349,7 @@ class LocalSession:
         self._context = context
         self._profiles = profiles
         self._runtimes = runtimes
+        self._task_operations = LocalTaskOperations(self._resolve_phase_three_scope)
 
     def up(self, request: UpRequest) -> BootstrapResult:
         """Bootstrap only the selected profile before writing current context.
@@ -530,6 +612,10 @@ class LocalSession:
                 title=candidate.title,
                 objective=objective,
                 priority=candidate.priority,
+                available_at=candidate.available_at,
+                approval=candidate.approval,
+                acceptance=candidate.acceptance,
+                context=candidate.context,
                 idempotency_key=candidate.idempotency_key,
             )
         except ValueError as error:
@@ -541,10 +627,21 @@ class LocalSession:
         if (
             not isinstance(result, Task)
             or result.project_id != selected.status.project.id
+            or result.key != build_task_key(selected.status.project.key, result.number)
             or result.created_by != identity.subject_id
             or result.title != command.title
             or result.objective != command.objective
             or result.priority != command.priority
+            or result.available_at != command.available_at
+            or result.approval is not command.approval
+            or result.acceptance != command.acceptance
+            or result.context != command.context
+            or result.state is not TaskState.OPEN
+            or result.version != 1
+            or result.depends_on != ()
+            or result.blocking_reason is not None
+            or result.current_result_id is not None
+            or result.created_at != result.updated_at
         ):
             _raise_internal_result("Task creation")
         return result
@@ -655,6 +752,109 @@ class LocalSession:
         if result.project_id != selected.status.project.id or not selector_matches:
             _raise_internal_result("Task query")
         return result
+
+    def update_task(self, request: TaskUpdateRequest) -> TaskMutationResult:
+        """Update editable Task fields at an explicit expected version."""
+        return self._task_operations.update_task(request)
+
+    def block_task(self, request: TaskBlockRequest) -> TaskMutationResult:
+        """Block one open Task at an explicit expected version."""
+        return self._task_operations.block_task(request)
+
+    def unblock_task(self, request: TaskUnblockRequest) -> TaskMutationResult:
+        """Return one blocked Task to open at an expected version."""
+        return self._task_operations.unblock_task(request)
+
+    def cancel_task(self, request: TaskCancelRequest) -> TaskMutationResult:
+        """Cancel one mutable Task at an explicit expected version."""
+        return self._task_operations.cancel_task(request)
+
+    def add_task_dependency(
+        self,
+        request: TaskAddDependencyRequest,
+    ) -> TaskMutationResult:
+        """Add one same-Project Task prerequisite."""
+        return self._task_operations.add_task_dependency(request)
+
+    def remove_task_dependency(
+        self,
+        request: TaskRemoveDependencyRequest,
+    ) -> TaskMutationResult:
+        """Remove one same-Project Task prerequisite."""
+        return self._task_operations.remove_task_dependency(request)
+
+    def submit_human_result(
+        self,
+        request: TaskSubmitRequest,
+    ) -> TaskSubmissionResult:
+        """Submit Human work directly without an Agent Attempt."""
+        return self._task_operations.submit_human_result(request)
+
+    def approve_result(self, request: TaskApproveRequest) -> TaskSubmissionResult:
+        """Approve one pending Result and complete its Task."""
+        return self._task_operations.approve_result(request)
+
+    def reject_result(self, request: TaskRejectRequest) -> TaskSubmissionResult:
+        """Reject one pending Result and reopen its Task."""
+        return self._task_operations.reject_result(request)
+
+    def get_task_details(self, request: TaskDetailsRequest) -> TaskDetails:
+        """Return complete Task definition, readiness, and Result details."""
+        return self._task_operations.get_task_details(request)
+
+    def list_tasks_by_view(self, request: TaskListByViewRequest) -> TaskPage:
+        """Return one Project- or Instance-scoped Task operational view."""
+        return self._task_operations.list_tasks_by_view(request)
+
+    def read_task_events(self, request: TaskEventsRequest) -> TaskEventPage:
+        """Return one bounded attributable TaskEvent history page."""
+        return self._task_operations.read_task_events(request)
+
+    def _resolve_phase_three_scope(
+        self,
+        *,
+        project: str | None,
+        all_projects: bool,
+    ) -> PhaseThreeScope:
+        """Resolve one complete trusted Phase 3 request scope.
+
+        Args:
+            project: Optional explicit Project key.
+            all_projects: Whether the request is Instance-scoped.
+
+        Returns:
+            Profile, actor, optional Project, and semantic services.
+
+        Raises:
+            ApplicationError: If selection or authorization fails.
+
+        """
+        resolved = self._resolve_runtime(None)
+        identity = self._select_identity(resolved)
+        selected_project: Project | None = None
+        if all_projects:
+            if project is not None:
+                _raise_invalid_input(
+                    "Project and all-project selection are mutually exclusive."
+                )
+        else:
+            _require_project_selector(resolved, project)
+            selected = self._select_project(
+                resolved,
+                identity,
+                explicit_project=project,
+            )
+            selected_project = selected.status.project
+        return PhaseThreeScope(
+            profile=resolved.profile,
+            instance_id=identity.instance_id,
+            subject_id=identity.subject_id,
+            project=selected_project,
+            queries=cast("PhaseThreeQueryService", resolved.runtime.queries),
+            lifecycle=resolved.runtime.lifecycle,
+            dependencies=resolved.runtime.dependencies,
+            results=resolved.runtime.results,
+        )
 
     def _resolve_runtime(self, explicit_profile: str | None) -> _ResolvedRuntime:
         """Discover context, resolve trusted profile precedence, and open runtime.

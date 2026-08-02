@@ -1,4 +1,4 @@
-"""Tests for public documentation and the Phase 2 quick start."""
+"""Tests for public documentation and the Phase 3 Human quick start."""
 
 from __future__ import annotations
 
@@ -53,28 +53,50 @@ _EXPECTED_QUICK_START = (
     '${TMPDIR:-/tmp}/workaholic-quickstart-data.XXXXXX")"\n'
     "workaholic_source_directory=$PWD\n"
     'workaholic_workspace_directory="$(mktemp -d "'
-    '${TMPDIR:-/tmp}/workaholic-quickstart-workspaces.XXXXXX")"\n'
-    'mkdir -p "$workaholic_workspace_directory/acme/src/app"\n'
-    'mkdir -p "$workaholic_workspace_directory/docs/guides/draft"\n'
+    '${TMPDIR:-/tmp}/workaholic-quickstart-workspace.XXXXXX")"\n'
     "(\n"
-    '  cd "$workaholic_workspace_directory/acme"\n'
+    '  cd "$workaholic_workspace_directory"\n'
     '  uv run --project "$workaholic_source_directory" workaholic up '
     '--project-key ACME --project-name "Acme delivery"\n'
-    '  uv run --project "$workaholic_source_directory" workaholic project '
-    'create --key DOCS --name "Documentation"\n'
-    '  uv run --project "$workaholic_source_directory" workaholic project '
-    "bind DOCS ../docs\n"
-    "  cd src/app\n"
     '  uv run --project "$workaholic_source_directory" workaholic task add '
-    '"First ACME task"\n'
-    ")\n"
-    "(\n"
-    '  cd "$workaholic_workspace_directory/docs/guides/draft"\n'
+    '"Prepare foundation" --priority 80\n'
     '  uv run --project "$workaholic_source_directory" workaholic task add '
-    '"First DOCS task"\n'
-    '  uv run --project "$workaholic_source_directory" workaholic task list\n'
-    ")\n"
-    "uv run workaholic task list --all-projects"
+    '"Deliver reviewed change" --priority 90 --approval human --input-file - '
+    "<<'JSON'\n"
+    '{"acceptance":[{"id":"ac_verified","text":"The reviewed change is '
+    'verified.","required":true}],"context":[{"uri":"workspace://repo/'
+    'specification.md","version":"v1"}]}\n'
+    "JSON\n"
+    '  uv run --project "$workaholic_source_directory" workaholic task '
+    "add-dependency ACME-2 ACME-1 --expected-version 1\n"
+    '  uv run --project "$workaholic_source_directory" workaholic task list '
+    "--view ready\n"
+    '  uv run --project "$workaholic_source_directory" workaholic task block '
+    'ACME-1 --reason "Verify the foundation manually." --expected-version 1\n'
+    '  uv run --project "$workaholic_source_directory" workaholic task '
+    "unblock ACME-1 --expected-version 2\n"
+    '  uv run --project "$workaholic_source_directory" workaholic task submit '
+    'ACME-1 --comment "Foundation prepared manually." --expected-version 3\n'
+    '  uv run --project "$workaholic_source_directory" workaholic task list '
+    "--view ready\n"
+    '  uv run --project "$workaholic_source_directory" workaholic task submit '
+    'ACME-2 --comment "Ready for Human review." --result-file - '
+    "--expected-version 2 <<'JSON'\n"
+    '{"summary":"Implemented and verified the reviewed change.","criteria":['
+    '{"criterion_id":"ac_verified","status":"passed","evidence":"The local '
+    'verification passed."}],"artifacts":[{"uri":"workspace://repo/report.md",'
+    '"media_type":"text/markdown","sha256":null}],"proposed_follow_ups":['
+    '{"title":"Document the reviewed workflow"}]}\n'
+    "JSON\n"
+    '  uv run --project "$workaholic_source_directory" workaholic task list '
+    "--view review\n"
+    '  uv run --project "$workaholic_source_directory" workaholic task approve '
+    'ACME-2 --comment "Evidence accepted." --expected-version 3\n'
+    '  uv run --project "$workaholic_source_directory" workaholic task show '
+    "ACME-2\n"
+    '  uv run --project "$workaholic_source_directory" workaholic task events '
+    "ACME-2\n"
+    ")"
 )
 _REQUIRED_GLOSSARY_TERMS = frozenset(
     {
@@ -189,8 +211,8 @@ def test_threat_model_covers_required_boundaries_and_attack_scenarios() -> None:
         assert boundary in threat_model
 
 
-def test_readme_quick_start_contains_the_exact_phase_two_journey() -> None:
-    """The quick start is the exact owner-approved multi-Project sequence."""
+def test_readme_quick_start_contains_the_exact_phase_three_journey() -> None:
+    """The quick start is the exact verified Human lifecycle sequence."""
     readme = _README.read_text(encoding="utf-8")
     quick_start_match = _QUICK_START_PATTERN.search(readme)
 
@@ -244,18 +266,19 @@ def test_readme_quick_start_executes_in_an_isolated_source_checkout(
     assert result.returncode == 0, f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
     assert "Traceback" not in result.stderr
     assert "ACME-1" in result.stdout
-    assert "DOCS-1" in result.stdout
-    assert "First ACME task" in result.stdout
-    assert "First DOCS task" in result.stdout
+    assert "ACME-2" in result.stdout
+    assert "Prepare foundation" in result.stdout
+    assert "Deliver reviewed change" in result.stdout
+    assert "review_approved" in result.stdout
+    assert "task_completed" in result.stdout
     config_directories = tuple(tmp_path.glob("workaholic-quickstart-config.*"))
     data_directories = tuple(tmp_path.glob("workaholic-quickstart-data.*"))
-    workspace_directories = tuple(tmp_path.glob("workaholic-quickstart-workspaces.*"))
+    workspace_directories = tuple(tmp_path.glob("workaholic-quickstart-workspace.*"))
     assert len(config_directories) == 1
     assert len(data_directories) == 1
     assert len(workspace_directories) == 1
     assert (data_directories[0] / "local.db").is_file()
-    assert (workspace_directories[0] / "acme" / ".workaholic.env").is_file()
-    assert (workspace_directories[0] / "docs" / ".workaholic.env").is_file()
+    assert (workspace_directories[0] / ".workaholic.env").is_file()
     assert tuple(config_directories[0].iterdir()) == ()
     assert (inherited_config_directory / "profiles.toml").read_text(
         encoding="utf-8"
@@ -276,33 +299,43 @@ def test_readme_version_output_matches_installed_distribution() -> None:
     )
 
 
-def test_readme_publishes_the_phase_two_clean_state_gate() -> None:
-    """Public development guidance exposes the isolated aggregate command."""
+def test_readme_publishes_current_checks_and_clean_state_gates() -> None:
+    """Public guidance exposes current checks and the Phase 3 exit gate."""
     readme = " ".join(_README.read_text(encoding="utf-8").split())
 
-    assert "## Phase 2 acceptance gate" in _README.read_text(encoding="utf-8")
-    assert "scripts/verify-phase-2.sh" in readme
+    assert "## Development checks" in _README.read_text(encoding="utf-8")
+    for command in (
+        "uv run pre-commit run --all-files",
+        "uv run pytest",
+        "uv build",
+        "scripts/smoke-install.sh",
+        "scripts/verify-phase-0.sh",
+        "scripts/verify-phase-1.sh",
+        "scripts/verify-phase-2.sh",
+        "scripts/verify-phase-3.sh",
+        "scripts/smoke-phase-3-wheel.sh",
+    ):
+        assert command in readme
     for guarantee in (
-        "clean checkout",
+        "## Phase 3 acceptance gate",
         "no active virtual environment",
-        "no pre-existing `.venv` or `dist`",
-        "temporary virtual environment",
-        "`WORKAHOLIC_CONFIG_DIR`",
-        "`WORKAHOLIC_DATA_DIR`",
-        "never uses the operator's default profile or database",
+        "refuses a dirty checkout",
+        "temporary config, data, and Workspace roots",
+        "structured Human Results",
+        "ordered TaskEvents",
     ):
         assert guarantee in readme
 
 
-def test_phase_two_status_and_limitations_are_explicit() -> None:
-    """Public implementation notices distinguish Phase 2 from planned v1."""
+def test_phase_three_status_and_limitations_are_explicit() -> None:
+    """Public implementation notices distinguish Phase 3 from planned v1."""
     readme = " ".join(_README.read_text(encoding="utf-8").split())
     architecture = " ".join(_ARCHITECTURE.read_text(encoding="utf-8").split())
     cli_contract = " ".join(_CLI_CONTRACT.read_text(encoding="utf-8").split())
     persistence = " ".join(_PERSISTENCE_CONTRACT.read_text(encoding="utf-8").split())
 
     for document in (readme, architecture, cli_contract, persistence):
-        assert "`0.2.0a1`" in document
+        assert "`0.3.0a1`" in document
     for command in (
         "workaholic up",
         "workaholic status",
@@ -313,14 +346,25 @@ def test_phase_two_status_and_limitations_are_explicit() -> None:
         "workaholic task add",
         "workaholic task list",
         "workaholic task show",
+        "workaholic task update",
+        "workaholic task block",
+        "workaholic task unblock",
+        "workaholic task cancel",
+        "workaholic task add-dependency",
+        "workaholic task remove-dependency",
+        "workaholic task submit",
+        "workaholic task approve",
+        "workaholic task reject",
+        "workaholic task events",
     ):
         assert command in readme
     for implemented in (
         "upward Workspace discovery",
         "multiple named Projects",
         "trusted embedded profiles",
-        "schema version `2`",
-        "all-Project Task",
+        "schema version `3`",
+        "structured Human Results",
+        "append-only attributable TaskEvents",
     ):
         assert implemented in readme
     for unavailable in (
@@ -330,7 +374,8 @@ def test_phase_two_status_and_limitations_are_explicit() -> None:
         "JSON or PostgreSQL persistence adapters",
         "schema migration",
         "Project archival",
-        "Task updates",
+        "parent/child Task hierarchies",
+        "automatic Task creation from proposed follow-ups",
     ):
         assert unavailable in readme
     assert "canonical upward `.workaholic.env` discovery" in architecture
@@ -338,7 +383,7 @@ def test_phase_two_status_and_limitations_are_explicit() -> None:
     assert "JSON and PostgreSQL adapters and schema migration remain unavailable" in (
         persistence
     )
-    assert "including Phase 1 schema version `1`, is rejected unchanged" in persistence
+    assert "including Phase 2 schema version `2`, is rejected unchanged" in persistence
 
 
 def test_foundation_scope_decisions_are_consistent_across_public_documents() -> None:

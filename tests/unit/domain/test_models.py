@@ -12,15 +12,26 @@ from typing import TYPE_CHECKING, cast
 import pytest
 
 from workaholic.domain import (
+    AcceptanceCriterion,
+    ApprovalRequirement,
+    ArtifactReference,
+    ContextReference,
+    CriterionOutcome,
+    CriterionStatus,
     DomainValidationError,
     Instance,
     InstanceId,
     JsonScalar,
+    JsonValue,
     Project,
     ProjectGrant,
     ProjectId,
     ProjectRole,
+    ProposedFollowUp,
     RequestId,
+    ResultId,
+    ResultReview,
+    ResultReviewStatus,
     Subject,
     SubjectId,
     SubjectKind,
@@ -29,6 +40,7 @@ from workaholic.domain import (
     TaskEventId,
     TaskEventType,
     TaskId,
+    TaskResult,
     TaskState,
     WorkspaceBinding,
     build_task_key,
@@ -36,7 +48,7 @@ from workaholic.domain import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
+    from collections.abc import Callable, Mapping
 
 _DOMAIN_DIRECTORY = Path(__file__).parents[3] / "src" / "workaholic" / "domain"
 _NOW = datetime(2026, 7, 30, 10, 30, tzinfo=UTC)
@@ -107,7 +119,7 @@ def _task() -> Task:
     )
 
 
-def _event(payload: Mapping[str, JsonScalar] | None = None) -> TaskEvent:
+def _event(payload: Mapping[str, JsonValue] | None = None) -> TaskEvent:
     """Build a valid task-created event.
 
     Args:
@@ -358,12 +370,12 @@ def test_task_event_rejects_invalid_runtime_fields(
     "payload",
     [
         {" nested": "value"},
-        {"nested": {"not": "a scalar"}},
+        {"nested": {"not": float("inf")}},
         {"number": float("nan")},
     ],
 )
 def test_task_event_rejects_invalid_payload(payload: dict[str, object]) -> None:
-    """TaskEvent payloads accept trimmed keys and finite scalar values only."""
+    """TaskEvent payloads reject invalid keys and non-finite values."""
     with pytest.raises(DomainValidationError, match="payload"):
         _event(cast("dict[str, JsonScalar]", payload))
 
@@ -387,3 +399,277 @@ def test_domain_modules_import_only_standard_library_and_domain_modules() -> Non
                 continue
 
             assert imported_roots <= sys.stdlib_module_names | {"workaholic"}, path
+
+
+def _result(*, review: ResultReview | None = None) -> TaskResult:
+    """Build one valid Human Result for Phase 3 model tests.
+
+    Args:
+        review: Optional review disposition override.
+
+    Returns:
+        A valid immutable Result for the first Task.
+
+    """
+    return TaskResult(
+        id=ResultId("res_first"),
+        task_uid=TaskId("tsk_first"),
+        submitted_by=SubjectId("sub_local"),
+        attempt_id=None,
+        submitted_at=_NOW,
+        comment="Implemented manually.",
+        summary="Acceptance checked.",
+        criteria=(
+            CriterionOutcome(
+                criterion_id="ac_done",
+                status=CriterionStatus.PASSED,
+                evidence="Verified locally.",
+            ),
+        ),
+        artifacts=(
+            ArtifactReference(
+                uri="workspace://repo/report.md",
+                media_type="text/markdown",
+                sha256="a" * 64,
+            ),
+        ),
+        proposed_follow_ups=(ProposedFollowUp(title="  Add regression coverage  "),),
+        review=review or ResultReview(status=ResultReviewStatus.NOT_REQUIRED),
+    )
+
+
+def test_phase_three_task_defaults_preserve_phase_two_construction() -> None:
+    """Existing Task construction receives safe immutable Phase 3 defaults."""
+    task = _task()
+
+    assert task.available_at is None
+    assert task.approval is ApprovalRequirement.NONE
+    assert task.acceptance == ()
+    assert task.context == ()
+    assert task.depends_on == ()
+    assert task.blocking_reason is None
+    assert task.current_result_id is None
+
+
+def test_phase_three_task_defensively_copies_ordered_definition_values() -> None:
+    """Mutable caller collections cannot alter an accepted Task definition."""
+    criterion = AcceptanceCriterion(
+        id="ac_done",
+        text="  Cafe\u0301 output is complete.  ",
+        required=True,
+    )
+    context = ContextReference(
+        uri="workspace://repo/spec.md",
+        version="  git:abc123  ",
+    )
+    acceptance = [criterion]
+    references = [context]
+    dependencies = [TaskId("tsk_prerequisite")]
+    task = replace(
+        _task(),
+        available_at=_NOW + timedelta(days=1),
+        approval=ApprovalRequirement.HUMAN,
+        acceptance=acceptance,  # type: ignore[arg-type]
+        context=references,  # type: ignore[arg-type]
+        depends_on=dependencies,  # type: ignore[arg-type]
+        current_result_id=ResultId("res_current"),
+    )
+    acceptance.clear()
+    references.clear()
+    dependencies.clear()
+
+    assert task.acceptance == (criterion,)
+    assert task.acceptance[0].text == "Café output is complete."
+    assert task.context == (context,)
+    assert task.context[0].version == "git:abc123"
+    assert task.depends_on == (TaskId("tsk_prerequisite"),)
+
+
+@pytest.mark.parametrize(
+    ("changes", "message"),
+    [
+        ({"available_at": _NOW.replace(tzinfo=None)}, "available_at"),
+        ({"approval": "none"}, "Task approval"),
+        (
+            {
+                "acceptance": (
+                    AcceptanceCriterion("ac_same", "First", required=True),
+                    AcceptanceCriterion("ac_same", "Second", required=False),
+                )
+            },
+            "criterion IDs",
+        ),
+        (
+            {
+                "context": (
+                    ContextReference("workspace://repo/spec.md"),
+                    ContextReference("workspace://repo/spec.md"),
+                )
+            },
+            "unique",
+        ),
+        (
+            {"depends_on": (TaskId("tsk_other"), TaskId("tsk_other"))},
+            "dependencies",
+        ),
+        ({"depends_on": (TaskId("tsk_first"),)}, "itself"),
+        ({"blocking_reason": "Paused"}, "Only blocked"),
+        ({"state": TaskState.BLOCKED}, "blocking_reason"),
+        ({"current_result_id": "res_current"}, "current_result_id"),
+    ],
+)
+def test_phase_three_task_rejects_invalid_definition_combinations(
+    changes: dict[str, object],
+    message: str,
+) -> None:
+    """Task construction rejects malformed or contradictory Phase 3 fields."""
+    with pytest.raises(DomainValidationError, match=message):
+        replace(_task(), **changes)  # type: ignore[arg-type]
+
+
+def test_blocked_task_requires_and_normalizes_one_reason() -> None:
+    """Blocking state and its bounded reason remain one invariant."""
+    task = replace(
+        _task(),
+        state=TaskState.BLOCKED,
+        blocking_reason="  Waiting on procurement  ",
+    )
+
+    assert task.blocking_reason == "Waiting on procurement"
+
+
+@pytest.mark.parametrize(
+    "factory",
+    [
+        lambda: AcceptanceCriterion("bad", "Criterion", required=True),
+        lambda: AcceptanceCriterion("ac_ok", "line\nbreak", required=True),
+        lambda: AcceptanceCriterion("ac_ok", "Criterion", required=1),  # type: ignore[arg-type]
+        lambda: ContextReference("relative/path"),
+        lambda: ContextReference("workspace://repo/spec", " "),
+        lambda: CriterionOutcome("bad", CriterionStatus.PASSED),
+        lambda: CriterionOutcome("ac_ok", "passed"),  # type: ignore[arg-type]
+        lambda: CriterionOutcome("ac_ok", CriterionStatus.PASSED, "line\nbreak"),
+        lambda: ArtifactReference("relative/path"),
+        lambda: ArtifactReference("workspace://repo/a", "Text/Markdown"),
+        lambda: ArtifactReference("workspace://repo/a", sha256="A" * 64),
+        lambda: ProposedFollowUp(" "),
+    ],
+)
+def test_phase_three_value_objects_reject_invalid_runtime_values(
+    factory: Callable[[], object],
+) -> None:
+    """Every structured definition and Result value validates at construction."""
+    with pytest.raises(DomainValidationError):
+        factory()
+
+
+@pytest.mark.parametrize(
+    "review",
+    [
+        ResultReview(status=ResultReviewStatus.NOT_REQUIRED),
+        ResultReview(status=ResultReviewStatus.PENDING),
+        ResultReview(
+            status=ResultReviewStatus.APPROVED,
+            reviewed_by=SubjectId("sub_reviewer"),
+            reviewed_at=_NOW,
+            comment="  Looks good.  ",
+        ),
+        ResultReview(
+            status=ResultReviewStatus.REJECTED,
+            reviewed_by=SubjectId("sub_reviewer"),
+            reviewed_at=_NOW,
+            reason="  Missing evidence.  ",
+        ),
+    ],
+)
+def test_result_review_accepts_each_valid_disposition(review: ResultReview) -> None:
+    """Review attribution and note fields follow their status contracts."""
+    assert review.status in ResultReviewStatus
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"status": "pending"},
+        {"reviewed_by": "sub_reviewer"},
+        {"reviewed_at": _NOW.replace(tzinfo=None)},
+        {"comment": "line\nbreak"},
+        {"reason": "line\nbreak"},
+        {"status": ResultReviewStatus.APPROVED},
+        {
+            "status": ResultReviewStatus.APPROVED,
+            "reviewed_by": SubjectId("sub_reviewer"),
+            "reviewed_at": _NOW,
+            "reason": "No",
+        },
+        {
+            "status": ResultReviewStatus.REJECTED,
+            "reviewed_by": SubjectId("sub_reviewer"),
+            "reviewed_at": _NOW,
+        },
+        {"status": ResultReviewStatus.PENDING, "comment": "Early"},
+    ],
+)
+def test_result_review_rejects_inconsistent_fields(changes: dict[str, object]) -> None:
+    """Review status cannot disagree with attribution or note semantics."""
+    with pytest.raises(DomainValidationError):
+        replace(ResultReview(status=ResultReviewStatus.PENDING), **changes)  # type: ignore[arg-type]
+
+
+def test_task_result_normalizes_and_defensively_copies_content() -> None:
+    """Result collections and optional text are immutable normalized values."""
+    result = _result()
+
+    assert result.comment == "Implemented manually."
+    assert result.proposed_follow_ups[0].title == "Add regression coverage"
+    assert result.review.status is ResultReviewStatus.NOT_REQUIRED
+    with pytest.raises(FrozenInstanceError):
+        result.summary = "Changed"  # type: ignore[misc]
+
+
+@pytest.mark.parametrize(
+    ("changes", "message"),
+    [
+        ({"id": "res_first"}, "Result id"),
+        ({"task_uid": "tsk_first"}, "task_uid"),
+        ({"submitted_by": "sub_local"}, "submitted_by"),
+        ({"attempt_id": "bad"}, "attempt_id"),
+        ({"submitted_at": _NOW.replace(tzinfo=None)}, "submitted_at"),
+        ({"comment": "line\nbreak"}, "comment"),
+        ({"summary": "line\nbreak"}, "summary"),
+        (
+            {
+                "criteria": (
+                    CriterionOutcome("ac_done", CriterionStatus.PASSED),
+                    CriterionOutcome("ac_done", CriterionStatus.FAILED),
+                )
+            },
+            "unique criterion",
+        ),
+        ({"artifacts": ("artifact",)}, "ArtifactReference"),
+        ({"proposed_follow_ups": ("follow-up",)}, "ProposedFollowUp"),
+        ({"review": "pending"}, "Result review"),
+    ],
+)
+def test_task_result_rejects_invalid_runtime_fields(
+    changes: dict[str, object],
+    message: str,
+) -> None:
+    """Result construction enforces identity, content, and collection types."""
+    with pytest.raises(DomainValidationError, match=message):
+        replace(_result(), **changes)  # type: ignore[arg-type]
+
+
+def test_task_event_recursively_copies_and_freezes_bounded_json() -> None:
+    """Nested event arrays and objects cannot be changed through caller aliases."""
+    nested = {"changes": [{"field": "title", "old": None}], "ok": True}
+    event = _event(cast("dict[str, JsonValue]", nested))
+    cast("list[object]", nested["changes"]).clear()
+
+    frozen_changes = cast(
+        "tuple[Mapping[str, JsonValue], ...]",
+        event.payload["changes"],
+    )
+    assert frozen_changes[0]["field"] == "title"
+    with pytest.raises(TypeError):
+        frozen_changes[0]["field"] = "objective"  # type: ignore[index]

@@ -7,11 +7,17 @@ import pytest
 from workaholic.application import (
     ApplicationError,
     ApplicationErrorCode,
+    DependencyConflictError,
+    DependencyCycleError,
     ExitCategory,
+    InvalidTransitionError,
     ProfileInvalidError,
     ProfileNotFoundError,
     ProfileUnsupportedError,
     ProjectNotFoundError,
+    ResultInvalidError,
+    UnsatisfiableDependencyError,
+    VersionConflictError,
     WorkspaceBindingConflictError,
 )
 from workaholic.domain import DomainValidationError
@@ -32,6 +38,15 @@ _EXPECTED_ERROR_SEMANTICS = {
         False,
     ),
     ApplicationErrorCode.IDEMPOTENCY_CONFLICT: (ExitCategory.CONFLICT, False),
+    ApplicationErrorCode.VERSION_CONFLICT: (ExitCategory.CONFLICT, False),
+    ApplicationErrorCode.INVALID_TRANSITION: (ExitCategory.CONFLICT, False),
+    ApplicationErrorCode.DEPENDENCY_CONFLICT: (ExitCategory.CONFLICT, False),
+    ApplicationErrorCode.DEPENDENCY_CYCLE: (ExitCategory.CONFLICT, False),
+    ApplicationErrorCode.UNSATISFIABLE_DEPENDENCY: (
+        ExitCategory.CONFLICT,
+        False,
+    ),
+    ApplicationErrorCode.RESULT_INVALID: (ExitCategory.INPUT_USAGE, False),
     ApplicationErrorCode.PERMISSION_DENIED: (ExitCategory.AUTHORIZATION, False),
     ApplicationErrorCode.SCHEMA_UNSUPPORTED: (ExitCategory.OPERATIONAL, False),
     ApplicationErrorCode.STORAGE_BUSY: (ExitCategory.OPERATIONAL, True),
@@ -84,6 +99,47 @@ def test_phase_two_errors_have_exact_safe_public_messages() -> None:
                 "The Workspace is already bound to a different Project, "
                 "Instance, or profile."
             ),
+        ),
+    )
+
+    for error, code, message in expected:
+        assert error.code is code
+        assert error.safe_message == message
+        assert not error.retryable
+
+
+def test_phase_three_errors_have_exact_safe_public_messages() -> None:
+    """Lifecycle failures expose only the six fixed redacted Phase 3 messages."""
+    expected = (
+        (
+            VersionConflictError(),
+            ApplicationErrorCode.VERSION_CONFLICT,
+            "The Task changed after the expected version.",
+        ),
+        (
+            InvalidTransitionError(),
+            ApplicationErrorCode.INVALID_TRANSITION,
+            "The Task cannot perform the requested lifecycle transition.",
+        ),
+        (
+            DependencyConflictError(),
+            ApplicationErrorCode.DEPENDENCY_CONFLICT,
+            "The dependency change conflicts with the current Task graph.",
+        ),
+        (
+            DependencyCycleError(),
+            ApplicationErrorCode.DEPENDENCY_CYCLE,
+            "The dependency change would create a cycle.",
+        ),
+        (
+            UnsatisfiableDependencyError(),
+            ApplicationErrorCode.UNSATISFIABLE_DEPENDENCY,
+            "The Task has a cancelled prerequisite and cannot be completed.",
+        ),
+        (
+            ResultInvalidError(),
+            ApplicationErrorCode.RESULT_INVALID,
+            "The submitted Result is invalid.",
         ),
     )
 

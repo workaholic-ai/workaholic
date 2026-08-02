@@ -92,7 +92,7 @@ if [ "${WORKAHOLIC_TEST_UV_FAIL_ON:-}" = "$*" ]; then
 fi
 if [ "$*" = "build" ]; then
   mkdir -p dist
-  printf '%s\n' "wheel fixture" > dist/workaholic_ai-0.2.0a1-py3-none-any.whl
+  printf '%s\n' "wheel fixture" > dist/workaholic_ai-0.3.0a1-py3-none-any.whl
 fi
 """,
     )
@@ -232,7 +232,7 @@ def test_gate_runs_the_exact_phase_two_journey_in_owned_roots(
         f"{project_root}|run pytest",
         f"{project_root}|build",
     ]
-    wheel_argument = f"{project_root}|dist/workaholic_ai-0.2.0a1-py3-none-any.whl"
+    wheel_argument = f"{project_root}|dist/workaholic_ai-0.3.0a1-py3-none-any.whl"
     assert install_calls == [wheel_argument]
     assert len(phase_two_calls) == 1
     phase_two_fields = phase_two_calls[0].split("|")

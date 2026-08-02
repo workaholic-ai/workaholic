@@ -27,6 +27,12 @@ class ApplicationErrorCode(StrEnum):
     PROJECT_KEY_CONFLICT = "PROJECT_KEY_CONFLICT"
     WORKSPACE_BINDING_CONFLICT = "WORKSPACE_BINDING_CONFLICT"
     IDEMPOTENCY_CONFLICT = "IDEMPOTENCY_CONFLICT"
+    VERSION_CONFLICT = "VERSION_CONFLICT"
+    INVALID_TRANSITION = "INVALID_TRANSITION"
+    DEPENDENCY_CONFLICT = "DEPENDENCY_CONFLICT"
+    DEPENDENCY_CYCLE = "DEPENDENCY_CYCLE"
+    UNSATISFIABLE_DEPENDENCY = "UNSATISFIABLE_DEPENDENCY"
+    RESULT_INVALID = "RESULT_INVALID"
     PERMISSION_DENIED = "PERMISSION_DENIED"
     SCHEMA_UNSUPPORTED = "SCHEMA_UNSUPPORTED"
     STORAGE_BUSY = "STORAGE_BUSY"
@@ -100,6 +106,30 @@ _ERROR_SPECS: Final = MappingProxyType(
         ),
         ApplicationErrorCode.IDEMPOTENCY_CONFLICT: _ErrorSpec(
             ExitCategory.CONFLICT,
+            retryable=False,
+        ),
+        ApplicationErrorCode.VERSION_CONFLICT: _ErrorSpec(
+            ExitCategory.CONFLICT,
+            retryable=False,
+        ),
+        ApplicationErrorCode.INVALID_TRANSITION: _ErrorSpec(
+            ExitCategory.CONFLICT,
+            retryable=False,
+        ),
+        ApplicationErrorCode.DEPENDENCY_CONFLICT: _ErrorSpec(
+            ExitCategory.CONFLICT,
+            retryable=False,
+        ),
+        ApplicationErrorCode.DEPENDENCY_CYCLE: _ErrorSpec(
+            ExitCategory.CONFLICT,
+            retryable=False,
+        ),
+        ApplicationErrorCode.UNSATISFIABLE_DEPENDENCY: _ErrorSpec(
+            ExitCategory.CONFLICT,
+            retryable=False,
+        ),
+        ApplicationErrorCode.RESULT_INVALID: _ErrorSpec(
+            ExitCategory.INPUT_USAGE,
             retryable=False,
         ),
         ApplicationErrorCode.PERMISSION_DENIED: _ErrorSpec(
@@ -320,6 +350,72 @@ class WorkspaceBindingConflictError(ApplicationError):
                 "The Workspace is already bound to a different Project, "
                 "Instance, or profile."
             ),
+        )
+
+
+class VersionConflictError(ApplicationError):
+    """Report a stale optimistic Task version without disclosing current state."""
+
+    def __init__(self) -> None:
+        """Initialize the fixed version-conflict failure."""
+        super().__init__(
+            ApplicationErrorCode.VERSION_CONFLICT,
+            "The Task changed after the expected version.",
+        )
+
+
+class InvalidTransitionError(ApplicationError):
+    """Report an illegal semantic Task transition."""
+
+    def __init__(self) -> None:
+        """Initialize the fixed invalid-transition failure."""
+        super().__init__(
+            ApplicationErrorCode.INVALID_TRANSITION,
+            "The Task cannot perform the requested lifecycle transition.",
+        )
+
+
+class DependencyConflictError(ApplicationError):
+    """Report a dependency-edge conflict without disclosing graph contents."""
+
+    def __init__(self) -> None:
+        """Initialize the fixed dependency-conflict failure."""
+        super().__init__(
+            ApplicationErrorCode.DEPENDENCY_CONFLICT,
+            "The dependency change conflicts with the current Task graph.",
+        )
+
+
+class DependencyCycleError(ApplicationError):
+    """Report that a proposed dependency edge would create a cycle."""
+
+    def __init__(self) -> None:
+        """Initialize the fixed dependency-cycle failure."""
+        super().__init__(
+            ApplicationErrorCode.DEPENDENCY_CYCLE,
+            "The dependency change would create a cycle.",
+        )
+
+
+class UnsatisfiableDependencyError(ApplicationError):
+    """Report that a cancelled prerequisite prevents completion."""
+
+    def __init__(self) -> None:
+        """Initialize the fixed unsatisfiable-dependency failure."""
+        super().__init__(
+            ApplicationErrorCode.UNSATISFIABLE_DEPENDENCY,
+            "The Task has a cancelled prerequisite and cannot be completed.",
+        )
+
+
+class ResultInvalidError(ApplicationError):
+    """Report invalid structured Result input without echoing its content."""
+
+    def __init__(self) -> None:
+        """Initialize the fixed invalid-Result failure."""
+        super().__init__(
+            ApplicationErrorCode.RESULT_INVALID,
+            "The submitted Result is invalid.",
         )
 
 

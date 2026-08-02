@@ -6,13 +6,13 @@ from typing import TYPE_CHECKING
 
 from workaholic.application.commands import CreateTaskInput, TaskCreationMutation
 from workaholic.application.errors import ApplicationError, ApplicationErrorCode
-from workaholic.domain import Task
+from workaholic.domain import Task, TaskState
 
 if TYPE_CHECKING:
     from workaholic.application.ports import (
         Clock,
         IdentifierFactory,
-        TaskRepository,
+        TaskCreationRepository,
     )
 
 
@@ -21,7 +21,7 @@ class TaskApplication:
 
     def __init__(
         self,
-        repository: TaskRepository,
+        repository: TaskCreationRepository,
         clock: Clock,
         identifiers: IdentifierFactory,
     ) -> None:
@@ -74,6 +74,10 @@ class TaskApplication:
                 title=candidate_command.title,
                 objective=candidate_command.objective,
                 priority=candidate_command.priority,
+                available_at=candidate_command.available_at,
+                approval=candidate_command.approval,
+                acceptance=candidate_command.acceptance,
+                context=candidate_command.context,
                 idempotency_key=candidate_command.idempotency_key,
             )
         except (TypeError, ValueError) as error:
@@ -81,13 +85,49 @@ class TaskApplication:
                 ApplicationErrorCode.INTERNAL_ERROR,
                 "Task creation dependencies returned invalid values.",
             ) from error
-        result = self._repository.create_task(mutation)
-        if not isinstance(result, Task):
+        result: object = self._repository.create_task(mutation)
+        if not isinstance(result, Task) or not _is_matching_initial_task(
+            result,
+            mutation=mutation,
+        ):
             raise ApplicationError(
                 ApplicationErrorCode.INTERNAL_ERROR,
                 "Task persistence returned an invalid result.",
             )
         return result
+
+
+def _is_matching_initial_task(task: Task, *, mutation: TaskCreationMutation) -> bool:
+    """Return whether a persisted Task matches creation or replay semantics.
+
+    Generated identities and timestamps may differ on idempotent replay, so this
+    check binds only semantic caller input and invariant initial Task state.
+
+    Args:
+        task: Candidate repository result.
+        mutation: Validated creation mutation sent to persistence.
+
+    Returns:
+        Whether the result is a valid initial snapshot for the mutation.
+
+    """
+    return (
+        task.project_id == mutation.project_id
+        and task.created_by == mutation.actor_subject_id
+        and task.title == mutation.title
+        and task.objective == mutation.objective
+        and task.priority == mutation.priority
+        and task.available_at == mutation.available_at
+        and task.approval is mutation.approval
+        and task.acceptance == mutation.acceptance
+        and task.context == mutation.context
+        and task.state is TaskState.OPEN
+        and task.version == 1
+        and task.depends_on == ()
+        and task.blocking_reason is None
+        and task.current_result_id is None
+        and task.created_at == task.updated_at
+    )
 
 
 def _require_callable(value: object, member_name: str, label: str) -> None:

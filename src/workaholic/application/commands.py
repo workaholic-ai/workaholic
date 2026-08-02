@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from datetime import datetime  # noqa: TC003
+from enum import StrEnum
+from typing import cast
 
 from pydantic import (
     BaseModel,
@@ -14,14 +16,28 @@ from pydantic import (
 )
 
 from workaholic.domain import (
+    ACCEPTANCE_CRITERIA_MAX_ITEMS,
+    ACCEPTANCE_CRITERION_TEXT_MAX_LENGTH,
+    CONTEXT_REFERENCES_MAX_ITEMS,
     DEFAULT_TASK_PRIORITY,
+    RESULT_COLLECTION_MAX_ITEMS,
+    RESULT_TEXT_MAX_LENGTH,
+    AcceptanceCriterion,
+    ApprovalRequirement,
+    ArtifactReference,
+    ContextReference,
+    CriterionOutcome,
+    CriterionStatus,
     DomainValidationError,
     InstanceId,
     ProjectId,
+    ProposedFollowUp,
     RequestId,
+    ResultId,
     SubjectId,
     TaskEventId,
     TaskId,
+    normalize_bounded_printable_text,
     normalize_project_name,
     normalize_task_objective,
     normalize_task_title,
@@ -242,6 +258,10 @@ class CreateTaskInput(_CommandModel):
     title: str
     objective: str = ""
     priority: int = DEFAULT_TASK_PRIORITY
+    available_at: datetime | None = None
+    approval: ApprovalRequirement = ApprovalRequirement.NONE
+    acceptance: tuple[AcceptanceCriterion, ...] = ()
+    context: tuple[ContextReference, ...] = ()
     idempotency_key: str | None = None
 
     @model_validator(mode="before")
@@ -304,6 +324,76 @@ class CreateTaskInput(_CommandModel):
 
         """
         return validate_task_priority(value)
+
+    @field_validator("available_at", mode="before")
+    @classmethod
+    def _validate_available_at(cls, value: object) -> datetime | None:
+        """Validate optional UTC availability without datetime coercion.
+
+        Args:
+            value: Candidate availability timestamp or ``None``.
+
+        Returns:
+            The validated UTC timestamp or ``None``.
+
+        """
+        if value is None:
+            return None
+        return validate_utc_timestamp(value, label="Task creation available_at")
+
+    @field_validator("approval", mode="before")
+    @classmethod
+    def _validate_approval(cls, value: object) -> ApprovalRequirement:
+        """Validate the exact Task approval requirement.
+
+        Args:
+            value: Candidate approval enum or serialized value.
+
+        Returns:
+            The typed approval requirement.
+
+        """
+        return _validate_required_approval(value)
+
+    @field_validator("acceptance", mode="before")
+    @classmethod
+    def _validate_acceptance(
+        cls,
+        value: object,
+    ) -> tuple[AcceptanceCriterion, ...]:
+        """Validate the complete ordered acceptance definition.
+
+        Args:
+            value: Candidate acceptance-criterion collection.
+
+        Returns:
+            The immutable validated criterion collection.
+
+        """
+        return cast(
+            "tuple[AcceptanceCriterion, ...]",
+            _validate_acceptance_collection(value, optional=False),
+        )
+
+    @field_validator("context", mode="before")
+    @classmethod
+    def _validate_context(
+        cls,
+        value: object,
+    ) -> tuple[ContextReference, ...]:
+        """Validate the complete ordered inert context definition.
+
+        Args:
+            value: Candidate context-reference collection.
+
+        Returns:
+            The immutable validated reference collection.
+
+        """
+        return cast(
+            "tuple[ContextReference, ...]",
+            _validate_context_collection(value, optional=False),
+        )
 
     @field_validator("idempotency_key", mode="before")
     @classmethod
@@ -623,6 +713,10 @@ class TaskCreationMutation(_CommandModel):
     title: str
     objective: str
     priority: int
+    available_at: datetime | None = None
+    approval: ApprovalRequirement = ApprovalRequirement.NONE
+    acceptance: tuple[AcceptanceCriterion, ...] = ()
+    context: tuple[ContextReference, ...] = ()
     idempotency_key: str | None = None
 
     @field_validator("occurred_at", mode="before")
@@ -681,6 +775,76 @@ class TaskCreationMutation(_CommandModel):
         """
         return validate_task_priority(value)
 
+    @field_validator("available_at", mode="before")
+    @classmethod
+    def _validate_available_at(cls, value: object) -> datetime | None:
+        """Validate optional persisted availability without coercion.
+
+        Args:
+            value: Candidate UTC availability timestamp or ``None``.
+
+        Returns:
+            The validated UTC timestamp or ``None``.
+
+        """
+        if value is None:
+            return None
+        return validate_utc_timestamp(value, label="Task creation available_at")
+
+    @field_validator("approval", mode="before")
+    @classmethod
+    def _validate_approval(cls, value: object) -> ApprovalRequirement:
+        """Validate the exact persisted approval requirement.
+
+        Args:
+            value: Candidate approval enum or serialized value.
+
+        Returns:
+            The typed approval requirement.
+
+        """
+        return _validate_required_approval(value)
+
+    @field_validator("acceptance", mode="before")
+    @classmethod
+    def _validate_acceptance(
+        cls,
+        value: object,
+    ) -> tuple[AcceptanceCriterion, ...]:
+        """Validate the complete ordered acceptance definition.
+
+        Args:
+            value: Candidate acceptance-criterion collection.
+
+        Returns:
+            The immutable validated criterion collection.
+
+        """
+        return cast(
+            "tuple[AcceptanceCriterion, ...]",
+            _validate_acceptance_collection(value, optional=False),
+        )
+
+    @field_validator("context", mode="before")
+    @classmethod
+    def _validate_context(
+        cls,
+        value: object,
+    ) -> tuple[ContextReference, ...]:
+        """Validate the complete ordered inert context definition.
+
+        Args:
+            value: Candidate context-reference collection.
+
+        Returns:
+            The immutable validated reference collection.
+
+        """
+        return cast(
+            "tuple[ContextReference, ...]",
+            _validate_context_collection(value, optional=False),
+        )
+
     @field_validator("idempotency_key", mode="before")
     @classmethod
     def _validate_idempotency_key(cls, value: object) -> str | None:
@@ -699,6 +863,771 @@ class TaskCreationMutation(_CommandModel):
             maximum=_IDEMPOTENCY_KEY_MAX_LENGTH,
             optional=True,
         )
+
+
+class TaskListView(StrEnum):
+    """Persisted or derived Task collection views available in Phase 3."""
+
+    ALL = "all"
+    READY = "ready"
+    SCHEDULED = "scheduled"
+    BLOCKED = "blocked"
+    REVIEW = "review"
+    DONE = "done"
+    CANCELLED = "cancelled"
+
+
+class TaskUpdatePatch(_CommandModel):
+    """Closed nonempty patch containing only editable Task definition fields."""
+
+    title: str | None = None
+    objective: str | None = None
+    priority: int | None = None
+    available_at: datetime | None = None
+    approval: ApprovalRequirement | None = None
+    acceptance: tuple[AcceptanceCriterion, ...] | None = None
+    context: tuple[ContextReference, ...] | None = None
+
+    @field_validator("title", mode="before")
+    @classmethod
+    def _validate_title(cls, value: object) -> str | None:
+        """Normalize an optional Task title patch.
+
+        Args:
+            value: Candidate title or omitted default.
+
+        Returns:
+            The normalized title or ``None``.
+
+        """
+        return None if value is None else normalize_task_title(value)
+
+    @field_validator("objective", mode="before")
+    @classmethod
+    def _validate_objective(cls, value: object) -> str | None:
+        """Normalize an optional Task objective patch.
+
+        Args:
+            value: Candidate objective or omitted default.
+
+        Returns:
+            The normalized objective or ``None``.
+
+        """
+        return None if value is None else normalize_task_objective(value)
+
+    @field_validator("priority", mode="before")
+    @classmethod
+    def _validate_priority(cls, value: object) -> int | None:
+        """Validate an optional Task priority patch.
+
+        Args:
+            value: Candidate priority or omitted default.
+
+        Returns:
+            The validated priority or ``None``.
+
+        """
+        return None if value is None else validate_task_priority(value)
+
+    @field_validator("available_at", mode="before")
+    @classmethod
+    def _validate_available_at(cls, value: object) -> datetime | None:
+        """Validate an optional UTC availability value or explicit clear.
+
+        Args:
+            value: Candidate timestamp or ``None``.
+
+        Returns:
+            The validated timestamp or ``None``.
+
+        """
+        if value is None:
+            return None
+        return validate_utc_timestamp(value, label="Task update available_at")
+
+    @field_validator("approval", mode="before")
+    @classmethod
+    def _validate_approval(cls, value: object) -> ApprovalRequirement | None:
+        """Validate an optional Task approval patch.
+
+        Args:
+            value: Candidate approval value or omitted default.
+
+        Returns:
+            The typed approval requirement or ``None``.
+
+        """
+        return _validate_optional_approval(value)
+
+    @field_validator("acceptance", mode="before")
+    @classmethod
+    def _validate_acceptance(
+        cls,
+        value: object,
+    ) -> tuple[AcceptanceCriterion, ...] | None:
+        """Validate an optional complete acceptance replacement.
+
+        Args:
+            value: Candidate structured collection or omitted default.
+
+        Returns:
+            The immutable acceptance collection or ``None``.
+
+        """
+        return _validate_acceptance_collection(value, optional=True)
+
+    @field_validator("context", mode="before")
+    @classmethod
+    def _validate_context(
+        cls,
+        value: object,
+    ) -> tuple[ContextReference, ...] | None:
+        """Validate an optional complete context replacement.
+
+        Args:
+            value: Candidate structured collection or omitted default.
+
+        Returns:
+            The immutable context collection or ``None``.
+
+        """
+        return _validate_context_collection(value, optional=True)
+
+    @model_validator(mode="after")
+    def _validate_nonempty_patch(self) -> TaskUpdatePatch:
+        """Reject empty patches and nulls outside availability clearing.
+
+        Returns:
+            The validated nonempty patch.
+
+        Raises:
+            ValueError: If no field was supplied or a nonnullable field is null.
+
+        """
+        supplied = self.model_fields_set
+        if not supplied:
+            message = "Task update patch must contain at least one editable field."
+            raise ValueError(message)
+        invalid_nulls = {
+            name
+            for name in supplied
+            if name != "available_at" and getattr(self, name) is None
+        }
+        if invalid_nulls:
+            message = "Only Task update available_at may be explicitly null."
+            raise ValueError(message)
+        return self
+
+
+class TaskResultInput(_CommandModel):
+    """Closed caller-controlled structured Result content without identities."""
+
+    summary: str | None = None
+    criteria: tuple[CriterionOutcome, ...] = ()
+    artifacts: tuple[ArtifactReference, ...] = ()
+    proposed_follow_ups: tuple[ProposedFollowUp, ...] = ()
+
+    @field_validator("summary", mode="before")
+    @classmethod
+    def _validate_summary(cls, value: object) -> str | None:
+        """Normalize an optional Result summary.
+
+        Args:
+            value: Candidate summary or ``None``.
+
+        Returns:
+            The normalized summary or ``None``.
+
+        """
+        return _validate_optional_result_text(value, label="Result summary")
+
+    @field_validator("criteria", mode="before")
+    @classmethod
+    def _validate_criteria(cls, value: object) -> tuple[CriterionOutcome, ...]:
+        """Validate the ordered criterion-outcome collection.
+
+        Args:
+            value: Candidate structured collection.
+
+        Returns:
+            Immutable criterion outcomes.
+
+        """
+        return _validate_criterion_outcomes(value)
+
+    @field_validator("artifacts", mode="before")
+    @classmethod
+    def _validate_artifacts(cls, value: object) -> tuple[ArtifactReference, ...]:
+        """Validate the ordered artifact-reference collection.
+
+        Args:
+            value: Candidate structured collection.
+
+        Returns:
+            Immutable artifact references.
+
+        """
+        return _validate_artifact_references(value)
+
+    @field_validator("proposed_follow_ups", mode="before")
+    @classmethod
+    def _validate_follow_ups(cls, value: object) -> tuple[ProposedFollowUp, ...]:
+        """Validate the ordered inert follow-up collection.
+
+        Args:
+            value: Candidate structured collection.
+
+        Returns:
+            Immutable proposed follow-ups.
+
+        """
+        return _validate_proposed_follow_ups(value)
+
+
+class _VersionedTaskInput(_CommandModel):
+    """Shared validated Human intent for one existing-Task mutation."""
+
+    project_id: ProjectId
+    subject_id: SubjectId
+    task: TaskId | str
+    expected_version: int
+    idempotency_key: str | None = None
+
+    @field_validator("task", mode="before")
+    @classmethod
+    def _validate_task(cls, value: object) -> TaskId | str:
+        """Validate a canonical or Human Task selector.
+
+        Args:
+            value: Candidate Task selector.
+
+        Returns:
+            A typed canonical identity or validated Human key.
+
+        """
+        return _validate_task_selector(value)
+
+    @field_validator("expected_version", mode="before")
+    @classmethod
+    def _validate_expected_version(cls, value: object) -> int:
+        """Require an explicit positive optimistic version.
+
+        Args:
+            value: Candidate version.
+
+        Returns:
+            The validated positive integer.
+
+        """
+        return _validate_positive_version(value)
+
+    @field_validator("idempotency_key", mode="before")
+    @classmethod
+    def _validate_idempotency_key(cls, value: object) -> str | None:
+        """Validate an optional mutation replay key.
+
+        Args:
+            value: Candidate idempotency key.
+
+        Returns:
+            The validated key or ``None``.
+
+        """
+        return _validate_opaque_token(
+            value,
+            label="Idempotency key",
+            maximum=_IDEMPOTENCY_KEY_MAX_LENGTH,
+            optional=True,
+        )
+
+
+class UpdateTaskInput(_VersionedTaskInput):
+    """Human intent to conditionally update Task definition fields."""
+
+    patch: TaskUpdatePatch
+
+
+class BlockTaskInput(_VersionedTaskInput):
+    """Human intent to move an open Task to blocked."""
+
+    reason: str
+
+    @field_validator("reason", mode="before")
+    @classmethod
+    def _validate_reason(cls, value: object) -> str:
+        """Normalize the required blocking reason.
+
+        Args:
+            value: Candidate reason.
+
+        Returns:
+            The normalized bounded reason.
+
+        """
+        return _validate_required_reason(value, label="Task blocking reason")
+
+
+class UnblockTaskInput(_VersionedTaskInput):
+    """Human intent to return a blocked Task to open."""
+
+
+class CancelTaskInput(_VersionedTaskInput):
+    """Human intent to cancel a mutable Task with an optional reason."""
+
+    reason: str | None = None
+
+    @field_validator("reason", mode="before")
+    @classmethod
+    def _validate_reason(cls, value: object) -> str | None:
+        """Normalize an optional cancellation reason.
+
+        Args:
+            value: Candidate reason or ``None``.
+
+        Returns:
+            The normalized reason or ``None``.
+
+        """
+        return _validate_optional_reason(value, label="Task cancellation reason")
+
+
+class AddTaskDependencyInput(_VersionedTaskInput):
+    """Human intent to add one Task prerequisite."""
+
+    prerequisite: TaskId | str
+
+    @field_validator("prerequisite", mode="before")
+    @classmethod
+    def _validate_prerequisite(cls, value: object) -> TaskId | str:
+        """Validate the prerequisite Task selector.
+
+        Args:
+            value: Candidate prerequisite selector.
+
+        Returns:
+            A typed canonical identity or validated Human key.
+
+        """
+        return _validate_task_selector(value)
+
+
+class RemoveTaskDependencyInput(AddTaskDependencyInput):
+    """Human intent to remove one existing Task prerequisite."""
+
+
+class SubmitHumanResultInput(_VersionedTaskInput):
+    """Human intent to submit manual work without an Agent Attempt."""
+
+    comment: str | None = None
+    result: TaskResultInput = Field(default_factory=TaskResultInput)
+
+    @field_validator("comment", mode="before")
+    @classmethod
+    def _validate_comment(cls, value: object) -> str | None:
+        """Normalize an optional Human submission comment.
+
+        Args:
+            value: Candidate comment or ``None``.
+
+        Returns:
+            The normalized comment or ``None``.
+
+        """
+        return _validate_optional_result_text(value, label="Result comment")
+
+
+class ApproveResultInput(_VersionedTaskInput):
+    """Human intent to approve the Task's current pending Result."""
+
+    comment: str | None = None
+
+    @field_validator("comment", mode="before")
+    @classmethod
+    def _validate_comment(cls, value: object) -> str | None:
+        """Normalize an optional approval comment.
+
+        Args:
+            value: Candidate comment or ``None``.
+
+        Returns:
+            The normalized comment or ``None``.
+
+        """
+        return _validate_optional_result_text(value, label="Review comment")
+
+
+class RejectResultInput(_VersionedTaskInput):
+    """Human intent to reject the Task's current pending Result."""
+
+    reason: str
+
+    @field_validator("reason", mode="before")
+    @classmethod
+    def _validate_reason(cls, value: object) -> str:
+        """Normalize the required rejection reason.
+
+        Args:
+            value: Candidate reason.
+
+        Returns:
+            The normalized bounded reason.
+
+        """
+        return _validate_required_reason(value, label="Review rejection reason")
+
+
+class GetTaskDetails(_CommandModel):
+    """Read complete Phase 3 Task details by scoped selector."""
+
+    project_id: ProjectId
+    subject_id: SubjectId
+    task: TaskId | str
+
+    @field_validator("task", mode="before")
+    @classmethod
+    def _validate_task(cls, value: object) -> TaskId | str:
+        """Validate the detail-query Task selector.
+
+        Args:
+            value: Candidate Task selector.
+
+        Returns:
+            A typed canonical identity or validated Human key.
+
+        """
+        return _validate_task_selector(value)
+
+
+class ListTasksByView(_CommandModel):
+    """Read one view-bound page in either Project or Instance scope."""
+
+    profile: str = "local"
+    subject_id: SubjectId
+    project_id: ProjectId | None = None
+    instance_id: InstanceId | None = None
+    view: TaskListView = TaskListView.ALL
+    cursor: str | None = None
+    limit: int = Field(default=_DEFAULT_PAGE_SIZE, ge=1, le=_MAX_PAGE_SIZE)
+
+    @field_validator("profile", mode="before")
+    @classmethod
+    def _validate_profile(cls, value: object) -> str:
+        """Validate the trusted profile bound into pagination.
+
+        Args:
+            value: Candidate profile name.
+
+        Returns:
+            The validated profile name.
+
+        """
+        return validate_profile_name(value)
+
+    @field_validator("view", mode="before")
+    @classmethod
+    def _validate_view(cls, value: object) -> TaskListView:
+        """Validate the exact Task list view.
+
+        Args:
+            value: Candidate view enum or string.
+
+        Returns:
+            The typed view.
+
+        Raises:
+            ValueError: If the view is unsupported.
+
+        """
+        if isinstance(value, TaskListView):
+            return value
+        if not isinstance(value, str):
+            message = "Task list view must be a supported string."
+            raise ValueError(message)  # noqa: TRY004 - Pydantic wraps ValueError.
+        return TaskListView(value)
+
+    @field_validator("cursor", mode="before")
+    @classmethod
+    def _validate_cursor(cls, value: object) -> str | None:
+        """Validate an optional view-bound opaque cursor.
+
+        Args:
+            value: Candidate cursor.
+
+        Returns:
+            The validated cursor or ``None``.
+
+        """
+        return _validate_opaque_token(
+            value,
+            label="Cursor",
+            maximum=_CURSOR_MAX_LENGTH,
+            optional=True,
+        )
+
+    @model_validator(mode="after")
+    def _validate_scope(self) -> ListTasksByView:
+        """Require exactly one Project or Instance selection scope.
+
+        Returns:
+            The validated view query.
+
+        Raises:
+            ValueError: If both or neither scopes are present.
+
+        """
+        if (self.project_id is None) == (self.instance_id is None):
+            message = "Task view query requires exactly one Project or Instance scope."
+            raise ValueError(message)
+        return self
+
+
+class ReadTaskEvents(_CommandModel):
+    """Read one bounded TaskEvent snapshot after an Instance cursor."""
+
+    project_id: ProjectId
+    subject_id: SubjectId
+    task: TaskId | str
+    after: int = Field(default=0, ge=0)
+    limit: int = Field(default=_DEFAULT_PAGE_SIZE, ge=1, le=_MAX_PAGE_SIZE)
+
+    @field_validator("task", mode="before")
+    @classmethod
+    def _validate_task(cls, value: object) -> TaskId | str:
+        """Validate the event-query Task selector.
+
+        Args:
+            value: Candidate Task selector.
+
+        Returns:
+            A typed canonical identity or validated Human key.
+
+        """
+        return _validate_task_selector(value)
+
+
+class _ExistingTaskMutation(_CommandModel):
+    """Shared repository input for an attributable optimistic mutation."""
+
+    task_uid: TaskId
+    project_id: ProjectId
+    actor_subject_id: SubjectId
+    request_id: RequestId
+    occurred_at: datetime
+    expected_version: int
+    idempotency_key: str | None = None
+
+    @field_validator("occurred_at", mode="before")
+    @classmethod
+    def _validate_occurred_at(cls, value: object) -> datetime:
+        """Require one authoritative UTC mutation timestamp.
+
+        Args:
+            value: Candidate timestamp.
+
+        Returns:
+            The validated UTC datetime.
+
+        """
+        return validate_utc_timestamp(value, label="Task mutation occurred_at")
+
+    @field_validator("expected_version", mode="before")
+    @classmethod
+    def _validate_expected_version(cls, value: object) -> int:
+        """Require the exact positive optimistic precondition.
+
+        Args:
+            value: Candidate expected version.
+
+        Returns:
+            The validated positive version.
+
+        """
+        return _validate_positive_version(value)
+
+    @field_validator("idempotency_key", mode="before")
+    @classmethod
+    def _validate_idempotency_key(cls, value: object) -> str | None:
+        """Validate an optional mutation replay key.
+
+        Args:
+            value: Candidate idempotency key.
+
+        Returns:
+            The validated key or ``None``.
+
+        """
+        return _validate_opaque_token(
+            value,
+            label="Idempotency key",
+            maximum=_IDEMPOTENCY_KEY_MAX_LENGTH,
+            optional=True,
+        )
+
+
+class TaskUpdateMutation(_ExistingTaskMutation):
+    """Atomically apply one Task definition patch at an expected version."""
+
+    event_id: TaskEventId
+    patch: TaskUpdatePatch
+
+
+class TaskBlockMutation(_ExistingTaskMutation):
+    """Atomically block one open Task at an expected version."""
+
+    event_id: TaskEventId
+    reason: str
+
+    @field_validator("reason", mode="before")
+    @classmethod
+    def _validate_reason(cls, value: object) -> str:
+        """Normalize the required blocking reason.
+
+        Args:
+            value: Candidate reason.
+
+        Returns:
+            The normalized bounded reason.
+
+        """
+        return _validate_required_reason(value, label="Task blocking reason")
+
+
+class TaskUnblockMutation(_ExistingTaskMutation):
+    """Atomically unblock one Task at an expected version."""
+
+    event_id: TaskEventId
+
+
+class TaskCancelMutation(_ExistingTaskMutation):
+    """Atomically cancel one mutable Task at an expected version."""
+
+    event_id: TaskEventId
+    reason: str | None = None
+
+    @field_validator("reason", mode="before")
+    @classmethod
+    def _validate_reason(cls, value: object) -> str | None:
+        """Normalize an optional cancellation reason.
+
+        Args:
+            value: Candidate reason or ``None``.
+
+        Returns:
+            The normalized reason or ``None``.
+
+        """
+        return _validate_optional_reason(value, label="Task cancellation reason")
+
+
+class AddTaskDependencyMutation(_ExistingTaskMutation):
+    """Atomically add one same-Project prerequisite edge."""
+
+    event_id: TaskEventId
+    prerequisite_uid: TaskId
+
+
+class RemoveTaskDependencyMutation(AddTaskDependencyMutation):
+    """Atomically remove one existing prerequisite edge."""
+
+
+class SubmitHumanResultMutation(_ExistingTaskMutation):
+    """Atomically submit a Human Result without an Agent Attempt."""
+
+    result_id: ResultId
+    result_submitted_event_id: TaskEventId
+    task_completed_event_id: TaskEventId | None = None
+    comment: str | None = None
+    result: TaskResultInput = Field(default_factory=TaskResultInput)
+
+    @field_validator("comment", mode="before")
+    @classmethod
+    def _validate_comment(cls, value: object) -> str | None:
+        """Normalize an optional Human submission comment.
+
+        Args:
+            value: Candidate comment or ``None``.
+
+        Returns:
+            The normalized comment or ``None``.
+
+        """
+        return _validate_optional_result_text(value, label="Result comment")
+
+    @model_validator(mode="after")
+    def _validate_distinct_event_ids(self) -> SubmitHumanResultMutation:
+        """Require distinct submitted and optional completion events.
+
+        Returns:
+            The validated submission mutation.
+
+        Raises:
+            ValueError: If one event identity is reused.
+
+        """
+        if self.task_completed_event_id == self.result_submitted_event_id:
+            message = "Result submission event identities must be distinct."
+            raise ValueError(message)
+        return self
+
+
+class ApproveResultMutation(_ExistingTaskMutation):
+    """Atomically approve and complete the current pending Result."""
+
+    review_approved_event_id: TaskEventId
+    task_completed_event_id: TaskEventId
+    comment: str | None = None
+
+    @field_validator("comment", mode="before")
+    @classmethod
+    def _validate_comment(cls, value: object) -> str | None:
+        """Normalize an optional approval comment.
+
+        Args:
+            value: Candidate comment or ``None``.
+
+        Returns:
+            The normalized comment or ``None``.
+
+        """
+        return _validate_optional_result_text(value, label="Review comment")
+
+    @model_validator(mode="after")
+    def _validate_distinct_event_ids(self) -> ApproveResultMutation:
+        """Require separate review and completion event identities.
+
+        Returns:
+            The validated approval mutation.
+
+        Raises:
+            ValueError: If one event identity is reused.
+
+        """
+        if self.review_approved_event_id == self.task_completed_event_id:
+            message = "Approval event identities must be distinct."
+            raise ValueError(message)
+        return self
+
+
+class RejectResultMutation(_ExistingTaskMutation):
+    """Atomically reject and deselect the current pending Result."""
+
+    review_rejected_event_id: TaskEventId
+    reason: str
+
+    @field_validator("reason", mode="before")
+    @classmethod
+    def _validate_reason(cls, value: object) -> str:
+        """Normalize the required rejection reason.
+
+        Args:
+            value: Candidate reason.
+
+        Returns:
+            The normalized bounded reason.
+
+        """
+        return _validate_required_reason(value, label="Review rejection reason")
 
 
 def _validate_opaque_token(
@@ -735,3 +1664,391 @@ def _validate_opaque_token(
         message = f"{label} must not contain whitespace or control characters."
         raise ValueError(message)
     return value
+
+
+def _validate_positive_version(value: object) -> int:
+    """Validate an optimistic Task version without boolean coercion.
+
+    Args:
+        value: Candidate expected version.
+
+    Returns:
+        A strictly positive integer.
+
+    Raises:
+        DomainValidationError: If the value is not a positive integer.
+
+    """
+    if type(value) is not int or value < 1:
+        message = "Expected version must be a positive integer."
+        raise DomainValidationError(message)
+    return value
+
+
+def _validate_task_selector(value: object) -> TaskId | str:
+    """Validate and disambiguate a canonical Task ID or Human key.
+
+    Args:
+        value: Candidate selector.
+
+    Returns:
+        A typed TaskId or validated stable key.
+
+    Raises:
+        ValueError: If the selector is malformed or ambiguous.
+
+    """
+    if isinstance(value, TaskId):
+        return value
+    if not isinstance(value, str) or len(value) > _TASK_SELECTOR_MAX_LENGTH:
+        message = "Task selector must be a supported Task UID or human key."
+        raise ValueError(message)
+    if value.startswith("tsk_"):
+        return TaskId(value)
+    _, separator, number_text = value.rpartition("-")
+    if separator != "-" or not number_text.isascii() or not number_text.isdecimal():
+        message = "Task selector must be a supported Task UID or human key."
+        raise ValueError(message)
+    return validate_task_key(value, task_number=int(number_text))
+
+
+def _validate_optional_approval(value: object) -> ApprovalRequirement | None:
+    """Validate an optional approval enum or exact serialized value.
+
+    Args:
+        value: Candidate approval or ``None``.
+
+    Returns:
+        The typed approval requirement or ``None``.
+
+    Raises:
+        ValueError: If the serialized value is unsupported.
+
+    """
+    if value is None or isinstance(value, ApprovalRequirement):
+        return value
+    if not isinstance(value, str):
+        message = "Task approval must be none or human."
+        raise ValueError(message)  # noqa: TRY004 - Pydantic wraps ValueError.
+    return ApprovalRequirement(value)
+
+
+def _validate_required_approval(value: object) -> ApprovalRequirement:
+    """Validate one non-null approval requirement.
+
+    Args:
+        value: Candidate approval enum or exact serialized value.
+
+    Returns:
+        The typed approval requirement.
+
+    Raises:
+        ValueError: If the value is null or unsupported.
+
+    """
+    validated = _validate_optional_approval(value)
+    if validated is None:
+        message = "Task approval must be none or human."
+        raise ValueError(message)
+    return validated
+
+
+def _validate_required_reason(value: object, *, label: str) -> str:
+    """Normalize one required Phase 3 reason.
+
+    Args:
+        value: Candidate reason.
+        label: Human-readable field label.
+
+    Returns:
+        The normalized bounded reason.
+
+    """
+    return normalize_bounded_printable_text(
+        value,
+        label=label,
+        maximum=ACCEPTANCE_CRITERION_TEXT_MAX_LENGTH,
+    )
+
+
+def _validate_optional_reason(value: object, *, label: str) -> str | None:
+    """Normalize one optional Phase 3 reason.
+
+    Args:
+        value: Candidate reason or ``None``.
+        label: Human-readable field label.
+
+    Returns:
+        The normalized bounded reason or ``None``.
+
+    """
+    if value is None:
+        return None
+    return _validate_required_reason(value, label=label)
+
+
+def _validate_optional_result_text(value: object, *, label: str) -> str | None:
+    """Normalize one optional bounded printable Result text field.
+
+    Args:
+        value: Candidate text or ``None``.
+        label: Human-readable field label.
+
+    Returns:
+        The normalized text or ``None``.
+
+    """
+    if value is None:
+        return None
+    return normalize_bounded_printable_text(
+        value,
+        label=label,
+        maximum=RESULT_TEXT_MAX_LENGTH,
+    )
+
+
+def _validate_structured_sequence(
+    value: object,
+    *,
+    label: str,
+    maximum: int,
+) -> tuple[object, ...]:
+    """Defensively copy a bounded ordered structured-input collection.
+
+    Args:
+        value: Candidate collection.
+        label: Human-readable field label.
+        maximum: Inclusive item-count bound.
+
+    Returns:
+        An immutable shallow copy for item-specific validation.
+
+    Raises:
+        ValueError: If the value is not ordered or exceeds its bound.
+
+    """
+    if not isinstance(value, Sequence) or isinstance(value, (str, bytes, bytearray)):
+        message = f"{label} must be an ordered collection."
+        raise ValueError(message)  # noqa: TRY004 - Pydantic wraps ValueError.
+    copied = tuple(value)
+    if len(copied) > maximum:
+        message = f"{label} must not contain more than {maximum} items."
+        raise ValueError(message)
+    return copied
+
+
+def _validate_acceptance_collection(
+    value: object,
+    *,
+    optional: bool,
+) -> tuple[AcceptanceCriterion, ...] | None:
+    """Validate closed structured acceptance-criterion input.
+
+    Args:
+        value: Candidate collection or ``None``.
+        optional: Whether ``None`` represents an omitted patch field.
+
+    Returns:
+        Immutable criteria or ``None``.
+
+    Raises:
+        ValueError: If a collection entry has an open or invalid shape.
+
+    """
+    if value is None:
+        if optional:
+            return None
+        message = "Task acceptance must be an ordered collection."
+        raise ValueError(message)
+    values = _validate_structured_sequence(
+        value,
+        label="Task acceptance",
+        maximum=ACCEPTANCE_CRITERIA_MAX_ITEMS,
+    )
+    criteria: list[AcceptanceCriterion] = []
+    for item in values:
+        if isinstance(item, AcceptanceCriterion):
+            criterion = item
+        elif isinstance(item, Mapping) and set(item) == {"id", "text", "required"}:
+            criterion = AcceptanceCriterion(
+                id=item["id"],
+                text=item["text"],
+                required=item["required"],
+            )
+        else:
+            message = "Task acceptance entries must use the closed criterion shape."
+            raise ValueError(message)
+        criteria.append(criterion)
+    if len({criterion.id for criterion in criteria}) != len(criteria):
+        message = "Task acceptance criterion IDs must be unique."
+        raise ValueError(message)
+    return tuple(criteria)
+
+
+def _validate_context_collection(
+    value: object,
+    *,
+    optional: bool,
+) -> tuple[ContextReference, ...] | None:
+    """Validate closed structured context-reference input.
+
+    Args:
+        value: Candidate collection or ``None``.
+        optional: Whether ``None`` represents an omitted patch field.
+
+    Returns:
+        Immutable context references or ``None``.
+
+    Raises:
+        ValueError: If a collection entry has an open or invalid shape.
+
+    """
+    if value is None:
+        if optional:
+            return None
+        message = "Task context must be an ordered collection."
+        raise ValueError(message)
+    values = _validate_structured_sequence(
+        value,
+        label="Task context",
+        maximum=CONTEXT_REFERENCES_MAX_ITEMS,
+    )
+    references: list[ContextReference] = []
+    for item in values:
+        if isinstance(item, ContextReference):
+            reference = item
+        elif (
+            isinstance(item, Mapping)
+            and "uri" in item
+            and set(item) <= {"uri", "version"}
+        ):
+            reference = ContextReference(
+                uri=item["uri"],
+                version=item.get("version"),
+            )
+        else:
+            message = "Task context entries must use the closed reference shape."
+            raise ValueError(message)
+        references.append(reference)
+    if len({(item.uri, item.version) for item in references}) != len(references):
+        message = "Task context references must be unique by URI and version."
+        raise ValueError(message)
+    return tuple(references)
+
+
+def _validate_criterion_outcomes(value: object) -> tuple[CriterionOutcome, ...]:
+    """Validate closed structured Result criterion outcomes.
+
+    Args:
+        value: Candidate outcome collection.
+
+    Returns:
+        Immutable criterion outcomes.
+
+    Raises:
+        ValueError: If an entry is open, malformed, or duplicated.
+
+    """
+    values = _validate_structured_sequence(
+        value,
+        label="Result criteria",
+        maximum=RESULT_COLLECTION_MAX_ITEMS,
+    )
+    outcomes: list[CriterionOutcome] = []
+    for item in values:
+        if isinstance(item, CriterionOutcome):
+            outcome = item
+        elif (
+            isinstance(item, Mapping)
+            and {"criterion_id", "status"} <= set(item)
+            and set(item) <= {"criterion_id", "status", "evidence"}
+        ):
+            status = item["status"]
+            if not isinstance(status, CriterionStatus):
+                if not isinstance(status, str):
+                    message = "Result criterion status must be a supported string."
+                    raise ValueError(message)  # noqa: TRY004 - Pydantic boundary.
+                status = CriterionStatus(status)
+            outcome = CriterionOutcome(
+                criterion_id=item["criterion_id"],
+                status=status,
+                evidence=item.get("evidence"),
+            )
+        else:
+            message = "Result criteria entries must use the closed outcome shape."
+            raise ValueError(message)
+        outcomes.append(outcome)
+    if len({item.criterion_id for item in outcomes}) != len(outcomes):
+        message = "Result criterion outcomes must have unique criterion IDs."
+        raise ValueError(message)
+    return tuple(outcomes)
+
+
+def _validate_artifact_references(value: object) -> tuple[ArtifactReference, ...]:
+    """Validate closed structured Result artifact references.
+
+    Args:
+        value: Candidate artifact collection.
+
+    Returns:
+        Immutable artifact references.
+
+    Raises:
+        ValueError: If an entry has an open or malformed shape.
+
+    """
+    values = _validate_structured_sequence(
+        value,
+        label="Result artifacts",
+        maximum=RESULT_COLLECTION_MAX_ITEMS,
+    )
+    artifacts: list[ArtifactReference] = []
+    for item in values:
+        if isinstance(item, ArtifactReference):
+            artifact = item
+        elif (
+            isinstance(item, Mapping)
+            and "uri" in item
+            and set(item) <= {"uri", "media_type", "sha256"}
+        ):
+            artifact = ArtifactReference(
+                uri=item["uri"],
+                media_type=item.get("media_type"),
+                sha256=item.get("sha256"),
+            )
+        else:
+            message = "Result artifacts entries must use the closed reference shape."
+            raise ValueError(message)
+        artifacts.append(artifact)
+    return tuple(artifacts)
+
+
+def _validate_proposed_follow_ups(value: object) -> tuple[ProposedFollowUp, ...]:
+    """Validate closed structured inert follow-up input.
+
+    Args:
+        value: Candidate follow-up collection.
+
+    Returns:
+        Immutable proposed follow-ups.
+
+    Raises:
+        ValueError: If an entry has an open or malformed shape.
+
+    """
+    values = _validate_structured_sequence(
+        value,
+        label="Result proposed_follow_ups",
+        maximum=RESULT_COLLECTION_MAX_ITEMS,
+    )
+    follow_ups: list[ProposedFollowUp] = []
+    for item in values:
+        if isinstance(item, ProposedFollowUp):
+            follow_up = item
+        elif isinstance(item, Mapping) and set(item) == {"title"}:
+            follow_up = ProposedFollowUp(title=item["title"])
+        else:
+            message = "Result proposed_follow_ups entries must use the closed shape."
+            raise ValueError(message)
+        follow_ups.append(follow_up)
+    return tuple(follow_ups)

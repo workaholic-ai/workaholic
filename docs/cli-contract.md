@@ -1,6 +1,6 @@
 # Workaholic AI CLI Automation Contract
 
-- Status: Accepted v1 contract with Phase 2 implementation
+- Status: Accepted v1 contract through Phase 3 with Phase 3 implementation
 - Decision date: 2026-07-29
 - Contract family: `workaholic.cli/v1`
 - Public surface: Documented JSON output of the `workaholic` executable
@@ -8,17 +8,20 @@
 ## Current implementation notice
 
 This document specifies the accepted v1 automation contract through its Phase 8
-freeze. The current `0.2.0a1` development package implements the versioned
-envelopes and all nine Phase 2 commands through an injected Session boundary.
+freeze. The current `0.3.0a1` development package implements the versioned
+envelopes and all 19 Phase 3 operations through an injected Session boundary.
 Its default executable composes the embedded `LocalSession`, trusted local
-profiles, canonical upward Workspace discovery, and SQLite schema version `2`.
-No compatibility guarantee applies before `1.0.0`.
+profiles, canonical upward Workspace discovery, and SQLite schema version `3`.
+It includes existing-Task mutations, dependencies, readiness views, Human
+Results and review, and TaskEvent history. No compatibility guarantee applies
+before `1.0.0`.
 
-The alpha does not run Agents, issue Tokens, use remote profiles or
-credentials, use `RemoteSession`, start a server, update Tasks, archive
+The alpha does not run Agents, create Attempts or Leases, issue Tokens, use
+remote profiles or credentials, use `RemoteSession`, start a server, archive
 Projects, migrate schemas, or select JSON or PostgreSQL adapters. Those later
 command contracts remain normative roadmap requirements, not current
-implementation claims.
+implementation claims. Phase 3 Human Results always carry a null Attempt
+identity, and proposed follow-ups never create Tasks automatically.
 
 ## Normative language
 
@@ -218,6 +221,32 @@ local Workspace context, not domain state, and is naturally idempotent for an
 equivalent binding. It does not accept an idempotency key. A different binding
 requires explicit `--replace` and still must pass hostile-file validation.
 
+## Optimistic existing-Task mutations
+
+Every documented mutation of an existing Task accepts:
+
+```text
+--expected-version INTEGER
+```
+
+The positive integer is required by the Session, application, and persistence
+operation. The `--expected-version` option is therefore mandatory for
+automation. JSON mode, `--non-interactive`, and an invocation whose stdin is not
+a terminal require the explicit CLI option. Omission returns `INVALID_INPUT`
+before any mutation or structured-input side effect.
+
+In default Human-readable mode with terminal stdin, omission enables one
+convenience read. The CLI displays the selected Task key, current stored state,
+current version, and intended semantic action, then asks for confirmation once.
+Acceptance submits that exact version. Declining exits zero after a
+Human-readable `No changes made.` message and performs no mutation. Supplying
+the option skips the convenience read and prompt.
+
+A `VERSION_CONFLICT` is rendered as returned. The CLI, LocalSession, and future
+RemoteSession must not fetch a new version and silently retry. One successful
+semantic mutation increments the Task version once, including submission or
+approval operations that append two TaskEvents.
+
 ## Structured input
 
 Commands with large or nested payloads must accept a documented file input.
@@ -240,6 +269,14 @@ is clearer, but they obey the same rules.
 - Inputs are size-bounded and invalid or oversized payloads return structured
   errors without partial writes.
 - Credentials are not accepted in task or Result input payloads.
+
+Phase 3 JSON documents are at most 1,048,576 bytes before decoding, at most 16
+containers deep, and contain at most 128 members in an object or 500 items in a
+generic array. Field-specific limits below may be narrower. A UTF-8 byte-order
+mark, duplicate object key, non-finite number, trailing data, unknown field, or
+top-level value other than an object is invalid. Reading a file never follows a
+directory and never executes, expands, fetches, or resolves a value from its
+contents.
 
 ## Identity, context, and security
 
@@ -825,6 +862,393 @@ The command-specific additions are:
 | `task list` | `PROFILE_NOT_FOUND`, `PROFILE_INVALID`, `PROFILE_UNSUPPORTED`, `CONTEXT_NOT_FOUND`, `CONTEXT_INVALID`, `NOT_INITIALIZED`, `PROJECT_NOT_FOUND` |
 | `task show` | `PROFILE_NOT_FOUND`, `PROFILE_INVALID`, `PROFILE_UNSUPPORTED`, `CONTEXT_NOT_FOUND`, `CONTEXT_INVALID`, `NOT_INITIALIZED`, `PROJECT_NOT_FOUND`, `TASK_NOT_FOUND` |
 
+## Phase 3 command contract
+
+Phase 3 adds Human-operated Task lifecycle and audit behavior to the embedded
+Session. This section is the implemented normative contract for `0.3.0a1`.
+Every command retains `--json`, `--non-interactive`, and optional
+`--project KEY` where one selected Project is required.
+
+### Shared Phase 3 Task object
+
+Phase 3 Task serialization retains every Phase 2 field and adds the complete
+definition and derived view:
+
+```json
+{
+  "uid": "tsk_01...",
+  "project_id": "prj_01...",
+  "number": 42,
+  "key": "ACME-42",
+  "title": "Analyze cancellation reasons",
+  "objective": "Identify the three most actionable causes.",
+  "state": "open",
+  "priority": 70,
+  "available_at": null,
+  "approval": "human",
+  "acceptance": [
+    {
+      "id": "ac_categories",
+      "text": "At least 80% of records are categorized.",
+      "required": true
+    }
+  ],
+  "context": [
+    {
+      "uri": "workspace://repo/data/cancellations.csv",
+      "version": "git:8f31c12"
+    }
+  ],
+  "depends_on": ["tsk_00..."],
+  "blocking_reason": null,
+  "current_result_id": null,
+  "version": 4,
+  "created_by": "sub_01...",
+  "created_at": "2026-07-29T09:00:00Z",
+  "updated_at": "2026-07-29T09:20:00Z",
+  "views": {
+    "ready": true,
+    "running": false,
+    "scheduled": false,
+    "stale": false,
+    "awaiting_review": false
+  },
+  "readiness_reasons": []
+}
+```
+
+All fields are required; nullable fields are explicit JSON `null`. Acceptance,
+context, dependencies, and readiness reasons are arrays even when empty.
+Dependencies order by stable Task key. Readiness reasons are stable enum
+strings and order by `state`, `availability`, then prerequisite Task key.
+
+Acceptance contains at most 100 entries. An ID matches
+`ac_[A-Za-z0-9][A-Za-z0-9_-]{0,63}`, is unique within the Task, and never
+changes meaning through reordering. Text contains 1 through 1,000 printable
+Unicode characters after trimming. `required` is a real boolean.
+
+Context contains at most 100 entries. `uri` contains 1 through 2,048 trimmed
+printable characters and is treated as an inert reference. `version` is JSON
+`null` or 1 through 256 trimmed printable characters. Duplicate `(uri,
+version)` pairs are invalid. Workaholic does not open, fetch, or execute a
+context URI.
+
+Approval is exactly `none` or `human`. Phase 3 running and stale views are
+always false because Attempts do not yet exist.
+
+### Phase 3 Task definition input
+
+`task add --input-file` accepts this closed object, with every field optional:
+
+```json
+{
+  "objective": "Identify actionable causes.",
+  "priority": 70,
+  "available_at": "2026-08-02T09:00:00Z",
+  "approval": "human",
+  "acceptance": [],
+  "context": []
+}
+```
+
+`task update --input-file` accepts the same object plus optional `title`.
+At least one update field is required. JSON `null` is accepted only for
+`available_at`, where it clears scheduling. Acceptance and context replace the
+complete ordered set; an empty array intentionally clears it.
+
+Inline and file values may be combined only when they name disjoint fields.
+Supplying the same field from both sources returns `INVALID_INPUT`. Unknown
+fields and identity, state, dependency, blocking, Result, version, actor,
+request, event, Attempt, timestamp, or cursor fields are invalid.
+
+### `workaholic task add` in Phase 3
+
+```text
+workaholic task add TITLE [--objective TEXT] [--priority INTEGER]
+  [--available-at TIMESTAMP] [--approval none|human]
+  [--input-file PATH|-] [--project KEY] [--idempotency-key KEY]
+  [--json] [--non-interactive]
+```
+
+Creation remains version `1`, state `open`, and has no dependencies, blocking
+reason, or current Result. Omitted availability is null; approval defaults to
+`none`; acceptance and context default to empty arrays. Success remains:
+
+```json
+{"task": {}}
+```
+
+where `task` is the complete shared Phase 3 Task object. The title remains a
+required positional argument and cannot appear in the add input file.
+
+### `workaholic task update`
+
+```text
+workaholic task update TASK
+  [--title TEXT] [--objective TEXT] [--priority INTEGER]
+  [--available-at TIMESTAMP | --clear-available-at]
+  [--approval none|human] [--input-file PATH|-]
+  [--expected-version INTEGER] [--idempotency-key KEY]
+  [--project KEY] [--json] [--non-interactive]
+```
+
+Update is allowed only in `open` or `blocked`. It changes only the documented
+definition fields and appends one `task_updated` event. It never accepts or
+changes stored state, dependency edges, blocking reason, Result, identity,
+version directly, or attribution. A no-op or empty update returns
+`INVALID_INPUT`. Success data is:
+
+```json
+{
+  "task": {},
+  "events": [{}]
+}
+```
+
+The Task and TaskEvent use their complete shared objects.
+
+### Stored-state commands
+
+```text
+workaholic task block TASK --reason TEXT
+  [--expected-version INTEGER] [--idempotency-key KEY]
+  [--project KEY] [--json] [--non-interactive]
+workaholic task unblock TASK
+  [--expected-version INTEGER] [--idempotency-key KEY]
+  [--project KEY] [--json] [--non-interactive]
+workaholic task cancel TASK [--reason TEXT]
+  [--expected-version INTEGER] [--idempotency-key KEY]
+  [--project KEY] [--json] [--non-interactive]
+```
+
+Block permits `open -> blocked` and requires 1 through 1,000 printable Unicode
+reason characters after trimming. Unblock permits `blocked -> open` and clears
+the reason. Cancel permits `open|blocked|review -> cancelled`; its reason is
+null or 1 through 1,000 characters. `done` and `cancelled` are terminal.
+
+Each command increments the Task version once, appends exactly its corresponding
+`task_blocked`, `task_unblocked`, or `task_cancelled` event, and returns the
+same `task` plus `events` object used by update.
+
+### Dependencies and readiness views
+
+```text
+workaholic task add-dependency TASK PREREQUISITE
+  [--expected-version INTEGER] [--idempotency-key KEY]
+  [--project KEY] [--json] [--non-interactive]
+workaholic task remove-dependency TASK PREREQUISITE
+  [--expected-version INTEGER] [--idempotency-key KEY]
+  [--project KEY] [--json] [--non-interactive]
+workaholic task list [--project KEY | --all-projects]
+  [--view all|ready|scheduled|blocked|review|done|cancelled]
+  [--cursor CURSOR] [--limit INTEGER] [--json] [--non-interactive]
+```
+
+Dependency mutations are allowed only for a dependant Task in `open` or
+`blocked`. Both Tasks must exist in the same-Project scope. Self edges, duplicate
+additions, absent removals, and cycles are conflicts. Success versions only the
+dependant, appends one `task_updated`, and returns `task` plus `events`.
+
+A prerequisite is satisfied only by `done`. A cancelled prerequisite leaves
+the dependant unchanged: a prerequisite state transition does not mutate
+dependant Tasks. It adds `UNSATISFIABLE_DEPENDENCY` to readiness reasons until
+the graph changes. Human submission requires all prerequisites done; future
+availability does not prohibit deliberate Human submission.
+
+View defaults to `all`, which retains Phase 2 ordering. `ready` orders priority
+descending, availability ascending with null first, then Task number; an
+all-Project page inserts Project key before Task number as the final tie-breaker.
+Other views order by Task number, or `(Project key, Task number)` across
+Projects. `review` corresponds to the derived `awaiting_review` view.
+
+Phase 3 Task cursors begin with `v3.` and bind the Phase 2 profile, Instance,
+Subject, Project/selection scope plus view name and exact view ordering
+position. Cross-view reuse returns `INVALID_INPUT` without mutation.
+
+### Shared Phase 3 Result object
+
+A Phase 3 Result is:
+
+```json
+{
+  "id": "res_01...",
+  "task_uid": "tsk_01...",
+  "submitted_by": "sub_01...",
+  "attempt_id": null,
+  "submitted_at": "2026-08-01T12:00:00Z",
+  "comment": "Implemented manually.",
+  "summary": "The three causes are categorized.",
+  "criteria": [
+    {
+      "criterion_id": "ac_categories",
+      "status": "passed",
+      "evidence": "86.5% categorized"
+    }
+  ],
+  "artifacts": [
+    {
+      "uri": "workspace://repo/report.md",
+      "media_type": "text/markdown",
+      "sha256": null
+    }
+  ],
+  "proposed_follow_ups": [
+    {"title": "Validate against support tickets"}
+  ],
+  "review": {
+    "status": "pending",
+    "reviewed_by": null,
+    "reviewed_at": null,
+    "comment": null,
+    "reason": null
+  }
+}
+```
+
+Every field is required and nullable fields use JSON `null`. Human Phase 3
+Results always have null `attempt_id`. `comment`, `summary`, criterion evidence,
+review comment, and review reason are null or bounded printable strings.
+Criterion status is `passed`, `failed`, or `not_applicable` and IDs must match
+the Task's acceptance set. Arrays contain at most 100 entries each.
+
+Artifact URI follows the context URI contract. Media type is null or a valid
+lowercase type/subtype token of at most 127 ASCII characters. SHA-256 is null
+or exactly 64 lowercase hexadecimal characters. Artifact contents are never
+read or stored. Proposed follow-up titles follow Task-title validation but do
+not create Tasks, dependencies, or hierarchy.
+
+Review status is `not_required`, `pending`, `approved`, or `rejected`.
+Reviewer identity and timestamp are non-null only after approval or rejection;
+comment is for approval and reason is for rejection.
+
+### Submission and review commands
+
+```text
+workaholic task submit TASK [--comment TEXT] [--result-file PATH|-]
+  [--expected-version INTEGER] [--idempotency-key KEY]
+  [--project KEY] [--json] [--non-interactive]
+workaholic task approve TASK [--comment TEXT]
+  [--expected-version INTEGER] [--idempotency-key KEY]
+  [--project KEY] [--json] [--non-interactive]
+workaholic task reject TASK --reason TEXT
+  [--expected-version INTEGER] [--idempotency-key KEY]
+  [--project KEY] [--json] [--non-interactive]
+```
+
+Submit is a Human operation in Phase 3 and does not accept `--attempt`.
+Comment and Result file are independently optional; submitting neither is a
+valid manual completion. The Result file is a closed object containing optional
+`summary`, `criteria`, `artifacts`, and `proposed_follow_ups` fields. It cannot
+supply the CLI comment or any Result, Task, actor, Attempt, review, request,
+event, timestamp, or cursor identity.
+
+Submit requires `open` with satisfied dependencies. Approval `none` changes
+the Task to `done`, sets review status `not_required`, and appends
+`result_submitted` then `task_completed`. Approval `human` changes it to
+`review`, sets status `pending`, and appends `result_submitted`.
+
+Approve requires `review`, changes it to `done`, and appends
+`review_approved` then `task_completed`. Reject requires `review`, retains the
+Result with status `rejected`, clears the Task's current Result selection,
+changes it to `open`, and appends `review_rejected`. Each command increments the
+Task version once regardless of event count.
+
+Success data is:
+
+```json
+{
+  "task": {},
+  "result": {},
+  "events": [{}]
+}
+```
+
+### Shared Phase 3 TaskEvent object
+
+```json
+{
+  "id": "evt_01...",
+  "cursor": 17,
+  "task_uid": "tsk_01...",
+  "project_id": "prj_01...",
+  "actor_subject_id": "sub_01...",
+  "actor_kind": "human",
+  "attempt_id": null,
+  "request_id": "req_01...",
+  "type": "task_updated",
+  "occurred_at": "2026-08-01T12:00:00Z",
+  "payload": {}
+}
+```
+
+All fields are required. Phase 3 actor kind is `human` and Attempt is null.
+The event type is one of `task_created`, `task_updated`, `task_blocked`,
+`task_unblocked`, `result_submitted`, `review_approved`, `review_rejected`,
+`task_completed`, or `task_cancelled`. Payload is a bounded closed object for
+that event type and never contains credentials or artifact contents.
+
+### `workaholic task events`
+
+```text
+workaholic task events TASK [--after INTEGER] [--limit INTEGER] [--follow]
+  [--project KEY] [--json] [--non-interactive]
+```
+
+`after` is an optional nonnegative Instance cursor and is exclusive. It
+defaults to `0`. Limit defaults to `100` and ranges from 1 through 500. A
+snapshot success is:
+
+```json
+{
+  "events": [],
+  "next_cursor": 0
+}
+```
+
+Events order by cursor ascending. `next_cursor` is the greatest returned cursor
+or the supplied `after` value for an empty page. Clients poll by passing it as
+the next `after` value.
+
+`--follow` is a Human-readable polling convenience. It emits each new event
+once until interrupted and resumes from the greatest cursor. It cannot be
+combined with `--json` or `--non-interactive`; automation uses bounded snapshot
+polling. Normal interruption exits zero and does not mutate state.
+
+### Phase 3 errors and exits
+
+Phase 3 adds these exact safe errors. They expose no current value, input
+payload, URI, path, SQL, or raw exception.
+
+| Error code | Exit | Retryable | Exact message |
+| --- | ---: | :---: | --- |
+| `VERSION_CONFLICT` | 4 | false | `The Task changed after the expected version.` |
+| `INVALID_TRANSITION` | 4 | false | `The Task cannot perform the requested lifecycle transition.` |
+| `DEPENDENCY_CONFLICT` | 4 | false | `The dependency change conflicts with the current Task graph.` |
+| `DEPENDENCY_CYCLE` | 4 | false | `The dependency change would create a cycle.` |
+| `UNSATISFIABLE_DEPENDENCY` | 4 | false | `The Task has a cancelled prerequisite and cannot be completed.` |
+| `RESULT_INVALID` | 2 | false | `The submitted Result is invalid.` |
+
+`INVALID_INPUT` covers missing explicit expected version in JSON,
+non-interactive, or non-terminal operation; malformed structured input;
+ambiguous file/inline fields; empty update; invalid bounds; unsupported
+`--follow` combinations; and raw state input.
+
+The command-specific additions are:
+
+| Command | Additional Phase 3 errors |
+| --- | --- |
+| `task update` | `VERSION_CONFLICT`, `INVALID_TRANSITION`, `IDEMPOTENCY_CONFLICT` |
+| `task block`, `task unblock`, `task cancel` | `VERSION_CONFLICT`, `INVALID_TRANSITION`, `IDEMPOTENCY_CONFLICT` |
+| `task add-dependency`, `task remove-dependency` | `VERSION_CONFLICT`, `INVALID_TRANSITION`, `DEPENDENCY_CONFLICT`, `DEPENDENCY_CYCLE`, `IDEMPOTENCY_CONFLICT` |
+| `task submit` | `VERSION_CONFLICT`, `INVALID_TRANSITION`, `UNSATISFIABLE_DEPENDENCY`, `RESULT_INVALID`, `IDEMPOTENCY_CONFLICT` |
+| `task approve`, `task reject` | `VERSION_CONFLICT`, `INVALID_TRANSITION`, `RESULT_INVALID`, `IDEMPOTENCY_CONFLICT` |
+| `task list`, `task show`, `task events` | no mutation errors; retain selection, input, permission, storage, schema, and missing-Task errors |
+
+Phase 3 embedded commands require exact SQLite schema version `3`. A version
+`2` store returns `SCHEMA_UNSUPPORTED` unchanged. Agent identities, Attempts,
+Leases, claims, heartbeat, progress, release, `--attempt`, Tokens, remote
+profiles, and servers are not Phase 3 command surfaces.
+
 ## Conformance requirements
 
 Contract tests must verify at least:
@@ -845,6 +1269,7 @@ Contract tests must verify at least:
 ## Related decisions and documents
 
 - [ADR 0003: CLI JSON as the Public Automation Contract](adr/0003-cli-json-automation-contract.md)
+- [ADR 0011: Phase 3 Task Mutation and Human Submission](adr/0011-phase-three-task-mutation-and-human-submission.md)
 - [ADR 0002: Local and Remote Sessions](adr/0002-local-and-remote-sessions.md)
 - [ADR 0004: Private Versioned Client/Server Protocol](adr/0004-private-versioned-client-server-protocol.md)
 - [Compatibility policy](compatibility-policy.md)

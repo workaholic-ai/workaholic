@@ -143,7 +143,7 @@ required_fields = {
     "uid", "project_id", "number", "key", "title", "objective", "state",
     "priority", "version", "created_by", "created_at", "updated_at",
 }
-require(set(task) == required_fields, "invalid Task shape")
+require(required_fields <= set(task), "missing required Phase 1 Task fields")
 require(task["project_id"] == up["data"]["project"]["id"], "Task Project changed")
 require(task["created_by"] == up["data"]["subject"]["id"], "Task attribution changed")
 require(task["number"] == 1 and task["key"] == "ACME-1", "Task allocation changed")
@@ -185,11 +185,36 @@ created = json.loads(sys.argv[1])["data"]["task"]
 listed = json.loads(sys.argv[2])
 shown_key = json.loads(sys.argv[3])
 shown_uid = json.loads(sys.argv[4])
+
+
+def require_persisted_fields(payload: object, message: str) -> None:
+    """Require every original Phase 1 field in an enriched detail response.
+
+    Args:
+        payload: Decoded task-show envelope.
+        message: Safe failure detail.
+
+    Raises:
+        SystemExit: If a Phase 1 field is absent or changed.
+
+    """
+    if not isinstance(payload, dict):
+        raise SystemExit(message)
+    data = payload.get("data")
+    if not isinstance(data, dict):
+        raise SystemExit(message)
+    actual = data.get("task")
+    if not isinstance(actual, dict):
+        raise SystemExit(message)
+    if any(actual.get(field) != value for field, value in created.items()):
+        raise SystemExit(message)
+
+
 require(set(listed) == {"schema", "ok", "data"}, "invalid list envelope")
 require(listed["ok"] is True, "failed list")
 require(listed["data"] == {"tasks": [created], "next_cursor": None}, "Task did not persist")
-require(shown_key["data"] == {"task": created}, "key lookup changed the Task")
-require(shown_uid["data"] == {"task": created}, "UID lookup changed the Task")
+require_persisted_fields(shown_key, "key lookup changed the Task")
+require_persisted_fields(shown_uid, "UID lookup changed the Task")
 ' \
   "$phase_one_created_output" \
   "$phase_one_listed_output" \

@@ -8,16 +8,24 @@ from workaholic.application.commands import (
     GetLocalStatus,
     GetProjectByKey,
     GetTask,
+    GetTaskDetails,
     ListInstanceTasks,
     ListProjects,
     ListTasks,
+    ListTasksByView,
+    ReadTaskEvents,
 )
 from workaholic.application.errors import (
     ApplicationError,
     ApplicationErrorCode,
     InvalidInputError,
 )
-from workaholic.application.results import StatusResult, TaskPage
+from workaholic.application.results import (
+    StatusResult,
+    TaskDetails,
+    TaskEventPage,
+    TaskPage,
+)
 from workaholic.domain import Project, Task, TaskId
 
 if TYPE_CHECKING:
@@ -44,6 +52,9 @@ class QueryApplication:
             "list_tasks",
             "list_tasks_for_instance",
             "get_task",
+            "get_task_details",
+            "list_tasks_by_view",
+            "read_task_events_after",
         ):
             _require_callable(repository, method_name)
         self._repository = repository
@@ -205,6 +216,107 @@ class QueryApplication:
         )
         if result.project_id != candidate.project_id or not selector_matches:
             _raise_invalid_result("Task query")
+        return result
+
+    def get_task_details(self, command: GetTaskDetails) -> TaskDetails:
+        """Return complete Task details with authoritative derived readiness.
+
+        Args:
+            command: Validated Project-scoped detail query.
+
+        Returns:
+            Complete Task, prerequisites, current Result, and readiness.
+
+        Raises:
+            ApplicationError: If input or repository output violates its contract.
+
+        """
+        candidate: object = command
+        if not isinstance(candidate, GetTaskDetails):
+            raise InvalidInputError
+        result: object = self._repository.get_task_details(candidate)
+        if not isinstance(result, TaskDetails):
+            _raise_invalid_result("Task details")
+        selector_matches = (
+            result.task.uid == candidate.task
+            if isinstance(candidate.task, TaskId)
+            else result.task.key == candidate.task
+        )
+        if result.task.project_id != candidate.project_id or not selector_matches:
+            _raise_invalid_result("Task details")
+        return result
+
+    def list_tasks_by_view(self, command: ListTasksByView) -> TaskPage:
+        """Return one view-bound page with aligned readiness projections.
+
+        Args:
+            command: Validated view, scope, and pagination query.
+
+        Returns:
+            Deterministic Task page using a version-3 view cursor.
+
+        Raises:
+            ApplicationError: If input or repository output violates its contract.
+
+        """
+        candidate: object = command
+        if not isinstance(candidate, ListTasksByView):
+            raise InvalidInputError
+        result: object = self._repository.list_tasks_by_view(candidate)
+        if not isinstance(result, TaskPage):
+            _raise_invalid_result("Task view page")
+        if (
+            result.view is not candidate.view
+            or len(result.readiness) != len(result.tasks)
+            or (
+                candidate.project_id is not None
+                and any(
+                    task.project_id != candidate.project_id for task in result.tasks
+                )
+            )
+        ):
+            _raise_invalid_result("Task view page")
+        return result
+
+    def read_task_events_after(self, command: ReadTaskEvents) -> TaskEventPage:
+        """Return one polling-safe attributable TaskEvent snapshot.
+
+        Args:
+            command: Validated Task, Project, actor, cursor, and limit query.
+
+        Returns:
+            Events in strict Instance cursor order and next polling cursor.
+
+        Raises:
+            ApplicationError: If input or repository output violates its contract.
+
+        """
+        candidate: object = command
+        if not isinstance(candidate, ReadTaskEvents):
+            raise InvalidInputError
+        result: object = self._repository.read_task_events_after(candidate)
+        if not isinstance(result, TaskEventPage):
+            _raise_invalid_result("TaskEvent page")
+        if (
+            len(result.events) > candidate.limit
+            or (not result.events and result.next_cursor != candidate.after)
+            or (
+                result.events
+                and (
+                    result.events[0].cursor <= candidate.after
+                    or result.next_cursor <= candidate.after
+                )
+            )
+            or any(
+                event.project_id != candidate.project_id
+                or (
+                    isinstance(candidate.task, TaskId)
+                    and event.task_uid != candidate.task
+                )
+                for event in result.events
+            )
+        ):
+            _raise_invalid_result("TaskEvent page")
         return result
 
 

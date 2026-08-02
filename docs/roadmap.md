@@ -656,25 +656,68 @@ awaiting_review
 
 `running` and `stale` will become meaningful once attempts arrive in Phase 4.
 
+Phase 3 replaces the disposable Phase 2 SQLite store with exact schema version
+`3`. Version `2` is rejected unchanged. No migration, conversion, import,
+export, or automatic reset is added.
+
 ## Commands
 
-```bash
-workaholic task update ACME-1 --expected-version 3
-workaholic task block ACME-1 --reason missing-input
-workaholic task unblock ACME-1
-workaholic task add-dependency ACME-2 ACME-1
-workaholic task submit ACME-1 --result-file result.json
-workaholic task approve ACME-1
-workaholic task reject ACME-1 --reason "Evidence is incomplete"
-workaholic task cancel ACME-1
-workaholic task events ACME-1
+```text
+workaholic task add TITLE [--objective TEXT] [--priority INTEGER]
+  [--available-at TIMESTAMP] [--approval none|human]
+  [--input-file PATH|-] [--project KEY] [--idempotency-key KEY]
+workaholic task update TASK
+  [--title TEXT] [--objective TEXT] [--priority INTEGER]
+  [--available-at TIMESTAMP | --clear-available-at]
+  [--approval none|human] [--input-file PATH|-]
+  [--expected-version INTEGER] [--idempotency-key KEY]
+workaholic task block TASK --reason TEXT
+  [--expected-version INTEGER] [--idempotency-key KEY]
+workaholic task unblock TASK
+  [--expected-version INTEGER] [--idempotency-key KEY]
+workaholic task add-dependency TASK PREREQUISITE
+  [--expected-version INTEGER] [--idempotency-key KEY]
+workaholic task remove-dependency TASK PREREQUISITE
+  [--expected-version INTEGER] [--idempotency-key KEY]
+workaholic task submit TASK [--comment TEXT] [--result-file PATH|-]
+  [--expected-version INTEGER] [--idempotency-key KEY]
+workaholic task approve TASK [--comment TEXT]
+  [--expected-version INTEGER] [--idempotency-key KEY]
+workaholic task reject TASK --reason TEXT
+  [--expected-version INTEGER] [--idempotency-key KEY]
+workaholic task cancel TASK [--reason TEXT]
+  [--expected-version INTEGER] [--idempotency-key KEY]
+workaholic task events TASK [--after INTEGER] [--limit INTEGER] [--follow]
 ```
+
+All commands retain `--json`, `--non-interactive`, and optional explicit
+Project selection where applicable. `task list` adds view selection for `all`,
+`ready`, `scheduled`, `blocked`, `review`, `done`, and `cancelled`.
+
+Every mutation of an existing Task requires an optimistic expected version at
+the Session, application, and persistence boundaries. JSON, non-interactive,
+and non-terminal callers must supply `--expected-version`. A terminal Human
+may omit it: the CLI reads the current Task, displays its state and version,
+and asks once before submitting that exact version. A stale version returns
+`VERSION_CONFLICT` and is never refreshed and silently retried.
+
+Attempts remain an Agent-only Phase 4 construct. A Phase 3 Human submits
+directly; both `--comment` and `--result-file` are optional, and the persisted
+Result has `attempt_id = null`. Generic `task update` cannot set state or
+complete work.
+
+Dependencies are same-Project, unique, and acyclic. They are satisfied only by
+`done`; a cancelled prerequisite makes a dependant unsatisfiable until an
+operator removes or replaces the dependency. Proposed Result follow-ups are
+provenance data and never create Tasks automatically.
 
 ## Reliability features
 
 Introduce now:
 
 * task version increments and stale-update rejection;
+* one version increment per semantic mutation, even when multiple events are
+  appended;
 * request attribution for the additional lifecycle commands;
 * idempotency keys for the additional mutation commands;
 * additional append-only typed events beyond `task_created`;
@@ -699,6 +742,11 @@ task_completed
 task_cancelled
 ```
 
+No-approval Human submission appends `result_submitted` followed by
+`task_completed`. Approval appends `review_approved` followed by
+`task_completed`. Both are single semantic mutations and increment the Task
+version once.
+
 ## Testing
 
 Prioritize state-transition tests:
@@ -709,6 +757,9 @@ Prioritize state-transition tests:
 * cancelled dependencies make dependants unsatisfiable;
 * review is required when configured;
 * stale task versions are rejected;
+* non-interactive mutations without an expected version are rejected;
+* interactive conflicts are surfaced without automatic retry;
+* Human Results have no Attempt;
 * duplicate idempotency keys return the original result;
 * event ordering is stable;
 * invalid state transitions fail without partial writes.

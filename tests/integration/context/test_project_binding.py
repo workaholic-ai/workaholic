@@ -8,7 +8,6 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from workaholic import composition
 from workaholic.application import (
     ApplicationErrorCode,
     PermissionDeniedError,
@@ -16,6 +15,7 @@ from workaholic.application import (
     ProjectNotFoundError,
     WorkspaceBindingConflictError,
 )
+from workaholic.composition import create_local_session
 from workaholic.context import (
     CONTEXT_FILENAME,
     ContextInvalidError,
@@ -98,7 +98,7 @@ def test_composed_session_binds_existing_project_without_database_mutation(
     target.mkdir()
     (target / ".git").mkdir()
     data_directory = tmp_path / "data"
-    session = composition.create_local_session(
+    session = create_local_session(
         cwd=current,
         environment=_environment(data_directory),
     )
@@ -140,7 +140,7 @@ def test_composed_session_rejects_missing_project_keys(
     current.mkdir()
     target.mkdir()
     data_directory = tmp_path / "data"
-    session = composition.create_local_session(
+    session = create_local_session(
         cwd=current,
         environment=_environment(data_directory),
     )
@@ -161,7 +161,7 @@ def test_composed_session_revalidates_active_subject_before_binding(
     current.mkdir()
     target.mkdir()
     data_directory = tmp_path / "data"
-    session = composition.create_local_session(
+    session = create_local_session(
         cwd=current,
         environment=_environment(data_directory),
     )

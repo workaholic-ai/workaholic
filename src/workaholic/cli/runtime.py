@@ -19,6 +19,18 @@ _SESSION_OPERATIONS = (
     "create_task",
     "list_tasks",
     "get_task",
+    "update_task",
+    "block_task",
+    "unblock_task",
+    "cancel_task",
+    "add_task_dependency",
+    "remove_task_dependency",
+    "submit_human_result",
+    "approve_result",
+    "reject_result",
+    "get_task_details",
+    "list_tasks_by_view",
+    "read_task_events",
 )
 
 

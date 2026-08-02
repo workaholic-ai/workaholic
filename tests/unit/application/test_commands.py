@@ -31,6 +31,7 @@ from workaholic.application import (
     WorkaholicRepository,
 )
 from workaholic.domain import (
+    ApprovalRequirement,
     Instance,
     InstanceId,
     Project,
@@ -363,7 +364,47 @@ def test_create_task_defaults_and_normalizes_fields() -> None:
     assert command.title == "First task"
     assert command.objective == "First task"
     assert command.priority == 50
+    assert command.available_at is None
+    assert command.approval is ApprovalRequirement.NONE
+    assert command.acceptance == ()
+    assert command.context == ()
     assert explicit_none.objective == "First task"
+
+
+def test_create_task_accepts_closed_ordered_phase_three_definition() -> None:
+    """Task creation validates structured values and preserves caller order."""
+    command = CreateTaskInput.model_validate(
+        {
+            "project_id": ProjectId("prj_acme"),
+            "subject_id": SubjectId("sub_local"),
+            "title": "First task",
+            "available_at": _NOW,
+            "approval": "human",
+            "acceptance": [
+                {"id": "ac_first", "text": "First condition", "required": True},
+                {
+                    "id": "ac_second",
+                    "text": "Second condition",
+                    "required": False,
+                },
+            ],
+            "context": [
+                {"uri": "workspace://repo/README.md"},
+                {"uri": "https://example.test/spec", "version": "v2"},
+            ],
+        }
+    )
+
+    assert command.available_at == _NOW
+    assert command.approval is ApprovalRequirement.HUMAN
+    assert tuple(item.id for item in command.acceptance) == (
+        "ac_first",
+        "ac_second",
+    )
+    assert tuple((item.uri, item.version) for item in command.context) == (
+        ("workspace://repo/README.md", None),
+        ("https://example.test/spec", "v2"),
+    )
 
 
 def test_create_task_rejects_non_mapping_model_input() -> None:
@@ -383,6 +424,30 @@ def test_create_task_rejects_non_mapping_model_input() -> None:
         ("priority", 101),
         ("priority", True),
         ("priority", "50"),
+        ("available_at", _NOW.replace(tzinfo=None)),
+        ("available_at", "2026-07-30T12:00:00Z"),
+        ("approval", None),
+        ("approval", "agent"),
+        (
+            "acceptance",
+            [
+                {"id": "ac_same", "text": "First", "required": True},
+                {"id": "ac_same", "text": "Second", "required": True},
+            ],
+        ),
+        (
+            "acceptance",
+            [{"id": "ac_open", "text": "Condition", "required": True, "x": 1}],
+        ),
+        ("acceptance", None),
+        (
+            "context",
+            [
+                {"uri": "workspace://repo/spec", "version": None},
+                {"uri": "workspace://repo/spec", "version": None},
+            ],
+        ),
+        ("context", None),
         ("idempotency_key", "bad key"),
     ],
 )
@@ -572,6 +637,10 @@ def test_task_creation_mutation_normalizes_and_validates_fields() -> None:
     assert mutation.title == "First task"
     assert mutation.objective == "Complete it."
     assert mutation.priority == 100
+    assert mutation.available_at is None
+    assert mutation.approval is ApprovalRequirement.NONE
+    assert mutation.acceptance == ()
+    assert mutation.context == ()
     with pytest.raises(ValidationError):
         TaskCreationMutation.model_validate(
             {
@@ -602,7 +671,9 @@ def test_result_models_validate_consistent_bootstrap_and_status() -> None:
     assert bootstrap.workspace.project_id == bootstrap.project.id
     assert status.mode == "embedded"
     assert status.profile == "local"
-    assert status.schema_version == 2
+    assert status.schema_version == 3
+    with pytest.raises(ValidationError):
+        StatusResult.model_validate({**status.model_dump(), "schema_version": 2})
 
 
 def test_phase_two_results_validate_creation_and_safe_context() -> None:
@@ -622,8 +693,10 @@ def test_phase_two_results_validate_creation_and_safe_context() -> None:
 
     assert creation.project is project
     assert context.mode == "embedded"
-    assert context.schema_version == 2
+    assert context.schema_version == 3
     assert context.profile == "team_1"
+    with pytest.raises(ValidationError):
+        ContextResult.model_validate({**context.model_dump(), "schema_version": 2})
     with pytest.raises(ValidationError, match="grant"):
         ProjectCreationResult(
             project=project,
@@ -777,18 +850,30 @@ def test_application_modules_import_only_owned_and_declared_boundaries() -> None
         assert imported_roots <= sys.stdlib_module_names | {"pydantic", "workaholic"}
 
 
-def test_cumulative_repository_port_declares_phase_two_semantics() -> None:
+def test_cumulative_repository_port_declares_phase_three_semantics() -> None:
     """Adapters receive one explicit cumulative semantic operation surface."""
     methods = {
+        "add_task_dependency",
+        "approve_result",
+        "block_task",
         "bootstrap_local_project",
+        "cancel_task",
         "create_project",
         "create_task",
         "get_local_status",
         "get_project_by_key",
         "list_projects",
         "list_tasks",
+        "get_task_details",
         "list_tasks_for_instance",
+        "list_tasks_by_view",
         "get_task",
+        "read_task_events_after",
+        "reject_result",
+        "remove_task_dependency",
+        "submit_human_result",
+        "unblock_task",
+        "update_task_if_version",
     }
 
     assert all(

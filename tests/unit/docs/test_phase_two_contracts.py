@@ -274,21 +274,21 @@ def test_phase_two_explicitly_defers_remote_and_credential_capabilities() -> Non
     assert "Phase 2 does not accept a URL, credential, Token" in context_adr
 
 
-def test_readme_is_scoped_to_verified_phase_two_behavior() -> None:
-    """Expose the multi-Project alpha without claiming deferred capabilities."""
+def test_phase_two_behavior_remains_in_the_verified_phase_three_surface() -> None:
+    """Retain the Phase 2 profile and Project foundation in the current alpha."""
     readme = _read_normalized(_README)
     current_cli = _section(
         _README,
         "## Current CLI",
-        "## Phase 2 boundaries",
+        "## Phase 3 boundaries",
     )
     boundaries = _section(
         _README,
-        "## Phase 2 boundaries",
+        "## Phase 3 boundaries",
         "## Planned for v1 (not implemented)",
     )
 
-    assert "It exposes the nine Phase 2 Project, context, and Task operations" in readme
+    assert "It exposes 19 Project, context, and Task operations" in readme
     for command in (
         "workaholic context",
         "workaholic project create",
@@ -304,10 +304,11 @@ def test_readme_is_scoped_to_verified_phase_two_behavior() -> None:
         'mode = "embedded"',
     ):
         assert selector in readme
+    assert "schema version `3`" in readme
     assert "schema version `2`" in readme
-    assert "schema version `1`" in readme
-    assert "There is no automatic migration, conversion, import, export, or reset" in (
-        readme
+    assert (
+        "There is no migration, conversion, import, export, or automatic reset"
+        in readme
     )
 
     assert "It does not implement:" in boundaries
@@ -318,13 +319,12 @@ def test_readme_is_scoped_to_verified_phase_two_behavior() -> None:
         "JSON or PostgreSQL persistence adapters",
         "schema migration",
         "Project archival",
-        "Task updates",
     ):
         assert unavailable in boundaries
     for unsupported_command in (
         "workaholic login",
         "workaholic server",
-        "workaholic task update",
         "workaholic project archive",
     ):
         assert unsupported_command not in current_cli
+    assert "workaholic task update" in current_cli

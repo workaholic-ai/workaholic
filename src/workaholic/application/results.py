@@ -2,21 +2,44 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+from datetime import datetime  # noqa: TC003
 from pathlib import Path  # noqa: TC003
 from typing import Literal, Self
 
-from pydantic import BaseModel, ConfigDict, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    field_serializer,
+    field_validator,
+    model_validator,
+)
 
+from workaholic.application.commands import TaskListView
 from workaholic.domain import (
     DomainValidationError,
     Instance,
+    JsonValue,
     Project,
     ProjectGrant,
+    ProjectId,
     ProjectRole,
+    RequestId,
+    ResultReviewStatus,
     Subject,
+    SubjectId,
     SubjectKind,
     Task,
+    TaskEvent,
+    TaskEventId,
+    TaskEventType,
+    TaskId,
+    TaskReadiness,
+    TaskResult,
+    TaskState,
     WorkspaceBinding,
+    ready_task_ordering_key,
     validate_profile_name,
 )
 
@@ -76,7 +99,7 @@ class StatusResult(_ResultModel):
 
     mode: Literal["embedded"] = "embedded"
     profile: str = "local"
-    schema_version: Literal[2] = 2
+    schema_version: Literal[3] = 3
     instance: Instance
     project: Project
     subject: Subject
@@ -147,7 +170,7 @@ class ContextResult(_ResultModel):
 
     mode: Literal["embedded"] = "embedded"
     profile: str
-    schema_version: Literal[2] = 2
+    schema_version: Literal[3] = 3
     instance: Instance
     project: Project
     subject: Subject
@@ -207,11 +230,288 @@ class ContextResult(_ResultModel):
         return self
 
 
+class TaskDetails(_ResultModel):
+    """Complete Task, readiness, prerequisites, and selected Result details."""
+
+    task: Task
+    readiness: TaskReadiness
+    prerequisites: tuple[Task, ...]
+    current_result: TaskResult | None
+
+    @model_validator(mode="after")
+    def _validate_consistency(self) -> TaskDetails:
+        """Validate detail relationships and deterministic prerequisite order.
+
+        Returns:
+            The internally consistent Task details.
+
+        Raises:
+            ValueError: If Task, prerequisite, or Result identities disagree.
+
+        """
+        prerequisite_ids = tuple(item.uid for item in self.prerequisites)
+        if prerequisite_ids != tuple(
+            item.uid for item in sorted(self.prerequisites, key=lambda item: item.key)
+        ):
+            message = "Task details prerequisites must be ordered by stable Task key."
+            raise ValueError(message)
+        if set(prerequisite_ids) != set(self.task.depends_on):
+            message = "Task details prerequisites must exactly match Task depends_on."
+            raise ValueError(message)
+        if any(item.project_id != self.task.project_id for item in self.prerequisites):
+            message = "Task details prerequisites must belong to the Task Project."
+            raise ValueError(message)
+        if self.task.current_result_id is None:
+            if self.current_result is not None:
+                message = "Task details must not select a Result absent from the Task."
+                raise ValueError(message)
+        elif (
+            self.current_result is None
+            or self.current_result.id != self.task.current_result_id
+            or self.current_result.task_uid != self.task.uid
+        ):
+            message = "Task details current Result must match the Task selection."
+            raise ValueError(message)
+        return self
+
+
+class TaskMutationResult(_ResultModel):
+    """Committed Task and its single attributable mutation event."""
+
+    task: Task
+    events: tuple[TaskEvent, ...]
+
+    @model_validator(mode="after")
+    def _validate_consistency(self) -> TaskMutationResult:
+        """Require exactly one event matching the committed Task.
+
+        Returns:
+            The internally consistent mutation result.
+
+        Raises:
+            ValueError: If event count or identities are inconsistent.
+
+        """
+        if len(self.events) != 1:
+            message = "Task mutation result must contain exactly one TaskEvent."
+            raise ValueError(message)
+        _validate_event_batch(self.task, self.events)
+        return self
+
+
+class TaskSubmissionResult(_ResultModel):
+    """Committed Task, retained Result, and ordered submission/review events."""
+
+    task: Task
+    result: TaskResult
+    events: tuple[TaskEvent, ...]
+
+    @model_validator(mode="after")
+    def _validate_consistency(self) -> TaskSubmissionResult:
+        """Validate Task, Result, review, and exact event-sequence consistency.
+
+        Returns:
+            The internally consistent submission or review result.
+
+        Raises:
+            ValueError: If identities, state, or events disagree.
+
+        """
+        if self.result.task_uid != self.task.uid:
+            message = "Task submission Result must belong to the returned Task."
+            raise ValueError(message)
+        _validate_event_batch(self.task, self.events)
+        status = self.result.review.status
+        expected: tuple[TaskEventType, ...]
+        if status is ResultReviewStatus.NOT_REQUIRED:
+            expected = (TaskEventType.RESULT_SUBMITTED, TaskEventType.TASK_COMPLETED)
+            consistent = (
+                self.task.state is TaskState.DONE
+                and self.task.current_result_id == self.result.id
+            )
+        elif status is ResultReviewStatus.PENDING:
+            expected = (TaskEventType.RESULT_SUBMITTED,)
+            consistent = (
+                self.task.state is TaskState.REVIEW
+                and self.task.current_result_id == self.result.id
+            )
+        elif status is ResultReviewStatus.APPROVED:
+            expected = (TaskEventType.REVIEW_APPROVED, TaskEventType.TASK_COMPLETED)
+            consistent = (
+                self.task.state is TaskState.DONE
+                and self.task.current_result_id == self.result.id
+            )
+        else:
+            expected = (TaskEventType.REVIEW_REJECTED,)
+            consistent = (
+                self.task.state is TaskState.OPEN
+                and self.task.current_result_id is None
+            )
+        if not consistent:
+            message = "Task submission state must match the Result review disposition."
+            raise ValueError(message)
+        if tuple(event.event_type for event in self.events) != expected:
+            message = "Task submission events must match the Result review disposition."
+            raise ValueError(message)
+        first = self.events[0]
+        if status in (
+            ResultReviewStatus.NOT_REQUIRED,
+            ResultReviewStatus.PENDING,
+        ):
+            attribution_matches = (
+                self.result.submitted_by == first.actor_subject_id
+                and self.result.submitted_at == first.occurred_at
+            )
+        else:
+            attribution_matches = (
+                self.result.review.reviewed_by == first.actor_subject_id
+                and self.result.review.reviewed_at == first.occurred_at
+            )
+        if not attribution_matches or self.task.updated_at != first.occurred_at:
+            message = (
+                "Task submission attribution and timestamps must match its events."
+            )
+            raise ValueError(message)
+        return self
+
+
+class TaskEventResult(_ResultModel):
+    """One flat attributable TaskEvent safe for application consumers."""
+
+    id: TaskEventId
+    cursor: int
+    task_uid: TaskId
+    project_id: ProjectId
+    actor_subject_id: SubjectId
+    actor_kind: SubjectKind
+    attempt_id: None = None
+    request_id: RequestId
+    event_type: TaskEventType = Field(serialization_alias="type")
+    occurred_at: datetime
+    payload: Mapping[str, JsonValue]
+
+    @field_serializer("payload")
+    def _serialize_payload(
+        self,
+        value: Mapping[str, JsonValue],
+    ) -> dict[str, object]:
+        """Serialize the immutable payload without exposing its backing copy.
+
+        Args:
+            value: Recursively frozen domain payload.
+
+        Returns:
+            A detached JSON-compatible mapping for boundary serialization.
+
+        """
+        return {key: _mutable_json_value(item) for key, item in value.items()}
+
+    @model_validator(mode="after")
+    def _validate_event(self) -> TaskEventResult:
+        """Validate core event fields and freeze payload recursively.
+
+        Returns:
+            The validated flat attributable event.
+
+        Raises:
+            ValueError: If core event data or Phase 3 attribution is invalid.
+
+        """
+        event = TaskEvent(
+            id=self.id,
+            cursor=self.cursor,
+            task_uid=self.task_uid,
+            project_id=self.project_id,
+            actor_subject_id=self.actor_subject_id,
+            request_id=self.request_id,
+            event_type=self.event_type,
+            occurred_at=self.occurred_at,
+            payload=self.payload,
+        )
+        object.__setattr__(self, "payload", event.payload)
+        return self
+
+
+def _mutable_json_value(value: JsonValue) -> object:
+    """Copy one immutable JSON value into serialization-friendly containers.
+
+    Args:
+        value: Validated recursive JSON value.
+
+    Returns:
+        Scalars unchanged, arrays as lists, and objects as detached dictionaries.
+
+    """
+    if isinstance(value, Mapping):
+        return {key: _mutable_json_value(item) for key, item in value.items()}
+    if isinstance(value, tuple):
+        return [_mutable_json_value(item) for item in value]
+    return value
+
+
+class TaskEventPage(_ResultModel):
+    """One polling-safe, strictly ascending TaskEvent snapshot."""
+
+    events: tuple[TaskEventResult, ...]
+    next_cursor: int
+
+    @field_validator("next_cursor", mode="before")
+    @classmethod
+    def _validate_next_cursor(cls, value: object) -> int:
+        """Validate a nonnegative Instance event cursor.
+
+        Args:
+            value: Candidate cursor.
+
+        Returns:
+            The validated nonnegative integer.
+
+        Raises:
+            DomainValidationError: If the value is negative or not an integer.
+
+        """
+        if type(value) is not int or value < 0:
+            message = "TaskEvent next_cursor must be a nonnegative integer."
+            raise DomainValidationError(message)
+        return value
+
+    @model_validator(mode="after")
+    def _validate_event_order(self) -> TaskEventPage:
+        """Require one scoped ascending event batch ending at next_cursor.
+
+        Returns:
+            The validated TaskEvent page.
+
+        Raises:
+            ValueError: If cursors or Task/Project identities disagree.
+
+        """
+        if not self.events:
+            return self
+        cursors = tuple(event.cursor for event in self.events)
+        if tuple(sorted(cursors)) != cursors or len(set(cursors)) != len(cursors):
+            message = "TaskEvent page events must have strictly ascending cursors."
+            raise ValueError(message)
+        first = self.events[0]
+        if any(
+            event.task_uid != first.task_uid or event.project_id != first.project_id
+            for event in self.events
+        ):
+            message = "TaskEvent page events must share one Task and Project scope."
+            raise ValueError(message)
+        if self.next_cursor != cursors[-1]:
+            message = "TaskEvent page next_cursor must equal the last event cursor."
+            raise ValueError(message)
+        return self
+
+
 class TaskPage(_ResultModel):
-    """One deterministic Project- or Instance-scoped ascending Task page."""
+    """One deterministic Project- or Instance-scoped Task page with readiness."""
 
     tasks: tuple[Task, ...]
+    readiness: tuple[TaskReadiness, ...] = ()
     next_cursor: str | None
+    view: TaskListView = TaskListView.ALL
 
     @field_validator("next_cursor", mode="before")
     @classmethod
@@ -260,13 +560,20 @@ class TaskPage(_ResultModel):
             ValueError: If Tasks are not strictly ascending.
 
         """
-        previous_position: tuple[str, int] | None = None
+        if self.readiness and len(self.readiness) != len(self.tasks):
+            message = "Task page readiness must align one-for-one with Tasks."
+            raise ValueError(message)
+        previous_position: tuple[object, ...] | None = None
         for task in self.tasks:
             project_key, separator, _number = task.key.rpartition("-")
             if separator != "-":
                 message = "Task page contains an invalid stable Task key."
                 raise ValueError(message)
-            position = (project_key, task.number)
+            position = (
+                ready_task_ordering_key(task, project_key=project_key)
+                if self.view is TaskListView.READY
+                else (project_key, task.number)
+            )
             if previous_position is not None and position <= previous_position:
                 message = (
                     "Task page must be ordered by Project key and task number "
@@ -275,6 +582,37 @@ class TaskPage(_ResultModel):
                 raise ValueError(message)
             previous_position = position
         return self
+
+
+def _validate_event_batch(task: Task, events: tuple[TaskEvent, ...]) -> None:
+    """Validate one attributable ordered event batch against a Task.
+
+    Args:
+        task: Committed Task returned by an operation.
+        events: Events appended by that same semantic operation.
+
+    Raises:
+        ValueError: If identities, attribution, time, request, or order disagree.
+
+    """
+    if not events:
+        message = "Task operation result must contain at least one TaskEvent."
+        raise ValueError(message)
+    first = events[0]
+    cursors = tuple(event.cursor for event in events)
+    if tuple(sorted(cursors)) != cursors or len(set(cursors)) != len(cursors):
+        message = "Task operation events must have strictly ascending cursors."
+        raise ValueError(message)
+    if any(
+        event.task_uid != task.uid
+        or event.project_id != task.project_id
+        or event.actor_subject_id != first.actor_subject_id
+        or event.request_id != first.request_id
+        or event.occurred_at != first.occurred_at
+        for event in events
+    ):
+        message = "Task operation events must share Task and attribution identities."
+        raise ValueError(message)
 
 
 def _validate_identity_consistency(

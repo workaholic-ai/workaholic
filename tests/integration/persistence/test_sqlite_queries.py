@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import json
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from functools import partial
 from typing import TYPE_CHECKING, cast
@@ -11,24 +12,32 @@ from typing import TYPE_CHECKING, cast
 import pytest
 
 from workaholic.application import (
+    AddTaskDependencyMutation,
     ApplicationErrorCode,
     BootstrapMutation,
     GetLocalStatus,
     GetProjectByKey,
     GetTask,
+    GetTaskDetails,
     InvalidInputError,
     ListInstanceTasks,
     ListProjects,
     ListTasks,
+    ListTasksByView,
     NotInitializedError,
     PermissionDeniedError,
     ProjectNotFoundError,
     TaskCreationMutation,
+    TaskListView,
     TaskNotFoundError,
 )
 from workaholic.domain import (
+    AcceptanceCriterion,
+    ApprovalRequirement,
+    ContextReference,
     InstanceId,
     ProjectId,
+    ReadinessReason,
     RequestId,
     SubjectId,
     Task,
@@ -39,6 +48,7 @@ from workaholic.persistence.sqlite import (
     SQLiteRepository,
     StorageUnavailableError,
     initialize_empty_store,
+    open_read_connection,
     open_write_transaction,
 )
 
@@ -51,6 +61,24 @@ if TYPE_CHECKING:
 _NOW = datetime(2026, 7, 30, 14, 0, 0, 123456, tzinfo=UTC)
 _CANONICAL_NOW = "2026-07-30T14:00:00.123456Z"
 _ACME_PROJECT_ID = ProjectId("prj_acme")
+_VIEW_NOW = datetime(2026, 8, 1, 12, 0, 0, 444444, tzinfo=UTC)
+
+
+class _Clock:
+    """Fixed authoritative clock for readiness query tests."""
+
+    def __init__(self, now: datetime) -> None:
+        """Store one exact UTC query time.
+
+        Args:
+            now: Authoritative UTC time returned by every call.
+
+        """
+        self._now = now
+
+    def now(self) -> datetime:
+        """Return the fixed authoritative time."""
+        return self._now
 
 
 def _repository(
@@ -81,12 +109,17 @@ def _repository(
     return repository, result
 
 
-def _task_mutation(
+def _task_mutation(  # noqa: PLR0913 - explicit semantic fixture fields aid tests.
     suffix: str,
     *,
     project_id: ProjectId = _ACME_PROJECT_ID,
     title: str | None = None,
     seconds: int = 1,
+    available_at: datetime | None = None,
+    approval: ApprovalRequirement = ApprovalRequirement.NONE,
+    acceptance: tuple[AcceptanceCriterion, ...] = (),
+    context: tuple[ContextReference, ...] = (),
+    priority: int = 50,
 ) -> TaskCreationMutation:
     """Build one deterministic attributable Task mutation.
 
@@ -95,6 +128,11 @@ def _task_mutation(
         project_id: Selected Project identity.
         title: Optional normalized title and objective.
         seconds: Timestamp offset from bootstrap.
+        available_at: Optional exact Task availability timestamp.
+        approval: Result approval requirement.
+        acceptance: Ordered acceptance criteria.
+        context: Ordered inert context references.
+        priority: Task scheduling priority.
 
     Returns:
         Validated Task creation mutation.
@@ -110,7 +148,11 @@ def _task_mutation(
         occurred_at=_NOW + timedelta(seconds=seconds),
         title=task_title,
         objective=task_title,
-        priority=50,
+        priority=priority,
+        available_at=available_at,
+        approval=approval,
+        acceptance=acceptance,
+        context=context,
     )
 
 
@@ -193,6 +235,26 @@ def _opaque_cursor(payload: object) -> str:
     )
     encoded = base64.urlsafe_b64encode(serialized.encode()).decode().rstrip("=")
     return f"v2.{encoded}"
+
+
+def _phase_three_cursor(payload: object) -> str:
+    """Encode test-owned JSON into a version-3 cursor envelope.
+
+    Args:
+        payload: JSON-compatible cursor payload.
+
+    Returns:
+        Version-3 unpadded URL-safe cursor text.
+
+    """
+    serialized = json.dumps(
+        payload,
+        ensure_ascii=True,
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+    encoded = base64.urlsafe_b64encode(serialized.encode()).decode().rstrip("=")
+    return f"v3.{encoded}"
 
 
 def _decode_opaque_cursor(cursor: str) -> object:
@@ -484,7 +546,7 @@ def test_status_and_project_listing_are_stable_after_reopen(tmp_path: Path) -> N
 
     assert status.mode == "embedded"
     assert status.profile == "local"
-    assert status.schema_version == 2
+    assert status.schema_version == 3
     assert status.instance == bootstrap.instance
     assert status.project == bootstrap.project
     assert status.subject == bootstrap.subject
@@ -586,6 +648,91 @@ def test_task_lookup_is_exact_and_project_isolated(tmp_path: Path) -> None:
         ),
     )
     assert beta_page.tasks == (beta_task,)
+
+
+def test_task_reads_hydrate_complete_definition_and_ordered_dependencies(
+    tmp_path: Path,
+) -> None:
+    """Detail and list paths expose one equal complete Task after restart."""
+    repository, bootstrap = _repository(tmp_path)
+    first = repository.create_task(_task_mutation("first", seconds=1))
+    second = repository.create_task(_task_mutation("second", seconds=2))
+    acceptance = (
+        AcceptanceCriterion(
+            id="ac_evidence",
+            text="Attach categorized evidence.",
+            required=True,
+        ),
+    )
+    context = (
+        ContextReference(uri="workspace://repo/data.csv", version="git:8f31c12"),
+    )
+    available_at = _NOW + timedelta(days=2, microseconds=333333)
+    created = repository.create_task(
+        _task_mutation(
+            "dependent",
+            title="Complete definition",
+            seconds=3,
+            available_at=available_at,
+            approval=ApprovalRequirement.HUMAN,
+            acceptance=acceptance,
+            context=context,
+        )
+    )
+    with open_write_transaction(repository.database_path) as connection:
+        # Insert reverse key order to prove reads own deterministic ordering.
+        connection.executemany(
+            """
+            INSERT INTO task_dependencies (task_uid, prerequisite_uid, project_id)
+            VALUES (?, ?, ?)
+            """,
+            (
+                (str(created.uid), str(second.uid), str(created.project_id)),
+                (str(created.uid), str(first.uid), str(created.project_id)),
+            ),
+        )
+    expected = replace(created, depends_on=(first.uid, second.uid))
+    command = GetTask(
+        project_id=bootstrap.project.id,
+        subject_id=bootstrap.subject.id,
+        task=created.uid,
+    )
+
+    assert (
+        _read_without_mutation(
+            repository,
+            partial(repository.get_task, command),
+        )
+        == expected
+    )
+    project_page = _read_without_mutation(
+        repository,
+        lambda: repository.list_tasks(
+            ListTasks(
+                project_id=bootstrap.project.id,
+                subject_id=bootstrap.subject.id,
+            )
+        ),
+    )
+    assert project_page.tasks[-1] == expected
+    instance_page = _read_without_mutation(
+        repository,
+        lambda: repository.list_tasks_for_instance(
+            ListInstanceTasks(
+                instance_id=bootstrap.instance.id,
+                subject_id=bootstrap.subject.id,
+            )
+        ),
+    )
+    assert instance_page.tasks[-1] == expected
+    reopened = SQLiteRepository(repository.database_path)
+    assert (
+        _read_without_mutation(
+            reopened,
+            partial(reopened.get_task, command),
+        )
+        == expected
+    )
 
 
 def test_task_pagination_is_empty_then_complete_stable_and_reopenable(
@@ -1132,3 +1279,482 @@ def test_malformed_persisted_rows_map_to_safe_storage_failure(
     ):
         with pytest.raises(StorageUnavailableError):
             _read_without_mutation(repository, task_operation)
+
+
+def test_task_details_derive_dependency_readiness_without_rewriting_dependant(
+    tmp_path: Path,
+) -> None:
+    """Prerequisite state changes affect reads but never dependant storage rows."""
+    repository, bootstrap = _repository(tmp_path)
+    prerequisite = repository.create_task(_task_mutation("prerequisite", seconds=1))
+    dependant = repository.create_task(_task_mutation("dependant", seconds=2))
+    repository.add_task_dependency(
+        AddTaskDependencyMutation(
+            task_uid=dependant.uid,
+            prerequisite_uid=prerequisite.uid,
+            project_id=dependant.project_id,
+            actor_subject_id=bootstrap.subject.id,
+            event_id=TaskEventId("evt_dependency"),
+            request_id=RequestId("req_dependency"),
+            occurred_at=_NOW + timedelta(seconds=3),
+            expected_version=1,
+        )
+    )
+    query_repository = SQLiteRepository(
+        repository.database_path,
+        clock=_Clock(_VIEW_NOW),
+    )
+    command = GetTaskDetails(
+        project_id=bootstrap.project.id,
+        subject_id=bootstrap.subject.id,
+        task=dependant.uid,
+    )
+    before_bytes = repository.database_path.read_bytes()
+
+    waiting = query_repository.get_task_details(command)
+
+    assert waiting.task.depends_on == (prerequisite.uid,)
+    assert waiting.prerequisites == (prerequisite,)
+    assert waiting.readiness.ready is False
+    assert waiting.readiness.reasons == (ReadinessReason.UNSATISFIED_DEPENDENCY,)
+    assert waiting.current_result is None
+    assert repository.database_path.read_bytes() == before_bytes
+    with open_read_connection(repository.database_path) as connection:
+        dependant_row = connection.execute(
+            "SELECT version, updated_at FROM tasks WHERE uid = ?",
+            (str(dependant.uid),),
+        ).fetchone()
+    with open_write_transaction(repository.database_path) as connection:
+        connection.execute(
+            "UPDATE tasks SET state = 'done' WHERE uid = ?",
+            (str(prerequisite.uid),),
+        )
+
+    ready = query_repository.get_task_details(command)
+
+    assert ready.readiness.ready is True
+    assert ready.readiness.reasons == ()
+    with open_read_connection(repository.database_path) as connection:
+        assert (
+            connection.execute(
+                "SELECT version, updated_at FROM tasks WHERE uid = ?",
+                (str(dependant.uid),),
+            ).fetchone()
+            == dependant_row
+        )
+
+
+def test_cancelled_prerequisite_has_distinct_unsatisfiable_reason(
+    tmp_path: Path,
+) -> None:
+    """Cancelled prerequisites remain edges and surface a stable reason code."""
+    repository, bootstrap = _repository(tmp_path)
+    prerequisite = repository.create_task(_task_mutation("prerequisite", seconds=1))
+    dependant = repository.create_task(_task_mutation("dependant", seconds=2))
+    with open_write_transaction(repository.database_path) as connection:
+        connection.execute(
+            """
+            INSERT INTO task_dependencies (task_uid, prerequisite_uid, project_id)
+            VALUES (?, ?, ?)
+            """,
+            (str(dependant.uid), str(prerequisite.uid), str(dependant.project_id)),
+        )
+        connection.execute(
+            "UPDATE tasks SET state = 'cancelled' WHERE uid = ?",
+            (str(prerequisite.uid),),
+        )
+    query_repository = SQLiteRepository(
+        repository.database_path,
+        clock=_Clock(_VIEW_NOW),
+    )
+
+    details = query_repository.get_task_details(
+        GetTaskDetails(
+            project_id=bootstrap.project.id,
+            subject_id=bootstrap.subject.id,
+            task=dependant.key,
+        )
+    )
+
+    assert details.readiness.reasons == (ReadinessReason.UNSATISFIABLE_DEPENDENCY,)
+    assert details.task.version == dependant.version
+
+
+def test_availability_boundary_uses_injected_authoritative_clock(
+    tmp_path: Path,
+) -> None:
+    """A Task becomes ready exactly at available_at without stored mutation."""
+    repository, bootstrap = _repository(tmp_path)
+    available_at = _VIEW_NOW + timedelta(seconds=1)
+    task = repository.create_task(
+        _task_mutation("future", available_at=available_at, seconds=1)
+    )
+    command = GetTaskDetails(
+        project_id=bootstrap.project.id,
+        subject_id=bootstrap.subject.id,
+        task=task.uid,
+    )
+
+    before = SQLiteRepository(
+        repository.database_path,
+        clock=_Clock(_VIEW_NOW),
+    ).get_task_details(command)
+    at_boundary = SQLiteRepository(
+        repository.database_path,
+        clock=_Clock(available_at),
+    ).get_task_details(command)
+
+    assert before.readiness.scheduled is True
+    assert before.readiness.reasons == (ReadinessReason.NOT_YET_AVAILABLE,)
+    assert at_boundary.readiness.ready is True
+    assert at_boundary.readiness.scheduled is False
+
+
+def test_view_pages_filter_stored_and_derived_states_with_aligned_readiness(
+    tmp_path: Path,
+) -> None:
+    """Every Phase 3 view has one authoritative selection meaning."""
+    repository, bootstrap = _repository(tmp_path)
+    ready = repository.create_task(_task_mutation("ready", seconds=1))
+    scheduled = repository.create_task(
+        _task_mutation(
+            "scheduled",
+            seconds=2,
+            available_at=_VIEW_NOW + timedelta(hours=1),
+        )
+    )
+    blocked = repository.create_task(_task_mutation("blocked", seconds=3))
+    review = repository.create_task(_task_mutation("review", seconds=4))
+    done = repository.create_task(_task_mutation("done", seconds=5))
+    cancelled = repository.create_task(_task_mutation("cancelled", seconds=6))
+    with open_write_transaction(repository.database_path) as connection:
+        connection.execute(
+            """
+            INSERT INTO task_results (
+                id, task_uid, submitted_by, submitted_at, review_status
+            ) VALUES ('res_review', ?, 'sub_local', ?, 'pending')
+            """,
+            (str(review.uid), "2026-08-01T11:00:00.123456Z"),
+        )
+        connection.execute(
+            """
+            UPDATE tasks
+            SET state = 'blocked', blocking_reason = 'Waiting.'
+            WHERE uid = ?
+            """,
+            (str(blocked.uid),),
+        )
+        connection.execute(
+            """
+            UPDATE tasks SET state = 'review', current_result_id = 'res_review'
+            WHERE uid = ?
+            """,
+            (str(review.uid),),
+        )
+        connection.execute(
+            "UPDATE tasks SET state = 'done' WHERE uid = ?",
+            (str(done.uid),),
+        )
+        connection.execute(
+            "UPDATE tasks SET state = 'cancelled' WHERE uid = ?",
+            (str(cancelled.uid),),
+        )
+    query_repository = SQLiteRepository(
+        repository.database_path,
+        clock=_Clock(_VIEW_NOW),
+    )
+    expected = {
+        TaskListView.ALL: (
+            ready.uid,
+            scheduled.uid,
+            blocked.uid,
+            review.uid,
+            done.uid,
+            cancelled.uid,
+        ),
+        TaskListView.READY: (ready.uid,),
+        TaskListView.SCHEDULED: (scheduled.uid,),
+        TaskListView.BLOCKED: (blocked.uid,),
+        TaskListView.REVIEW: (review.uid,),
+        TaskListView.DONE: (done.uid,),
+        TaskListView.CANCELLED: (cancelled.uid,),
+    }
+
+    for view, identities in expected.items():
+        page = query_repository.list_tasks_by_view(
+            ListTasksByView(
+                project_id=bootstrap.project.id,
+                subject_id=bootstrap.subject.id,
+                view=view,
+            )
+        )
+        assert tuple(task.uid for task in page.tasks) == identities
+        assert len(page.readiness) == len(page.tasks)
+        assert page.view is view
+    review_details = query_repository.get_task_details(
+        GetTaskDetails(
+            project_id=bootstrap.project.id,
+            subject_id=bootstrap.subject.id,
+            task=review.uid,
+        )
+    )
+    assert review_details.current_result is not None
+    assert str(review_details.current_result.id) == "res_review"
+    assert review_details.readiness.awaiting_review is True
+
+
+def test_ready_order_and_v3_keyset_pagination_are_deterministic(
+    tmp_path: Path,
+) -> None:
+    """Ready pagination preserves priority, null-first availability, and number."""
+    repository, bootstrap = _repository(tmp_path)
+    past = _VIEW_NOW - timedelta(hours=1)
+    tasks = (
+        repository.create_task(_task_mutation("low", seconds=1, priority=50)),
+        repository.create_task(_task_mutation("high_null", seconds=2, priority=90)),
+        repository.create_task(
+            _task_mutation(
+                "high_past",
+                seconds=3,
+                priority=90,
+                available_at=past,
+            )
+        ),
+        repository.create_task(
+            _task_mutation("high_null_later", seconds=4, priority=90)
+        ),
+    )
+    expected = (tasks[1], tasks[3], tasks[2], tasks[0])
+    query_repository = SQLiteRepository(
+        repository.database_path,
+        clock=_Clock(_VIEW_NOW),
+    )
+    collected: list[Task] = []
+    cursor: str | None = None
+    emitted: list[str] = []
+    while True:
+        page = query_repository.list_tasks_by_view(
+            ListTasksByView(
+                profile="alpha",
+                project_id=bootstrap.project.id,
+                subject_id=bootstrap.subject.id,
+                view=TaskListView.READY,
+                cursor=cursor,
+                limit=2,
+            )
+        )
+        collected.extend(page.tasks)
+        if page.next_cursor is None:
+            break
+        emitted.append(page.next_cursor)
+        cursor = page.next_cursor
+
+    assert tuple(collected) == expected
+    assert emitted[0].startswith("v3.")
+    encoded = emitted[0].removeprefix("v3.")
+    payload = json.loads(
+        base64.urlsafe_b64decode(f"{encoded}{'=' * (-len(encoded) % 4)}")
+    )
+    assert payload == {
+        "after": [90, None, 4],
+        "instance_id": "ins_local",
+        "profile": "alpha",
+        "project_id": "prj_acme",
+        "selection": "project",
+        "subject_id": "sub_local",
+        "v": 3,
+        "view": "ready",
+    }
+    with pytest.raises(InvalidInputError):
+        query_repository.list_tasks_by_view(
+            ListTasksByView(
+                profile="alpha",
+                project_id=bootstrap.project.id,
+                subject_id=bootstrap.subject.id,
+                view=TaskListView.ALL,
+                cursor=emitted[0],
+            )
+        )
+    with pytest.raises(InvalidInputError):
+        query_repository.list_tasks_by_view(
+            ListTasksByView(
+                profile="other",
+                project_id=bootstrap.project.id,
+                subject_id=bootstrap.subject.id,
+                view=TaskListView.READY,
+                cursor=emitted[0],
+            )
+        )
+
+
+def test_all_project_ready_order_inserts_project_key_before_task_number(
+    tmp_path: Path,
+) -> None:
+    """Equal ready Tasks across Projects use immutable Project key as tie-breaker."""
+    repository, bootstrap = _repository(tmp_path)
+    beta_id = _add_second_project(repository)
+    acme = repository.create_task(_task_mutation("acme", seconds=1, priority=80))
+    beta = repository.create_task(
+        _task_mutation(
+            "beta",
+            project_id=beta_id,
+            seconds=2,
+            priority=80,
+        )
+    )
+    query_repository = SQLiteRepository(
+        repository.database_path,
+        clock=_Clock(_VIEW_NOW),
+    )
+
+    page = query_repository.list_tasks_by_view(
+        ListTasksByView(
+            instance_id=bootstrap.instance.id,
+            subject_id=bootstrap.subject.id,
+            view=TaskListView.READY,
+            limit=1,
+        )
+    )
+
+    assert page.tasks == (acme,)
+    assert page.next_cursor is not None
+    second = query_repository.list_tasks_by_view(
+        ListTasksByView(
+            instance_id=bootstrap.instance.id,
+            subject_id=bootstrap.subject.id,
+            view=TaskListView.READY,
+            cursor=page.next_cursor,
+            limit=1,
+        )
+    )
+    assert second.tasks == (beta,)
+    assert tuple(item.ready for item in (*page.readiness, *second.readiness)) == (
+        True,
+        True,
+    )
+
+
+def test_all_view_v3_pagination_uses_scope_specific_keysets(tmp_path: Path) -> None:
+    """Stored-state pages resume by number or Project-key/number exactly once."""
+    repository, bootstrap = _repository(tmp_path)
+    beta_id = _add_second_project(repository)
+    acme = repository.create_task(_task_mutation("acme", seconds=1))
+    acme_second = repository.create_task(_task_mutation("acme_second", seconds=2))
+    beta = repository.create_task(_task_mutation("beta", project_id=beta_id, seconds=3))
+    query_repository = SQLiteRepository(
+        repository.database_path,
+        clock=_Clock(_VIEW_NOW),
+    )
+    project_first = query_repository.list_tasks_by_view(
+        ListTasksByView(
+            project_id=bootstrap.project.id,
+            subject_id=bootstrap.subject.id,
+            limit=1,
+        )
+    )
+    assert project_first.tasks == (acme,)
+    assert project_first.next_cursor is not None
+    project_second = query_repository.list_tasks_by_view(
+        ListTasksByView(
+            project_id=bootstrap.project.id,
+            subject_id=bootstrap.subject.id,
+            cursor=project_first.next_cursor,
+            limit=1,
+        )
+    )
+    assert project_second.tasks == (acme_second,)
+    assert project_second.next_cursor is None
+    instance_first = query_repository.list_tasks_by_view(
+        ListTasksByView(
+            instance_id=bootstrap.instance.id,
+            subject_id=bootstrap.subject.id,
+            limit=1,
+        )
+    )
+    assert instance_first.tasks == (acme,)
+    assert instance_first.next_cursor is not None
+
+    instance_second = query_repository.list_tasks_by_view(
+        ListTasksByView(
+            instance_id=bootstrap.instance.id,
+            subject_id=bootstrap.subject.id,
+            cursor=instance_first.next_cursor,
+            limit=1,
+        )
+    )
+
+    assert instance_second.tasks == (acme_second,)
+    assert instance_second.next_cursor is not None
+    instance_third = query_repository.list_tasks_by_view(
+        ListTasksByView(
+            instance_id=bootstrap.instance.id,
+            subject_id=bootstrap.subject.id,
+            cursor=instance_second.next_cursor,
+            limit=1,
+        )
+    )
+    assert instance_third.tasks == (beta,)
+    assert instance_third.next_cursor is None
+
+
+def test_malformed_and_noncanonical_v3_cursors_are_safe_input_errors(
+    tmp_path: Path,
+) -> None:
+    """Cursor parsing rejects malformed shape, bounds, version, and encoding."""
+    repository, bootstrap = _repository(tmp_path)
+    repository.create_task(_task_mutation("one", seconds=1))
+    query_repository = SQLiteRepository(
+        repository.database_path,
+        clock=_Clock(_VIEW_NOW),
+    )
+    base = {
+        "after": 1,
+        "instance_id": "ins_local",
+        "profile": "local",
+        "project_id": "prj_acme",
+        "selection": "project",
+        "subject_id": "sub_local",
+        "v": 3,
+        "view": "all",
+    }
+    malformed = (
+        "v3.not_base64!",
+        _phase_three_cursor({**base, "v": 2}),
+        _phase_three_cursor({**base, "after": True}),
+        _phase_three_cursor(
+            {key: value for key, value in base.items() if key != "view"}
+        ),
+        f"{_phase_three_cursor(base)}=",
+    )
+
+    for cursor in malformed:
+        with pytest.raises(InvalidInputError):
+            query_repository.list_tasks_by_view(
+                ListTasksByView(
+                    project_id=bootstrap.project.id,
+                    subject_id=bootstrap.subject.id,
+                    cursor=cursor,
+                )
+            )
+
+
+def test_task_detail_missing_selector_and_invalid_clock_are_safe_failures(
+    tmp_path: Path,
+) -> None:
+    """Detail queries preserve missing-Task meaning and reject invalid clock data."""
+    repository, bootstrap = _repository(tmp_path)
+    command = GetTaskDetails(
+        project_id=bootstrap.project.id,
+        subject_id=bootstrap.subject.id,
+        task=TaskId("tsk_missing"),
+    )
+    with pytest.raises(TaskNotFoundError):
+        SQLiteRepository(
+            repository.database_path,
+            clock=_Clock(_VIEW_NOW),
+        ).get_task_details(command)
+    with pytest.raises(StorageUnavailableError):
+        SQLiteRepository(
+            repository.database_path,
+            clock=_Clock(_VIEW_NOW.replace(tzinfo=None)),
+        ).get_task_details(command)

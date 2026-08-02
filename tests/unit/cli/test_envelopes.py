@@ -194,6 +194,13 @@ def test_domain_dataclass_identifiers_enums_and_timestamps_serialize_exactly(
         "created_by": "sub_local",
         "created_at": "2026-07-30T16:30:45.123456Z",
         "updated_at": "2026-07-30T16:30:45.123456Z",
+        "available_at": None,
+        "approval": "none",
+        "acceptance": [],
+        "context": [],
+        "depends_on": [],
+        "blocking_reason": None,
+        "current_result_id": None,
     }
 
 

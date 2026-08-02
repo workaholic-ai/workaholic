@@ -33,7 +33,20 @@ _TRUSTED_CLI_ENVIRONMENT_KEYS = frozenset(
         "WORKAHOLIC_PROFILE",
     }
 )
-_UNTRUSTED_INHERITED_PYTHON_KEYS = frozenset({"PYTHONHOME", "PYTHONPATH"})
+_SAFE_INHERITED_ENVIRONMENT_KEYS = frozenset(
+    {
+        "LANG",
+        "LC_ALL",
+        "LC_CTYPE",
+        "PATH",
+        "PATHEXT",
+        "SYSTEMROOT",
+        "TEMP",
+        "TMP",
+        "TMPDIR",
+        "WINDIR",
+    }
+)
 
 
 class GoldenInstance(Protocol):
@@ -405,8 +418,7 @@ def _isolated_cli_environment(
     environment = {
         key: value
         for key, value in os.environ.items()
-        if not key.startswith("WORKAHOLIC_")
-        and key not in _UNTRUSTED_INHERITED_PYTHON_KEYS
+        if key in _SAFE_INHERITED_ENVIRONMENT_KEYS
     }
     environment.update(
         {
@@ -504,6 +516,9 @@ def require_success(result: CompletedProcess[str]) -> JsonValue:
     if result.returncode != 0:
         message = "A successful CLI operation must exit with status zero."
         raise AssertionError(message)
+    if result.stderr:
+        message = "JSON-mode success must not emit stderr diagnostics."
+        raise AssertionError(message)
 
     payload = _decode_json_object(result)
     if payload.get("schema") != _CLI_SCHEMA:
@@ -539,6 +554,9 @@ def require_error(
     """
     if result.returncode == 0:
         message = "A failed CLI operation must exit with a nonzero status."
+        raise AssertionError(message)
+    if result.stderr:
+        message = "JSON-mode failure must not emit stderr diagnostics."
         raise AssertionError(message)
 
     payload = _decode_json_object(result)
@@ -621,5 +639,31 @@ def require_string(value: JsonValue, *, context: str) -> str:
     """
     if not isinstance(value, str) or not value:
         message = f"{context} must be a nonempty JSON string."
+        raise AssertionError(message)
+    return value
+
+
+def require_integer(
+    value: JsonValue,
+    *,
+    context: str,
+    minimum: int | None = None,
+) -> int:
+    """Require a real JSON integer at a journey assertion boundary.
+
+    Args:
+        value: JSON value to validate.
+        context: Human-readable boundary name used in failure output.
+        minimum: Optional inclusive lower bound.
+
+    Returns:
+        The value narrowed to an integer.
+
+    Raises:
+        AssertionError: If the value is not an integer or is below ``minimum``.
+
+    """
+    if type(value) is not int or (minimum is not None and value < minimum):
+        message = f"{context} must be a JSON integer within its required bounds."
         raise AssertionError(message)
     return value

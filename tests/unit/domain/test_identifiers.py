@@ -12,6 +12,7 @@ from workaholic.domain import (
     InstanceId,
     ProjectId,
     RequestId,
+    ResultId,
     SubjectId,
     TaskEventId,
     TaskId,
@@ -24,6 +25,7 @@ type _IdentifierType = (
     | type[TaskId]
     | type[TaskEventId]
     | type[RequestId]
+    | type[ResultId]
 )
 
 _IDENTIFIER_CASES: tuple[tuple[_IdentifierType, str], ...] = (
@@ -33,6 +35,7 @@ _IDENTIFIER_CASES: tuple[tuple[_IdentifierType, str], ...] = (
     (TaskId, "tsk_"),
     (TaskEventId, "evt_"),
     (RequestId, "req_"),
+    (ResultId, "res_"),
 )
 
 

@@ -9,6 +9,7 @@ from typing import cast
 
 import pytest
 
+from tests.unit.session.fakes import UnavailablePhaseThreeServices
 from workaholic.application import (
     ApplicationError,
     ApplicationErrorCode,
@@ -19,14 +20,19 @@ from workaholic.application import (
     GetLocalStatus,
     GetProjectByKey,
     GetTask,
+    GetTaskDetails,
     ListInstanceTasks,
     ListProjects,
     ListTasks,
+    ListTasksByView,
     PermissionDeniedError,
     ProfileNotFoundError,
     ProjectCreationResult,
     ProjectNotFoundError,
+    ReadTaskEvents,
     StatusResult,
+    TaskDetails,
+    TaskEventPage,
     TaskPage,
     WorkspaceBindingConflictError,
 )
@@ -233,6 +239,18 @@ class _Queries:
         """Fail if the unused Task lookup is invoked."""
         pytest.fail("Project binding must not query a Task")
 
+    def get_task_details(self, _command: GetTaskDetails) -> TaskDetails:
+        """Fail if the unused Task detail lookup is invoked."""
+        pytest.fail("Project binding must not query Task details")
+
+    def list_tasks_by_view(self, _command: ListTasksByView) -> TaskPage:
+        """Fail if the unused Task view lookup is invoked."""
+        pytest.fail("Project binding must not query a Task view")
+
+    def read_task_events_after(self, _command: ReadTaskEvents) -> TaskEventPage:
+        """Fail if the unused TaskEvent lookup is invoked."""
+        pytest.fail("Project binding must not query Task events")
+
 
 class _Bootstrap:
     """Unused bootstrap service capability."""
@@ -304,6 +322,9 @@ def _session() -> tuple[LocalSession, _Context, _Queries, list[str]]:
         projects=_Projects(),
         queries=queries,
         tasks=_Tasks(),
+        lifecycle=UnavailablePhaseThreeServices(),
+        dependencies=UnavailablePhaseThreeServices(),
+        results=UnavailablePhaseThreeServices(),
     )
     session = LocalSession(
         context=context,
@@ -328,7 +349,7 @@ def test_bind_project_resolves_authority_before_durable_context_write() -> None:
     )
 
     assert result.mode == "embedded"
-    assert result.schema_version == 2
+    assert result.schema_version == 3
     assert result.profile == "local"
     assert result.instance.id == InstanceId("ins_local")
     assert result.project == _project(project_id="prj_beta", key="BETA")

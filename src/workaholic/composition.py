@@ -14,14 +14,21 @@ from workaholic.application import (
     ApplicationError,
     ApplicationErrorCode,
     BootstrapApplication,
+    BootstrapRepository,
     Clock,
     IdentifierFactory,
     ProfileInvalidError,
     ProfileNotFoundError,
     ProjectApplication,
+    ProjectRepository,
     QueryApplication,
+    QueryRepository,
+    ResultIdentifierFactory,
     TaskApplication,
-    WorkaholicRepository,
+    TaskDependencyApplication,
+    TaskLifecycleApplication,
+    TaskRepository,
+    TaskResultApplication,
 )
 from workaholic.cli.main import create_app
 from workaholic.context import (
@@ -40,6 +47,7 @@ from workaholic.domain import (
     InstanceId,
     ProjectId,
     RequestId,
+    ResultId,
     SubjectId,
     TaskEventId,
     TaskId,
@@ -61,10 +69,28 @@ from workaholic.session import (
 _PROGRAM_NAME = "workaholic"
 _UUID7_VERSION = 7
 _IDENTIFIER_PREFIXES: Final = frozenset(
-    ("ins_", "prj_", "sub_", "tsk_", "evt_", "req_")
+    ("ins_", "prj_", "sub_", "tsk_", "res_", "evt_", "req_")
 )
 
 type ConfigPathResolver = Callable[[Mapping[str, str]], LocalConfigPaths]
+
+
+class _ComposedRepository(
+    BootstrapRepository,
+    ProjectRepository,
+    TaskRepository,
+    QueryRepository,
+    Protocol,
+):
+    """Expose only operations consumed by the current local composition."""
+
+
+class _ComposedIdentifierFactory(
+    IdentifierFactory,
+    ResultIdentifierFactory,
+    Protocol,
+):
+    """Generate every identity owned by the embedded application services."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -218,6 +244,10 @@ class _Uuid7IdentifierFactory:
         """Create a candidate Task identifier."""
         return TaskId(_new_uuid7_text("tsk_"))
 
+    def new_result_id(self) -> ResultId:
+        """Create a candidate Result identifier."""
+        return ResultId(_new_uuid7_text("res_"))
+
     def new_event_id(self) -> TaskEventId:
         """Create a candidate TaskEvent identifier."""
         return TaskEventId(_new_uuid7_text("evt_"))
@@ -231,10 +261,10 @@ class _Uuid7IdentifierFactory:
 class LocalCompositionFactories:
     """Injectable constructors for one profile-selected embedded runtime."""
 
-    repository: Callable[[Path], WorkaholicRepository]
+    repository: Callable[[Path], _ComposedRepository]
     identity: Callable[[Path], EmbeddedIdentitySelector]
     clock: Callable[[], Clock]
-    identifiers: Callable[[], IdentifierFactory]
+    identifiers: Callable[[], _ComposedIdentifierFactory]
 
     def __post_init__(self) -> None:
         """Validate the explicit factory boundary at composition time."""
@@ -280,6 +310,13 @@ class _ProfileRuntimeOpener:
                 projects=ProjectApplication(repository, clock, identifiers),
                 queries=QueryApplication(repository),
                 tasks=TaskApplication(repository, clock, identifiers),
+                lifecycle=TaskLifecycleApplication(repository, clock, identifiers),
+                dependencies=TaskDependencyApplication(
+                    repository,
+                    clock,
+                    identifiers,
+                ),
+                results=TaskResultApplication(repository, clock, identifiers),
             )
         except ApplicationError:
             raise

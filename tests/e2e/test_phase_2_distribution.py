@@ -23,6 +23,7 @@ _GATE_ENVIRONMENT_KEYS = (
     "WORKAHOLIC_PHASE_0_GATE_RUNNING",
     "WORKAHOLIC_PHASE_1_GATE_RUNNING",
     "WORKAHOLIC_PHASE_2_GATE_RUNNING",
+    "WORKAHOLIC_PHASE_3_GATE_RUNNING",
 )
 
 pytestmark = [
@@ -679,7 +680,7 @@ def test_source_and_wheel_match_and_reject_phase_two_boundaries(  # noqa: PLR091
             "all_list": ["ACME-1", "DOCS-1"],
             "next_cursor": None,
             "restarted_project": "DOCS",
-            "schema_version": 2,
+            "schema_version": 3,
         }
     )
 

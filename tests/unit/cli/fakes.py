@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -11,20 +12,36 @@ from workaholic.application import (
     ContextResult,
     ProjectCreationResult,
     StatusResult,
+    TaskDetails,
+    TaskEventPage,
+    TaskEventResult,
+    TaskListView,
+    TaskMutationResult,
     TaskPage,
+    TaskSubmissionResult,
 )
 from workaholic.domain import (
+    ApprovalRequirement,
     Instance,
     InstanceId,
     Project,
     ProjectGrant,
     ProjectId,
     ProjectRole,
+    RequestId,
+    ResultId,
+    ResultReview,
+    ResultReviewStatus,
     Subject,
     SubjectId,
     SubjectKind,
     Task,
+    TaskEvent,
+    TaskEventId,
+    TaskEventType,
     TaskId,
+    TaskReadiness,
+    TaskResult,
     TaskState,
     WorkspaceBinding,
 )
@@ -36,9 +53,21 @@ if TYPE_CHECKING:
         ProjectCreateRequest,
         ProjectListRequest,
         StatusRequest,
+        TaskAddDependencyRequest,
+        TaskApproveRequest,
+        TaskBlockRequest,
+        TaskCancelRequest,
         TaskCreateRequest,
+        TaskDetailsRequest,
+        TaskEventsRequest,
         TaskGetRequest,
+        TaskListByViewRequest,
         TaskListRequest,
+        TaskRejectRequest,
+        TaskRemoveDependencyRequest,
+        TaskSubmitRequest,
+        TaskUnblockRequest,
+        TaskUpdateRequest,
         UpRequest,
         WorkaholicSession,
     )
@@ -229,6 +258,163 @@ def task() -> Task:
     )
 
 
+def task_submission_result(
+    status: ResultReviewStatus = ResultReviewStatus.NOT_REQUIRED,
+) -> TaskSubmissionResult:
+    """Build one internally consistent manual Result transition.
+
+    Args:
+        status: Review disposition represented by the returned transition.
+
+    Returns:
+        Validated deterministic submission or review result.
+
+    """
+    first_task = task()
+    result_id = ResultId("res_manual")
+    event_types: tuple[TaskEventType, ...]
+    if status is ResultReviewStatus.NOT_REQUIRED:
+        state = TaskState.DONE
+        version = 2
+        approval = ApprovalRequirement.NONE
+        current_result_id = result_id
+        review = ResultReview(status=status)
+        event_types = (
+            TaskEventType.RESULT_SUBMITTED,
+            TaskEventType.TASK_COMPLETED,
+        )
+        first_cursor = 2
+    elif status is ResultReviewStatus.PENDING:
+        state = TaskState.REVIEW
+        version = 2
+        approval = ApprovalRequirement.HUMAN
+        current_result_id = result_id
+        review = ResultReview(status=status)
+        event_types = (TaskEventType.RESULT_SUBMITTED,)
+        first_cursor = 2
+    elif status is ResultReviewStatus.APPROVED:
+        state = TaskState.DONE
+        version = 3
+        approval = ApprovalRequirement.HUMAN
+        current_result_id = result_id
+        review = ResultReview(
+            status=status,
+            reviewed_by=subject().id,
+            reviewed_at=_NOW,
+            comment="Looks good.",
+        )
+        event_types = (
+            TaskEventType.REVIEW_APPROVED,
+            TaskEventType.TASK_COMPLETED,
+        )
+        first_cursor = 3
+    else:
+        state = TaskState.OPEN
+        version = 3
+        approval = ApprovalRequirement.HUMAN
+        current_result_id = None
+        review = ResultReview(
+            status=status,
+            reviewed_by=subject().id,
+            reviewed_at=_NOW,
+            reason="Please address the missing evidence.",
+        )
+        event_types = (TaskEventType.REVIEW_REJECTED,)
+        first_cursor = 3
+    transitioned_task = replace(
+        first_task,
+        state=state,
+        version=version,
+        approval=approval,
+        current_result_id=current_result_id,
+        updated_at=_NOW,
+    )
+    result = TaskResult(
+        id=result_id,
+        task_uid=first_task.uid,
+        submitted_by=subject().id,
+        attempt_id=None,
+        submitted_at=_NOW,
+        comment=None,
+        summary=None,
+        criteria=(),
+        artifacts=(),
+        proposed_follow_ups=(),
+        review=review,
+    )
+    request_id = RequestId(f"req_{status.value}")
+    events = tuple(
+        TaskEvent(
+            id=TaskEventId(f"evt_{status.value}_{offset}"),
+            cursor=first_cursor + offset,
+            task_uid=first_task.uid,
+            project_id=first_task.project_id,
+            actor_subject_id=subject().id,
+            request_id=request_id,
+            event_type=event_type,
+            occurred_at=_NOW,
+            payload={},
+        )
+        for offset, event_type in enumerate(event_types)
+    )
+    return TaskSubmissionResult(
+        task=transitioned_task,
+        result=result,
+        events=events,
+    )
+
+
+def task_event_result(
+    *,
+    cursor: int = 1,
+    event_type: TaskEventType = TaskEventType.TASK_CREATED,
+) -> TaskEventResult:
+    """Build one attributable Human TaskEvent history record.
+
+    Args:
+        cursor: Positive Instance event cursor.
+        event_type: Semantic event kind.
+
+    Returns:
+        Validated flattened event result.
+
+    """
+    first_task = task()
+    return TaskEventResult(
+        id=TaskEventId(f"evt_history_{cursor}"),
+        cursor=cursor,
+        task_uid=first_task.uid,
+        project_id=first_task.project_id,
+        actor_subject_id=subject().id,
+        actor_kind=SubjectKind.HUMAN,
+        attempt_id=None,
+        request_id=RequestId(f"req_history_{cursor}"),
+        event_type=event_type,
+        occurred_at=_NOW,
+        payload={"version": cursor},
+    )
+
+
+def task_event_page(
+    *events: TaskEventResult,
+    next_cursor: int | None = None,
+) -> TaskEventPage:
+    """Build one validated event page with an inferred resumable cursor.
+
+    Args:
+        events: Ordered event records in the page.
+        next_cursor: Explicit cursor for an empty page or expected final cursor.
+
+    Returns:
+        Validated event snapshot page.
+
+    """
+    effective_cursor = (
+        events[-1].cursor if next_cursor is None and events else (next_cursor or 0)
+    )
+    return TaskEventPage(events=events, next_cursor=effective_cursor)
+
+
 class RecordingSession:
     """Configurable explicit fake for the cumulative Session boundary."""
 
@@ -244,6 +430,60 @@ class RecordingSession:
         self.create_task_result = first_task
         self.task_page_result = TaskPage(tasks=(first_task,), next_cursor=None)
         self.get_task_result = first_task
+        ready = TaskReadiness(
+            ready=True,
+            running=False,
+            scheduled=False,
+            stale=False,
+            awaiting_review=False,
+            reasons=(),
+        )
+        mutation_task = Task(
+            uid=first_task.uid,
+            project_id=first_task.project_id,
+            number=first_task.number,
+            key=first_task.key,
+            title=first_task.title,
+            objective=first_task.objective,
+            state=first_task.state,
+            priority=first_task.priority,
+            version=2,
+            created_by=first_task.created_by,
+            created_at=first_task.created_at,
+            updated_at=_NOW,
+        )
+        mutation_event = TaskEvent(
+            id=TaskEventId("evt_updated"),
+            cursor=2,
+            task_uid=mutation_task.uid,
+            project_id=mutation_task.project_id,
+            actor_subject_id=subject().id,
+            request_id=RequestId("req_updated"),
+            event_type=TaskEventType.TASK_UPDATED,
+            occurred_at=_NOW,
+            payload={},
+        )
+        self.task_mutation_result = TaskMutationResult(
+            task=mutation_task,
+            events=(mutation_event,),
+        )
+        self.task_details_result = TaskDetails(
+            task=first_task,
+            readiness=ready,
+            prerequisites=(),
+            current_result=None,
+        )
+        self.task_view_page_result = TaskPage(
+            tasks=(first_task,),
+            readiness=(ready,),
+            next_cursor=None,
+            view=TaskListView.ALL,
+        )
+        self.task_submit_result = task_submission_result()
+        self.task_approve_result = task_submission_result(ResultReviewStatus.APPROVED)
+        self.task_reject_result = task_submission_result(ResultReviewStatus.REJECTED)
+        self.task_event_page_result = task_event_page(task_event_result())
+        self.task_event_page_results: list[TaskEventPage] = []
         self.failures: dict[str, Exception] = {}
         self.up_requests: list[UpRequest] = []
         self.status_requests: list[StatusRequest] = []
@@ -254,6 +494,18 @@ class RecordingSession:
         self.task_create_requests: list[TaskCreateRequest] = []
         self.task_list_requests: list[TaskListRequest] = []
         self.task_get_requests: list[TaskGetRequest] = []
+        self.task_update_requests: list[TaskUpdateRequest] = []
+        self.task_block_requests: list[TaskBlockRequest] = []
+        self.task_unblock_requests: list[TaskUnblockRequest] = []
+        self.task_cancel_requests: list[TaskCancelRequest] = []
+        self.task_add_dependency_requests: list[TaskAddDependencyRequest] = []
+        self.task_remove_dependency_requests: list[TaskRemoveDependencyRequest] = []
+        self.task_details_requests: list[TaskDetailsRequest] = []
+        self.task_view_requests: list[TaskListByViewRequest] = []
+        self.task_submit_requests: list[TaskSubmitRequest] = []
+        self.task_approve_requests: list[TaskApproveRequest] = []
+        self.task_reject_requests: list[TaskRejectRequest] = []
+        self.task_event_requests: list[TaskEventsRequest] = []
 
     def up(self, request: UpRequest) -> BootstrapResult:
         """Record and answer one bootstrap request."""
@@ -314,6 +566,95 @@ class RecordingSession:
         self.task_get_requests.append(request)
         self._raise_failure("get_task")
         return self.get_task_result
+
+    def update_task(self, request: TaskUpdateRequest) -> TaskMutationResult:
+        """Record and answer one Task-definition update."""
+        self.task_update_requests.append(request)
+        self._raise_failure("update_task")
+        return self.task_mutation_result
+
+    def block_task(self, request: TaskBlockRequest) -> TaskMutationResult:
+        """Record and answer one Task block."""
+        self.task_block_requests.append(request)
+        self._raise_failure("block_task")
+        return self.task_mutation_result
+
+    def unblock_task(self, request: TaskUnblockRequest) -> TaskMutationResult:
+        """Record and answer one Task unblock."""
+        self.task_unblock_requests.append(request)
+        self._raise_failure("unblock_task")
+        return self.task_mutation_result
+
+    def cancel_task(self, request: TaskCancelRequest) -> TaskMutationResult:
+        """Record and answer one Task cancellation."""
+        self.task_cancel_requests.append(request)
+        self._raise_failure("cancel_task")
+        return self.task_mutation_result
+
+    def add_task_dependency(
+        self,
+        request: TaskAddDependencyRequest,
+    ) -> TaskMutationResult:
+        """Record and answer one dependency addition."""
+        self.task_add_dependency_requests.append(request)
+        self._raise_failure("add_task_dependency")
+        return self.task_mutation_result
+
+    def remove_task_dependency(
+        self,
+        request: TaskRemoveDependencyRequest,
+    ) -> TaskMutationResult:
+        """Record and answer one dependency removal."""
+        self.task_remove_dependency_requests.append(request)
+        self._raise_failure("remove_task_dependency")
+        return self.task_mutation_result
+
+    def submit_human_result(
+        self,
+        request: TaskSubmitRequest,
+    ) -> TaskSubmissionResult:
+        """Record and answer one direct Human Result submission."""
+        self.task_submit_requests.append(request)
+        self._raise_failure("submit_human_result")
+        return self.task_submit_result
+
+    def approve_result(
+        self,
+        request: TaskApproveRequest,
+    ) -> TaskSubmissionResult:
+        """Record and answer one Human Result approval."""
+        self.task_approve_requests.append(request)
+        self._raise_failure("approve_result")
+        return self.task_approve_result
+
+    def reject_result(
+        self,
+        request: TaskRejectRequest,
+    ) -> TaskSubmissionResult:
+        """Record and answer one Human Result rejection."""
+        self.task_reject_requests.append(request)
+        self._raise_failure("reject_result")
+        return self.task_reject_result
+
+    def get_task_details(self, request: TaskDetailsRequest) -> TaskDetails:
+        """Record and answer one complete Task-details query."""
+        self.task_details_requests.append(request)
+        self._raise_failure("get_task_details")
+        return self.task_details_result
+
+    def list_tasks_by_view(self, request: TaskListByViewRequest) -> TaskPage:
+        """Record and answer one view-bound Task page query."""
+        self.task_view_requests.append(request)
+        self._raise_failure("list_tasks_by_view")
+        return self.task_view_page_result
+
+    def read_task_events(self, request: TaskEventsRequest) -> TaskEventPage:
+        """Record and answer one TaskEvent snapshot query."""
+        self.task_event_requests.append(request)
+        self._raise_failure("read_task_events")
+        if self.task_event_page_results:
+            return self.task_event_page_results.pop(0)
+        return self.task_event_page_result
 
     def _raise_failure(self, operation: str) -> None:
         """Raise the configured failure for one operation, if present.

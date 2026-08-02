@@ -8,27 +8,44 @@ if TYPE_CHECKING:
     from datetime import datetime
 
     from workaholic.application.commands import (
+        AddTaskDependencyMutation,
+        ApproveResultMutation,
         BootstrapMutation,
         GetLocalStatus,
         GetProjectByKey,
         GetTask,
+        GetTaskDetails,
         ListInstanceTasks,
         ListProjects,
         ListTasks,
+        ListTasksByView,
         ProjectCreationMutation,
+        ReadTaskEvents,
+        RejectResultMutation,
+        RemoveTaskDependencyMutation,
+        SubmitHumanResultMutation,
+        TaskBlockMutation,
+        TaskCancelMutation,
         TaskCreationMutation,
+        TaskUnblockMutation,
+        TaskUpdateMutation,
     )
     from workaholic.application.results import (
         BootstrapResult,
         ProjectCreationResult,
         StatusResult,
+        TaskDetails,
+        TaskEventPage,
+        TaskMutationResult,
         TaskPage,
+        TaskSubmissionResult,
     )
     from workaholic.domain import (
         InstanceId,
         Project,
         ProjectId,
         RequestId,
+        ResultId,
         SubjectId,
         Task,
         TaskEventId,
@@ -107,6 +124,37 @@ class IdentifierFactory(Protocol):
         ...
 
 
+class ResultIdentifierFactory(Protocol):
+    """Generate only the identities required by Human Result operations."""
+
+    def new_result_id(self) -> ResultId:
+        """Create a candidate Result identifier.
+
+        Returns:
+            A new opaque ResultId.
+
+        """
+        ...
+
+    def new_event_id(self) -> TaskEventId:
+        """Create a candidate TaskEvent identifier.
+
+        Returns:
+            A new opaque TaskEventId.
+
+        """
+        ...
+
+    def new_request_id(self) -> RequestId:
+        """Create a candidate request identifier.
+
+        Returns:
+            A new opaque RequestId.
+
+        """
+        ...
+
+
 class BootstrapRepository(Protocol):
     """Persist the atomic local bootstrap semantic operation."""
 
@@ -126,8 +174,8 @@ class BootstrapRepository(Protocol):
         ...
 
 
-class TaskRepository(Protocol):
-    """Persist attributable Task mutations through semantic operations."""
+class TaskCreationRepository(Protocol):
+    """Persist attributable Task creation through one semantic operation."""
 
     def create_task(self, mutation: TaskCreationMutation) -> Task:
         """Atomically allocate, create, and record one Task.
@@ -137,6 +185,136 @@ class TaskRepository(Protocol):
 
         Returns:
             The committed Task.
+
+        """
+        ...
+
+
+class TaskRepository(TaskCreationRepository, Protocol):
+    """Persist the cumulative Task mutation surface."""
+
+    def update_task_if_version(
+        self,
+        mutation: TaskUpdateMutation,
+    ) -> TaskMutationResult:
+        """Atomically update Task definition fields at an expected version.
+
+        Args:
+            mutation: Validated optimistic Task patch.
+
+        Returns:
+            The committed Task and its attributable event.
+
+        """
+        ...
+
+    def block_task(self, mutation: TaskBlockMutation) -> TaskMutationResult:
+        """Atomically block one Task at an expected version.
+
+        Args:
+            mutation: Validated block transition.
+
+        Returns:
+            The committed Task and blocking event.
+
+        """
+        ...
+
+    def unblock_task(self, mutation: TaskUnblockMutation) -> TaskMutationResult:
+        """Atomically unblock one Task at an expected version.
+
+        Args:
+            mutation: Validated unblock transition.
+
+        Returns:
+            The committed Task and unblocking event.
+
+        """
+        ...
+
+    def cancel_task(self, mutation: TaskCancelMutation) -> TaskMutationResult:
+        """Atomically cancel one Task at an expected version.
+
+        Args:
+            mutation: Validated cancellation transition.
+
+        Returns:
+            The committed Task and cancellation event.
+
+        """
+        ...
+
+    def add_task_dependency(
+        self,
+        mutation: AddTaskDependencyMutation,
+    ) -> TaskMutationResult:
+        """Atomically add one same-Project Task prerequisite.
+
+        Args:
+            mutation: Validated dependency addition.
+
+        Returns:
+            The committed dependant Task and update event.
+
+        """
+        ...
+
+    def remove_task_dependency(
+        self,
+        mutation: RemoveTaskDependencyMutation,
+    ) -> TaskMutationResult:
+        """Atomically remove one existing Task prerequisite.
+
+        Args:
+            mutation: Validated dependency removal.
+
+        Returns:
+            The committed dependant Task and update event.
+
+        """
+        ...
+
+    def submit_human_result(
+        self,
+        mutation: SubmitHumanResultMutation,
+    ) -> TaskSubmissionResult:
+        """Atomically submit one Human Result without an Attempt.
+
+        Args:
+            mutation: Validated Human submission and candidate identities.
+
+        Returns:
+            The committed Task, Result, and ordered events.
+
+        """
+        ...
+
+    def approve_result(
+        self,
+        mutation: ApproveResultMutation,
+    ) -> TaskSubmissionResult:
+        """Atomically approve and complete the current pending Result.
+
+        Args:
+            mutation: Validated approval and event identities.
+
+        Returns:
+            The committed Task, Result, and ordered events.
+
+        """
+        ...
+
+    def reject_result(
+        self,
+        mutation: RejectResultMutation,
+    ) -> TaskSubmissionResult:
+        """Atomically reject and deselect the current pending Result.
+
+        Args:
+            mutation: Validated rejection and event identity.
+
+        Returns:
+            The reopened Task, retained Result, and rejection event.
 
         """
         ...
@@ -161,8 +339,8 @@ class ProjectRepository(Protocol):
         ...
 
 
-class QueryRepository(Protocol):
-    """Read existing local status, Projects, and Tasks without mutation."""
+class CoreQueryRepository(Protocol):
+    """Read the currently composed status, Project, and Task query surface."""
 
     def get_local_status(self, command: GetLocalStatus) -> StatusResult:
         """Read the selected local status without mutating state.
@@ -232,6 +410,50 @@ class QueryRepository(Protocol):
 
         Returns:
             The matching Task.
+
+        """
+        ...
+
+
+class TaskViewQueryRepository(CoreQueryRepository, Protocol):
+    """Read cumulative core queries plus Phase 3 Task readiness views."""
+
+    def get_task_details(self, command: GetTaskDetails) -> TaskDetails:
+        """Read complete Task definition, readiness, and selected Result details.
+
+        Args:
+            command: Validated scoped Task detail query.
+
+        Returns:
+            Complete internally consistent Task details.
+
+        """
+        ...
+
+    def list_tasks_by_view(self, command: ListTasksByView) -> TaskPage:
+        """Read one deterministic persisted or derived Task view page.
+
+        Args:
+            command: Validated view, scope, and pagination query.
+
+        Returns:
+            A view-bound deterministic Task page.
+
+        """
+        ...
+
+
+class QueryRepository(TaskViewQueryRepository, Protocol):
+    """Read the complete cumulative query surface without mutation."""
+
+    def read_task_events_after(self, command: ReadTaskEvents) -> TaskEventPage:
+        """Read one bounded TaskEvent snapshot after an Instance cursor.
+
+        Args:
+            command: Validated Task scope and cursor query.
+
+        Returns:
+            A polling-safe ascending TaskEvent page.
 
         """
         ...

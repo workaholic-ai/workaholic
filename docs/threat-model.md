@@ -1,6 +1,6 @@
 # Workaholic AI Threat Model
 
-- Status: Accepted through Phase 2 contract
+- Status: Accepted through Phase 3 implementation
 - Decision date: 2026-07-29
 - Scope: Embedded and shared-server behavior required for v1
 - Security contact: [pg@ithesion.com](mailto:pg@ithesion.com)
@@ -9,11 +9,13 @@
 
 This threat model turns the accepted v1 security boundary into explicit
 engineering constraints and verification targets. It covers planned behavior;
-the current `0.2.0a1` development package implements trusted embedded profiles,
+the current `0.3.0a1` development package implements trusted embedded profiles,
 canonical upward Workspace discovery, safe binding, multi-project
-authorization checks, local SQLite schema version `2`, and bootstrap-Human
-attribution. It does not implement bearer authentication, Agent execution,
-remote profiles, credentials, `RemoteSession`, or network services.
+authorization checks, local SQLite schema version `3`, optimistic Task
+mutations, bounded structured input, Human Result and review attribution, and
+append-only TaskEvents. It rejects schema version `2` unchanged. It does not
+implement bearer authentication, Agent execution, remote profiles,
+credentials, `RemoteSession`, or network services.
 
 Terms such as Subject, ProjectGrant, Attempt, Lease, and TaskEvent use their
 canonical definitions in the [glossary](glossary.md).
@@ -26,6 +28,7 @@ Workaholic AI must:
 - authorize every operation against instance and Project roles;
 - limit a compromised Subject or stolen Token to that Subject's grants;
 - preserve Task, Attempt, Lease, Result, and TaskEvent integrity;
+- prevent stale Task versions from overwriting accepted mutations;
 - attribute every mutation to the authenticated Subject and request;
 - prevent stale or foreign Attempts from mutating work;
 - keep credentials out of repository-controlled context and normal output;
@@ -42,6 +45,8 @@ Security-sensitive assets include:
 - trusted user profiles and their selected embedded data directories;
 - Project membership and ProjectGrants;
 - Task content, state, versions, dependencies, and stable identities;
+- Human Result attribution, review disposition, and external artifact
+  references;
 - Attempt ownership, Lease expiry, Results, and idempotency records;
 - attributable, append-only TaskEvents and their Instance ordering;
 - persisted state and backend credentials;
@@ -141,9 +146,9 @@ file, and it never changes a shared `.gitignore`.
 ### Remote transport
 
 Phase 2 has no remote profiles, endpoints, credentials, Tokens,
-`RemoteSession`, or network transport. It rejects any configuration that
-attempts to introduce them. Authenticated remote operation begins in Phases 5
-and 6.
+`RemoteSession`, or network transport. Phase 3 retains that boundary and
+rejects any configuration that attempts to introduce them. Authenticated remote
+operation begins in Phases 5 and 6.
 
 When delivered, remote bearer-token traffic uses HTTPS through trusted
 deployment infrastructure. A trusted profile owns the server URL and expected
@@ -163,8 +168,11 @@ The model considers:
 - a malicious or compromised repository controlling `.workaholic.env`;
 - an authenticated Subject attempting operations outside its role or Project;
 - a stale Agent process attempting to mutate a reclaimed Task;
+- a stale Human or automation process attempting to overwrite a newer Task;
 - a network attacker observing, redirecting, replaying, or altering traffic;
 - a client submitting forged actor, event, time, or Attempt information;
+- a client supplying oversized, recursive, forged-identity, or executable Task
+  and Result input;
 - a client or workload exhausting process, persistence, or event resources;
 - accidental operator misconfiguration.
 
@@ -184,6 +192,8 @@ administrator is outside the v1 application boundary.
 | Command injection | Context or task input triggers shell expansion or execution. | Parse context with a strict data parser and key allowlist; reject substitution and executable-path keys; never source `.workaholic.env`; use argument-vector subprocess calls at trusted adapter boundaries. | Malformed context, metacharacter, substitution, and unknown-key tests. |
 | Unauthorized Attempt mutation | A Subject heartbeats, releases, reports, or submits against another, expired, or superseded Attempt. | Authenticate the Subject; atomically verify Project access, Attempt owner, current Attempt ID, status, and Lease before mutation; reject stale Attempts without partial writes. | Concurrent claim, foreign owner, expiry, reclaim, and stale-submission tests. |
 | Event forgery | A client supplies another actor, false timestamp, event type, or inconsistent TaskEvent. | Create TaskEvents only inside authenticated application transactions; derive actor and authoritative time server-side; validate typed payloads; commit state and event atomically; allocate ordered cursors in persistence. | Actor spoofing, invalid event, rollback, and ordering contract tests. |
+| Concurrent mutation overwrite | A stale Human or process updates an existing Task after another accepted mutation. | Require a positive expected version at every trusted mutation boundary; increment once per semantic mutation; return `VERSION_CONFLICT` without writes; never refresh and silently retry. | Two-writer, stale-version, multi-event single-increment, and no-retry CLI tests. |
+| Structured Task or Result abuse | Input attempts resource exhaustion, identity forgery, secret persistence, path execution, or automatic Task creation. | Require explicit bounded UTF-8 JSON input; cap bytes, depth, collections, and text; reject actor, Attempt, request, event, Result, cursor, and timestamp identities; treat URIs as inert references; never execute or fetch artifacts or proposed follow-ups. | Oversize, nesting, forged-field, metacharacter, artifact, and proposed-follow-up tests. |
 | Mutation replay | A lost response causes a client to repeat a state-changing request. | Require idempotency keys for retryable mutations; bind stored outcomes to the authenticated operation; combine idempotency with optimistic Task versions and Attempt checks. | Duplicate-request and conflicting-reuse tests. |
 | Persistence tampering or confusion | A process reads an unknown schema or exposes inconsistent state after a partial write. | Validate schema versions before access; fail without modifying unsupported stores; use transactional adapter operations and crash-safe JSON replacement; keep backend credentials outside task data. | Unknown-version, rollback, interrupted-write, and backend-contract tests. |
 | Denial of service | A client sends large payloads, expensive queries, rapid heartbeats, connection floods, or unbounded event reads. | Bound payload sizes, pagination, timeouts, retries, concurrency, and transaction duration; apply deployment-level request limits; provide backpressure and actionable errors; keep housekeeping optional for Lease correctness. | Limit, timeout, concurrency-load, and large-history tests. |
@@ -218,6 +228,10 @@ transactionally using the authoritative runtime clock.
   Workspace-root containment, safe binding replacement, trusted embedded
   profile storage ownership, schema version `1` rejection without mutation,
   remote-configuration rejection, and malicious `.workaholic.env` input.
+- Phase 3 tests schema version `2` rejection, optimistic Task versions,
+  transition and dependency atomicity, Human Result attribution with null
+  Attempt, bounded structured input, review behavior, event ordering, and
+  idempotent lifecycle replay.
 - Phase 4 tests atomic claims, current Attempt ownership, Lease expiry, stale
   submissions, idempotent Results, and bounded agent payloads.
 - Phase 5 tests Token storage, expiry, revocation, redaction, ProjectGrant
@@ -253,5 +267,6 @@ the one organization served by an Instance.
 - [Delivery roadmap](roadmap.md)
 - [Product scope](product-scope.md)
 - [Compatibility policy](compatibility-policy.md)
+- [ADR 0011: Phase 3 Task Mutation and Human Submission](adr/0011-phase-three-task-mutation-and-human-submission.md)
 - [Glossary](glossary.md)
 - [Security reporting policy](../SECURITY.md)

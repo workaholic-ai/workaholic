@@ -18,14 +18,21 @@ The canonical end-to-end acceptance flows remain in the
 [`phase_one.py`](phase_one.py) defines the baseline repository and Session
 factory protocols. [`phase_two.py`](phase_two.py) extends those protocols with
 deterministic clocks and identifiers plus isolated trusted profile registries.
-The Phase 2 persistence and Session contracts inherit every Phase 1 assertion
-and add only multi-Project, profile, binding, authority, pagination, race, and
-rollback behavior.
+[`phase_three.py`](phase_three.py) completes the identity surface and adds
+exact-version repository connections, deterministic lifecycle composition,
+and semantic transaction-failure hooks. Each persistence and Session contract
+inherits every earlier assertion. Phase 3 adds lifecycle, optimistic race,
+dependency graph, readiness, Result review, TaskEvent pagination, attribution,
+authorization, restart, idempotency, and rollback behavior without
+adapter-specific expected outcomes.
 
 Concrete adapters subclass the relevant contract and provide one factory
 fixture. Expected outcomes contain no adapter-specific branches. Factories
 must isolate all persistence, configuration, and Workspace state below
 pytest-owned paths and must never read an operator's real configuration.
+Failure injection is adapter-owned factory plumbing: shared assertions name a
+semantic boundary and verify observable rollback, never a table, query, or
+private storage function.
 
 Intentional negative samples live under [fixtures](fixtures/README.md). They
 prove each dependency rule and the CLI startup detector fail with actionable

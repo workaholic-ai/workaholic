@@ -78,8 +78,8 @@ _EXPECTED_JOURNEYS = {
         skip_reason=None,
     ),
     "test_solo_journey.py": JourneyExpectation(
-        test_name="test_solo_tasks_remain_visible_after_reopening_the_project",
-        enabling_phase=1,
+        test_name="test_human_completes_dependency_bound_reviewed_workflow",
+        enabling_phase=3,
         skip_reason=None,
     ),
     "test_team_journey.py": JourneyExpectation(

@@ -13,6 +13,25 @@ from workaholic.session import (
 )
 
 _UNKNOWN_ERROR_MESSAGE = "An unexpected internal error occurred."
+TASK_EXPECTED_VERSION_REQUIRED_MESSAGE = (
+    "Task mutation requires --expected-version for automation."
+)
+
+
+def write_expected_task_version_required(*, json_mode: bool) -> Never:
+    """Write the shared unsafe Task-version-omission failure and terminate.
+
+    Args:
+        json_mode: Whether to emit the public automation envelope.
+
+    Raises:
+        typer.Exit: Always, after rendering the stable input failure.
+
+    """
+    write_invalid_input(
+        TASK_EXPECTED_VERSION_REQUIRED_MESSAGE,
+        json_mode=json_mode,
+    )
 
 
 def write_invalid_input(message: str, *, json_mode: bool) -> Never:
