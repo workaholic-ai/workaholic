@@ -17,8 +17,8 @@ from workaholic.application import (
     TaskPage,
 )
 from workaholic.cli.main import create_app
-from workaholic.domain import ProjectId, TaskId
-from workaholic.session import TaskListRequest
+from workaholic.domain import ProjectId, ReadinessReason, TaskId, TaskReadiness
+from workaholic.session import TaskListByViewRequest, TaskListView
 
 _RUNNER = CliRunner()
 _TASK_LIST_ERRORS = (
@@ -35,6 +35,15 @@ _TASK_LIST_ERRORS = (
     ApplicationErrorCode.STORAGE_BUSY,
     ApplicationErrorCode.STORAGE_UNAVAILABLE,
     ApplicationErrorCode.INTERNAL_ERROR,
+)
+
+_READY = TaskReadiness(
+    ready=True,
+    running=False,
+    scheduled=False,
+    stale=False,
+    awaiting_review=False,
+    reasons=(),
 )
 
 
@@ -60,9 +69,11 @@ def test_task_list_json_preserves_order_pagination_and_request() -> None:
         objective="Second task",
     )
     session = RecordingSession()
-    session.task_page_result = TaskPage(
+    session.task_view_page_result = TaskPage(
         tasks=(first, second),
+        readiness=(_READY, _READY),
         next_cursor="cursor-page-2",
+        view=TaskListView.ALL,
     )
     provider = SessionProviderSpy(session)
 
@@ -94,8 +105,8 @@ def test_task_list_json_preserves_order_pagination_and_request() -> None:
         "ACME-2",
     ]
     assert data["next_cursor"] == "cursor-page-2"
-    assert session.task_list_requests == [
-        TaskListRequest(
+    assert session.task_view_requests == [
+        TaskListByViewRequest(
             cursor="cursor-page-1",
             limit=2,
             project="DOCS",
@@ -108,7 +119,12 @@ def test_task_list_json_preserves_order_pagination_and_request() -> None:
 def test_task_list_defaults_and_empty_json_are_explicit() -> None:
     """An empty default page retains both required response fields."""
     session = RecordingSession()
-    session.task_page_result = TaskPage(tasks=(), next_cursor=None)
+    session.task_view_page_result = TaskPage(
+        tasks=(),
+        readiness=(),
+        next_cursor=None,
+        view=TaskListView.ALL,
+    )
 
     result = _RUNNER.invoke(
         create_app(SessionProviderSpy(session)),
@@ -119,7 +135,98 @@ def test_task_list_defaults_and_empty_json_are_explicit() -> None:
         "tasks": [],
         "next_cursor": None,
     }
-    assert session.task_list_requests == [TaskListRequest()]
+    assert session.task_view_requests == [TaskListByViewRequest()]
+
+
+def test_task_list_ready_view_preserves_ranked_session_order_and_cursor() -> None:
+    """Ready ranking and view-bound cursors are returned without CLI sorting."""
+    first = replace(task(), priority=100)
+    second = replace(
+        task(),
+        uid=TaskId("tsk_second"),
+        number=2,
+        key="ACME-2",
+        priority=10,
+    )
+    session = RecordingSession()
+    session.task_view_page_result = TaskPage(
+        tasks=(first, second),
+        readiness=(_READY, _READY),
+        next_cursor="ready-page-2",
+        view=TaskListView.READY,
+    )
+
+    result = _RUNNER.invoke(
+        create_app(SessionProviderSpy(session)),
+        [
+            "task",
+            "list",
+            "--view",
+            "ready",
+            "--cursor",
+            "ready-page-1",
+            "--limit",
+            "2",
+            "--json",
+            "--non-interactive",
+        ],
+    )
+
+    data = require_object(require_success(_completed(result)), context="ready page")
+    tasks = data["tasks"]
+    assert isinstance(tasks, list)
+    assert [item["key"] for item in tasks if isinstance(item, dict)] == [
+        "ACME-1",
+        "ACME-2",
+    ]
+    assert data["next_cursor"] == "ready-page-2"
+    assert session.task_view_requests == [
+        TaskListByViewRequest(
+            view=TaskListView.READY,
+            cursor="ready-page-1",
+            limit=2,
+        )
+    ]
+
+
+def test_task_list_serializes_derived_view_flags_and_readiness_reasons() -> None:
+    """Automation receives the authoritative Session readiness projection."""
+    scheduled = TaskReadiness(
+        ready=False,
+        running=False,
+        scheduled=True,
+        stale=False,
+        awaiting_review=False,
+        reasons=(ReadinessReason.NOT_YET_AVAILABLE,),
+    )
+    session = RecordingSession()
+    session.task_view_page_result = TaskPage(
+        tasks=(task(),),
+        readiness=(scheduled,),
+        next_cursor=None,
+        view=TaskListView.SCHEDULED,
+    )
+
+    result = _RUNNER.invoke(
+        create_app(SessionProviderSpy(session)),
+        ["task", "list", "--view", "scheduled", "--json"],
+    )
+
+    data = require_object(require_success(_completed(result)), context="scheduled page")
+    tasks = data["tasks"]
+    assert isinstance(tasks, list)
+    selected = require_object(tasks[0], context="scheduled task")
+    assert selected["views"] == {
+        "ready": False,
+        "running": False,
+        "scheduled": True,
+        "stale": False,
+        "awaiting_review": False,
+    }
+    assert selected["readiness_reasons"] == ["not_yet_available"]
+    assert session.task_view_requests == [
+        TaskListByViewRequest(view=TaskListView.SCHEDULED)
+    ]
 
 
 def test_task_list_all_projects_preserves_cross_project_order() -> None:
@@ -135,9 +242,11 @@ def test_task_list_all_projects_preserves_cross_project_order() -> None:
         objective="Documentation task",
     )
     session = RecordingSession()
-    session.task_page_result = TaskPage(
+    session.task_view_page_result = TaskPage(
         tasks=(acme_task, docs_task),
+        readiness=(_READY, _READY),
         next_cursor="cursor-all-page-2",
+        view=TaskListView.ALL,
     )
 
     result = _RUNNER.invoke(
@@ -164,7 +273,9 @@ def test_task_list_all_projects_preserves_cross_project_order() -> None:
         "DOCS-1",
     ]
     assert data["next_cursor"] == "cursor-all-page-2"
-    assert session.task_list_requests == [TaskListRequest(all_projects=True, limit=2)]
+    assert session.task_view_requests == [
+        TaskListByViewRequest(all_projects=True, limit=2)
+    ]
 
 
 def test_task_list_rejects_conflicting_project_scope_before_session() -> None:
@@ -188,16 +299,18 @@ def test_task_list_rejects_conflicting_project_scope_before_session() -> None:
     detail = require_error(_completed(result), expected_code="INVALID_INPUT")
     assert detail["message"] == "Task-list input is invalid."
     assert provider.call_count == 0
-    assert session.task_list_requests == []
+    assert session.task_view_requests == []
 
 
 def test_task_list_human_output_is_safe_and_reports_next_cursor() -> None:
     """Human pages escape title controls and preserve opaque paging guidance."""
     unsafe_title_task = replace(task(), title="Line one\nLine two")
     session = RecordingSession()
-    session.task_page_result = TaskPage(
+    session.task_view_page_result = TaskPage(
         tasks=(unsafe_title_task,),
+        readiness=(_READY,),
         next_cursor="cursor-page-2",
+        view=TaskListView.ALL,
     )
 
     result = _RUNNER.invoke(
@@ -215,7 +328,12 @@ def test_task_list_human_output_is_safe_and_reports_next_cursor() -> None:
 def test_task_list_empty_human_output_is_deterministic() -> None:
     """An empty Human page is unambiguous."""
     session = RecordingSession()
-    session.task_page_result = TaskPage(tasks=(), next_cursor=None)
+    session.task_view_page_result = TaskPage(
+        tasks=(),
+        readiness=(),
+        next_cursor=None,
+        view=TaskListView.ALL,
+    )
 
     result = _RUNNER.invoke(
         create_app(SessionProviderSpy(session)),
@@ -247,7 +365,7 @@ def test_task_list_rejects_invalid_cursor_before_session(cursor: str) -> None:
     detail = require_error(_completed(result), expected_code="INVALID_INPUT")
     assert detail["message"] == "Task-list input is invalid."
     assert provider.call_count == 0
-    assert session.task_list_requests == []
+    assert session.task_view_requests == []
 
 
 @pytest.mark.parametrize("limit", ["0", "501"])
@@ -262,13 +380,27 @@ def test_task_list_parser_rejects_limit_outside_public_bounds(limit: str) -> Non
     assert "Invalid value" in unstyle(result.output)
 
 
+def test_task_list_parser_rejects_unknown_view_before_session() -> None:
+    """The public view option is a closed case-sensitive vocabulary."""
+    provider = SessionProviderSpy(RecordingSession())
+
+    result = _RUNNER.invoke(
+        create_app(provider),
+        ["task", "list", "--view", "READY"],
+    )
+
+    assert result.exit_code == 2
+    assert result.stderr == "Task-list input is invalid.\n"
+    assert provider.call_count == 0
+
+
 @pytest.mark.parametrize("code", _TASK_LIST_ERRORS)
 def test_task_list_maps_every_documented_failure_to_json(
     code: ApplicationErrorCode,
 ) -> None:
     """The command preserves every documented Task-list failure."""
     session = RecordingSession()
-    session.failures["list_tasks"] = ApplicationError(
+    session.failures["list_tasks_by_view"] = ApplicationError(
         code,
         f"Safe {code.value} message.",
     )
@@ -298,6 +430,7 @@ def test_task_list_help_and_non_interactive_never_prompt(
     for expected in (
         "--project",
         "--all-projects",
+        "--view",
         "--cursor",
         "--limit",
         "--json",

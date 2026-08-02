@@ -6,6 +6,15 @@ from typing import Annotated
 
 import typer
 
+TaskSelectorArgument = Annotated[
+    str,
+    typer.Argument(
+        ...,
+        help="Canonical Task UID or stable PROJECT-NUMBER key.",
+        metavar="TASK",
+    ),
+]
+
 JsonOption = Annotated[
     bool,
     typer.Option(
@@ -102,3 +111,84 @@ LimitOption = Annotated[
         show_default=True,
     ),
 ]
+
+ExpectedVersionOption = Annotated[
+    int | None,
+    typer.Option(
+        ...,
+        "--expected-version",
+        help="Require the Task to have this positive current version.",
+        metavar="INTEGER",
+        prompt=False,
+    ),
+]
+
+InputFileOption = Annotated[
+    str | None,
+    typer.Option(
+        ...,
+        "--input-file",
+        help="Read bounded structured Task input from PATH, or stdin with '-'.",
+        metavar="PATH|-",
+        prompt=False,
+    ),
+]
+
+AvailableAtOption = Annotated[
+    str | None,
+    typer.Option(
+        ...,
+        "--available-at",
+        help="Set an RFC 3339 UTC availability timestamp.",
+        metavar="TIMESTAMP",
+        prompt=False,
+    ),
+]
+
+ClearAvailableAtOption = Annotated[
+    bool,
+    typer.Option(
+        ...,
+        "--clear-available-at",
+        help="Clear the Task availability timestamp.",
+        prompt=False,
+    ),
+]
+
+ApprovalOption = Annotated[
+    str | None,
+    typer.Option(
+        ...,
+        "--approval",
+        help="Set whether completion requires Human approval.",
+        metavar="none|human",
+        prompt=False,
+    ),
+]
+
+TaskViewOption = Annotated[
+    str,
+    typer.Option(
+        ...,
+        "--view",
+        help="Select one stored-state or derived Task view.",
+        metavar="all|ready|scheduled|blocked|review|done|cancelled",
+        prompt=False,
+        show_default=True,
+    ),
+]
+
+
+def option_was_supplied(ctx: typer.Context, name: str) -> bool:
+    """Return whether Click obtained an option from the command line.
+
+    Args:
+        ctx: Active command context.
+        name: Python parameter name registered with Click.
+
+    Returns:
+        Whether the source is the explicit command line rather than a default.
+
+    """
+    source = ctx.get_parameter_source(name)
+    return source is not None and source.name == "COMMANDLINE"

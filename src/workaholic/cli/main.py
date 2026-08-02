@@ -103,7 +103,7 @@ def create_app(session_provider: SessionProvider) -> typer.Typer:
     application.add_typer(project_application, name="project")
 
     task_application = typer.Typer(
-        help="Create and inspect persistent Tasks.",
+        help="Define, coordinate, and inspect persistent Tasks.",
         add_completion=False,
         no_args_is_help=True,
         pretty_exceptions_enable=False,

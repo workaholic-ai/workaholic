@@ -16,6 +16,8 @@ if TYPE_CHECKING:
     from collections.abc import Sequence
     from pathlib import Path
 
+    from tests.golden import JsonObject, JsonValue
+
 pytestmark = pytest.mark.integration
 
 
@@ -67,6 +69,28 @@ def _assert_uuid7(value: object, *, prefix: str) -> None:
     parsed = uuid.UUID(value.removeprefix(prefix))
     assert parsed.version == 7
     assert parsed.variant == uuid.RFC_4122
+
+
+def _mutation_task_and_events(
+    result: subprocess.CompletedProcess[str],
+    *,
+    context: str,
+) -> tuple[JsonObject, list[JsonValue]]:
+    """Extract the Task and ordered event batch from one CLI mutation.
+
+    Args:
+        result: Fresh-process mutation result.
+        context: Assertion label for malformed output.
+
+    Returns:
+        Validated public Task object and raw ordered event collection.
+
+    """
+    data = require_object(require_success(result), context=context)
+    task = require_object(data["task"], context=f"{context} Task")
+    events = data["events"]
+    assert isinstance(events, list)
+    return task, events
 
 
 def test_local_cli_persists_complete_journey_across_fresh_processes(  # noqa: PLR0915 - one public journey
@@ -202,8 +226,13 @@ def test_local_cli_persists_complete_journey_across_fresh_processes(  # noqa: PL
         workspace=workspace,
         data_directory=data_directory,
     )
-    assert require_success(shown_by_key) == {"task": created_task}
-    assert require_success(shown_by_uid) == {"task": created_task}
+    expected_details: JsonObject = {
+        "task": created_task,
+        "prerequisites": [],
+        "current_result": None,
+    }
+    assert require_success(shown_by_key) == expected_details
+    assert require_success(shown_by_uid) == expected_details
 
 
 def test_local_cli_selects_tasks_across_projects_and_rejects_scope_mismatch(  # noqa: PLR0915 - one public journey
@@ -438,7 +467,7 @@ def test_local_cli_selects_tasks_across_projects_and_rejects_scope_mismatch(  # 
     assert first_all_data["tasks"] == [acme_task, docs_task_one]
     first_cursor = first_all_data["next_cursor"]
     assert isinstance(first_cursor, str)
-    assert first_cursor.startswith("v2.")
+    assert first_cursor.startswith("v3.")
 
     second_all_page = _run_cli(
         [
@@ -514,7 +543,11 @@ def test_local_cli_selects_tasks_across_projects_and_rejects_scope_mismatch(  # 
         workspace=acme_workspace,
         data_directory=data_directory,
     )
-    assert require_success(explicit_show) == {"task": docs_task_one}
+    assert require_success(explicit_show) == {
+        "task": docs_task_one,
+        "prerequisites": [],
+        "current_result": None,
+    }
 
     wrong_cursor_scope = _run_cli(
         [
@@ -554,6 +587,453 @@ def test_local_cli_selects_tasks_across_projects_and_rejects_scope_mismatch(  # 
     require_error(cross_instance_context, expected_code="CONTEXT_INVALID")
     assert cross_instance_context.returncode == 3
     assert cross_instance_context.stderr == ""
+
+
+def test_local_cli_persists_phase_three_task_coordination_across_processes(  # noqa: PLR0915 - one public journey
+    tmp_path: Path,
+) -> None:
+    """Task definition, views, transitions, and dependencies survive restarts."""
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    data_directory = tmp_path / "data"
+
+    require_success(
+        _run_cli(
+            [
+                "up",
+                "--project-key",
+                "ACME",
+                "--json",
+                "--non-interactive",
+            ],
+            workspace=workspace,
+            data_directory=data_directory,
+        )
+    )
+
+    definition_file = workspace / "dependent-task.json"
+    definition_file.write_text(
+        json.dumps(
+            {
+                "available_at": "2099-01-01T00:00:00Z",
+                "approval": "human",
+                "acceptance": [
+                    {
+                        "id": "ac_done",
+                        "text": "The implementation is verified.",
+                        "required": True,
+                    }
+                ],
+                "context": [
+                    {
+                        "uri": "https://example.test/specification",
+                        "version": "v1",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    foundation_add = _run_cli(
+        [
+            "task",
+            "add",
+            "Foundation",
+            "--priority",
+            "90",
+            "--json",
+            "--non-interactive",
+        ],
+        workspace=workspace,
+        data_directory=data_directory,
+    )
+    foundation_data = require_object(
+        require_success(foundation_add),
+        context="foundation creation",
+    )
+    foundation = require_object(
+        foundation_data["task"],
+        context="foundation Task",
+    )
+    assert foundation["key"] == "ACME-1"
+    assert foundation["version"] == 1
+
+    dependent_add = _run_cli(
+        [
+            "task",
+            "add",
+            "Dependent delivery",
+            "--objective",
+            "Deliver only after the foundation",
+            "--priority",
+            "80",
+            "--input-file",
+            str(definition_file),
+            "--json",
+            "--non-interactive",
+        ],
+        workspace=workspace,
+        data_directory=data_directory,
+    )
+    dependent_data = require_object(
+        require_success(dependent_add),
+        context="dependent creation",
+    )
+    dependent = require_object(dependent_data["task"], context="dependent Task")
+    assert dependent["key"] == "ACME-2"
+    assert dependent["approval"] == "human"
+    assert dependent["views"] == {
+        "ready": False,
+        "running": False,
+        "scheduled": True,
+        "stale": False,
+        "awaiting_review": False,
+    }
+    assert dependent["readiness_reasons"] == ["not_yet_available"]
+
+    scheduled = _run_cli(
+        [
+            "task",
+            "list",
+            "--view",
+            "scheduled",
+            "--json",
+            "--non-interactive",
+        ],
+        workspace=workspace,
+        data_directory=data_directory,
+    )
+    scheduled_data = require_object(
+        require_success(scheduled),
+        context="scheduled view",
+    )
+    scheduled_tasks = scheduled_data["tasks"]
+    assert isinstance(scheduled_tasks, list)
+    assert [item["key"] for item in scheduled_tasks if isinstance(item, dict)] == [
+        "ACME-2"
+    ]
+
+    clear_schedule = _run_cli(
+        [
+            "task",
+            "update",
+            "ACME-2",
+            "--clear-available-at",
+            "--expected-version",
+            "1",
+            "--idempotency-key",
+            "clear-schedule-1",
+            "--json",
+            "--non-interactive",
+        ],
+        workspace=workspace,
+        data_directory=data_directory,
+    )
+    dependent, events = _mutation_task_and_events(
+        clear_schedule,
+        context="clear schedule",
+    )
+    assert dependent["version"] == 2
+    assert dependent["available_at"] is None
+    assert require_object(events[0], context="update event")["type"] == "task_updated"
+
+    add_dependency = _run_cli(
+        [
+            "task",
+            "add-dependency",
+            "ACME-2",
+            "ACME-1",
+            "--expected-version",
+            "2",
+            "--idempotency-key",
+            "dependency-2",
+            "--json",
+            "--non-interactive",
+        ],
+        workspace=workspace,
+        data_directory=data_directory,
+    )
+    dependent, events = _mutation_task_and_events(
+        add_dependency,
+        context="dependency addition",
+    )
+    assert dependent["version"] == 3
+    assert dependent["depends_on"] == [foundation["uid"]]
+    assert require_object(events[0], context="dependency event")["type"] == (
+        "task_updated"
+    )
+
+    ready_with_dependency = _run_cli(
+        [
+            "task",
+            "list",
+            "--view",
+            "ready",
+            "--json",
+            "--non-interactive",
+        ],
+        workspace=workspace,
+        data_directory=data_directory,
+    )
+    ready_data = require_object(
+        require_success(ready_with_dependency),
+        context="ready dependency view",
+    )
+    ready_tasks = ready_data["tasks"]
+    assert isinstance(ready_tasks, list)
+    assert [item["key"] for item in ready_tasks if isinstance(item, dict)] == ["ACME-1"]
+
+    dependent_details = _run_cli(
+        ["task", "show", "ACME-2", "--json", "--non-interactive"],
+        workspace=workspace,
+        data_directory=data_directory,
+    )
+    details = require_object(
+        require_success(dependent_details),
+        context="dependent details",
+    )
+    detailed_task = require_object(details["task"], context="detailed dependant")
+    assert detailed_task["readiness_reasons"] == ["unsatisfied_dependency"]
+    prerequisites = details["prerequisites"]
+    assert isinstance(prerequisites, list)
+    assert [
+        require_object(item, context="prerequisite")["key"] for item in prerequisites
+    ] == ["ACME-1"]
+
+    cancel_foundation = _run_cli(
+        [
+            "task",
+            "cancel",
+            "ACME-1",
+            "--reason",
+            "Superseded",
+            "--expected-version",
+            "1",
+            "--json",
+            "--non-interactive",
+        ],
+        workspace=workspace,
+        data_directory=data_directory,
+    )
+    cancelled_foundation, events = _mutation_task_and_events(
+        cancel_foundation,
+        context="foundation cancellation",
+    )
+    assert cancelled_foundation["state"] == "cancelled"
+    assert cancelled_foundation["version"] == 2
+    assert require_object(events[0], context="cancellation event")["type"] == (
+        "task_cancelled"
+    )
+
+    unsatisfiable_show = _run_cli(
+        ["task", "show", "ACME-2", "--json", "--non-interactive"],
+        workspace=workspace,
+        data_directory=data_directory,
+    )
+    unsatisfiable = require_object(
+        require_success(unsatisfiable_show),
+        context="unsatisfiable details",
+    )
+    unsatisfiable_task = require_object(
+        unsatisfiable["task"],
+        context="unsatisfiable Task",
+    )
+    assert unsatisfiable_task["readiness_reasons"] == ["unsatisfiable_dependency"]
+
+    remove_dependency = _run_cli(
+        [
+            "task",
+            "remove-dependency",
+            "ACME-2",
+            "ACME-1",
+            "--expected-version",
+            "3",
+            "--json",
+            "--non-interactive",
+        ],
+        workspace=workspace,
+        data_directory=data_directory,
+    )
+    dependent, _events = _mutation_task_and_events(
+        remove_dependency,
+        context="dependency removal",
+    )
+    assert dependent["depends_on"] == []
+    assert dependent["version"] == 4
+
+    block = _run_cli(
+        [
+            "task",
+            "block",
+            "ACME-2",
+            "--reason",
+            "Waiting for operator input",
+            "--expected-version",
+            "4",
+            "--json",
+            "--non-interactive",
+        ],
+        workspace=workspace,
+        data_directory=data_directory,
+    )
+    dependent, events = _mutation_task_and_events(block, context="Task block")
+    assert dependent["state"] == "blocked"
+    assert dependent["blocking_reason"] == "Waiting for operator input"
+    assert dependent["version"] == 5
+    assert require_object(events[0], context="block event")["type"] == "task_blocked"
+
+    blocked = _run_cli(
+        [
+            "task",
+            "list",
+            "--view",
+            "blocked",
+            "--json",
+            "--non-interactive",
+        ],
+        workspace=workspace,
+        data_directory=data_directory,
+    )
+    blocked_data = require_object(require_success(blocked), context="blocked view")
+    blocked_tasks = blocked_data["tasks"]
+    assert isinstance(blocked_tasks, list)
+    assert [item["key"] for item in blocked_tasks if isinstance(item, dict)] == [
+        "ACME-2"
+    ]
+
+    unblock = _run_cli(
+        [
+            "task",
+            "unblock",
+            "ACME-2",
+            "--expected-version",
+            "5",
+            "--json",
+            "--non-interactive",
+        ],
+        workspace=workspace,
+        data_directory=data_directory,
+    )
+    dependent, events = _mutation_task_and_events(unblock, context="Task unblock")
+    assert dependent["state"] == "open"
+    assert dependent["blocking_reason"] is None
+    assert dependent["version"] == 6
+    assert require_object(events[0], context="unblock event")["type"] == (
+        "task_unblocked"
+    )
+
+    stale_update = _run_cli(
+        [
+            "task",
+            "update",
+            "ACME-2",
+            "--title",
+            "Stale title",
+            "--expected-version",
+            "5",
+            "--json",
+            "--non-interactive",
+        ],
+        workspace=workspace,
+        data_directory=data_directory,
+    )
+    require_error(stale_update, expected_code="VERSION_CONFLICT")
+    assert stale_update.returncode == 4
+
+    valid_update = _run_cli(
+        [
+            "task",
+            "update",
+            "ACME-2",
+            "--title",
+            "Coordinated delivery",
+            "--objective",
+            "Deliver after explicit coordination",
+            "--expected-version",
+            "6",
+            "--json",
+            "--non-interactive",
+        ],
+        workspace=workspace,
+        data_directory=data_directory,
+    )
+    dependent, _events = _mutation_task_and_events(valid_update, context="valid update")
+    assert dependent["title"] == "Coordinated delivery"
+    assert dependent["objective"] == "Deliver after explicit coordination"
+    assert dependent["version"] == 7
+
+    persisted_show = _run_cli(
+        ["task", "show", "ACME-2", "--json", "--non-interactive"],
+        workspace=workspace,
+        data_directory=data_directory,
+    )
+    persisted = require_object(
+        require_success(persisted_show),
+        context="persisted Task details",
+    )
+    persisted_task = require_object(persisted["task"], context="persisted Task")
+    assert persisted_task["title"] == "Coordinated delivery"
+    assert persisted_task["version"] == 7
+    assert persisted_task["approval"] == "human"
+    assert persisted_task["acceptance"] == [
+        {
+            "id": "ac_done",
+            "text": "The implementation is verified.",
+            "required": True,
+        }
+    ]
+    assert persisted_task["context"] == [
+        {"uri": "https://example.test/specification", "version": "v1"}
+    ]
+    persisted_views = require_object(
+        persisted_task["views"],
+        context="persisted Task views",
+    )
+    assert persisted_views["ready"] is True
+
+    cancel_dependent = _run_cli(
+        [
+            "task",
+            "cancel",
+            "ACME-2",
+            "--expected-version",
+            "7",
+            "--json",
+            "--non-interactive",
+        ],
+        workspace=workspace,
+        data_directory=data_directory,
+    )
+    cancelled_dependent, _events = _mutation_task_and_events(
+        cancel_dependent,
+        context="dependent cancellation",
+    )
+    assert cancelled_dependent["state"] == "cancelled"
+    assert cancelled_dependent["version"] == 8
+
+    cancelled_view = _run_cli(
+        [
+            "task",
+            "list",
+            "--view",
+            "cancelled",
+            "--json",
+            "--non-interactive",
+        ],
+        workspace=workspace,
+        data_directory=data_directory,
+    )
+    cancelled_data = require_object(
+        require_success(cancelled_view),
+        context="cancelled view",
+    )
+    cancelled_tasks = cancelled_data["tasks"]
+    assert isinstance(cancelled_tasks, list)
+    assert [item["key"] for item in cancelled_tasks if isinstance(item, dict)] == [
+        "ACME-1",
+        "ACME-2",
+    ]
 
 
 def test_invalid_data_directory_fails_without_traceback(tmp_path: Path) -> None:

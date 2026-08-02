@@ -11,6 +11,9 @@ from workaholic.application import (
     ContextResult,
     ProjectCreationResult,
     StatusResult,
+    TaskDetails,
+    TaskListView,
+    TaskMutationResult,
     TaskPage,
 )
 from workaholic.domain import (
@@ -20,20 +23,23 @@ from workaholic.domain import (
     ProjectGrant,
     ProjectId,
     ProjectRole,
+    RequestId,
     Subject,
     SubjectId,
     SubjectKind,
     Task,
+    TaskEvent,
+    TaskEventId,
+    TaskEventType,
     TaskId,
+    TaskReadiness,
     TaskState,
     WorkspaceBinding,
 )
 
 if TYPE_CHECKING:
     from workaholic.application import (
-        TaskDetails,
         TaskEventPage,
-        TaskMutationResult,
         TaskSubmissionResult,
     )
     from workaholic.session import (
@@ -262,6 +268,55 @@ class RecordingSession:
         self.create_task_result = first_task
         self.task_page_result = TaskPage(tasks=(first_task,), next_cursor=None)
         self.get_task_result = first_task
+        ready = TaskReadiness(
+            ready=True,
+            running=False,
+            scheduled=False,
+            stale=False,
+            awaiting_review=False,
+            reasons=(),
+        )
+        mutation_task = Task(
+            uid=first_task.uid,
+            project_id=first_task.project_id,
+            number=first_task.number,
+            key=first_task.key,
+            title=first_task.title,
+            objective=first_task.objective,
+            state=first_task.state,
+            priority=first_task.priority,
+            version=2,
+            created_by=first_task.created_by,
+            created_at=first_task.created_at,
+            updated_at=_NOW,
+        )
+        mutation_event = TaskEvent(
+            id=TaskEventId("evt_updated"),
+            cursor=2,
+            task_uid=mutation_task.uid,
+            project_id=mutation_task.project_id,
+            actor_subject_id=subject().id,
+            request_id=RequestId("req_updated"),
+            event_type=TaskEventType.TASK_UPDATED,
+            occurred_at=_NOW,
+            payload={},
+        )
+        self.task_mutation_result = TaskMutationResult(
+            task=mutation_task,
+            events=(mutation_event,),
+        )
+        self.task_details_result = TaskDetails(
+            task=first_task,
+            readiness=ready,
+            prerequisites=(),
+            current_result=None,
+        )
+        self.task_view_page_result = TaskPage(
+            tasks=(first_task,),
+            readiness=(ready,),
+            next_cursor=None,
+            view=TaskListView.ALL,
+        )
         self.failures: dict[str, Exception] = {}
         self.up_requests: list[UpRequest] = []
         self.status_requests: list[StatusRequest] = []
@@ -272,6 +327,14 @@ class RecordingSession:
         self.task_create_requests: list[TaskCreateRequest] = []
         self.task_list_requests: list[TaskListRequest] = []
         self.task_get_requests: list[TaskGetRequest] = []
+        self.task_update_requests: list[TaskUpdateRequest] = []
+        self.task_block_requests: list[TaskBlockRequest] = []
+        self.task_unblock_requests: list[TaskUnblockRequest] = []
+        self.task_cancel_requests: list[TaskCancelRequest] = []
+        self.task_add_dependency_requests: list[TaskAddDependencyRequest] = []
+        self.task_remove_dependency_requests: list[TaskRemoveDependencyRequest] = []
+        self.task_details_requests: list[TaskDetailsRequest] = []
+        self.task_view_requests: list[TaskListByViewRequest] = []
 
     def up(self, request: UpRequest) -> BootstrapResult:
         """Record and answer one bootstrap request."""
@@ -333,35 +396,47 @@ class RecordingSession:
         self._raise_failure("get_task")
         return self.get_task_result
 
-    def update_task(self, _request: TaskUpdateRequest) -> TaskMutationResult:
-        """Fail an unexpected Phase 3 update in a Phase 2 CLI test."""
-        self._unexpected_phase_three("update Tasks")
+    def update_task(self, request: TaskUpdateRequest) -> TaskMutationResult:
+        """Record and answer one Task-definition update."""
+        self.task_update_requests.append(request)
+        self._raise_failure("update_task")
+        return self.task_mutation_result
 
-    def block_task(self, _request: TaskBlockRequest) -> TaskMutationResult:
-        """Fail an unexpected Phase 3 block in a Phase 2 CLI test."""
-        self._unexpected_phase_three("block Tasks")
+    def block_task(self, request: TaskBlockRequest) -> TaskMutationResult:
+        """Record and answer one Task block."""
+        self.task_block_requests.append(request)
+        self._raise_failure("block_task")
+        return self.task_mutation_result
 
-    def unblock_task(self, _request: TaskUnblockRequest) -> TaskMutationResult:
-        """Fail an unexpected Phase 3 unblock in a Phase 2 CLI test."""
-        self._unexpected_phase_three("unblock Tasks")
+    def unblock_task(self, request: TaskUnblockRequest) -> TaskMutationResult:
+        """Record and answer one Task unblock."""
+        self.task_unblock_requests.append(request)
+        self._raise_failure("unblock_task")
+        return self.task_mutation_result
 
-    def cancel_task(self, _request: TaskCancelRequest) -> TaskMutationResult:
-        """Fail an unexpected Phase 3 cancellation in a Phase 2 CLI test."""
-        self._unexpected_phase_three("cancel Tasks")
+    def cancel_task(self, request: TaskCancelRequest) -> TaskMutationResult:
+        """Record and answer one Task cancellation."""
+        self.task_cancel_requests.append(request)
+        self._raise_failure("cancel_task")
+        return self.task_mutation_result
 
     def add_task_dependency(
         self,
-        _request: TaskAddDependencyRequest,
+        request: TaskAddDependencyRequest,
     ) -> TaskMutationResult:
-        """Fail an unexpected Phase 3 dependency addition."""
-        self._unexpected_phase_three("add dependencies")
+        """Record and answer one dependency addition."""
+        self.task_add_dependency_requests.append(request)
+        self._raise_failure("add_task_dependency")
+        return self.task_mutation_result
 
     def remove_task_dependency(
         self,
-        _request: TaskRemoveDependencyRequest,
+        request: TaskRemoveDependencyRequest,
     ) -> TaskMutationResult:
-        """Fail an unexpected Phase 3 dependency removal."""
-        self._unexpected_phase_three("remove dependencies")
+        """Record and answer one dependency removal."""
+        self.task_remove_dependency_requests.append(request)
+        self._raise_failure("remove_task_dependency")
+        return self.task_mutation_result
 
     def submit_human_result(
         self,
@@ -384,13 +459,17 @@ class RecordingSession:
         """Fail an unexpected Phase 3 Result rejection."""
         self._unexpected_phase_three("reject Results")
 
-    def get_task_details(self, _request: TaskDetailsRequest) -> TaskDetails:
-        """Fail an unexpected Phase 3 Task-details query."""
-        self._unexpected_phase_three("query Task details")
+    def get_task_details(self, request: TaskDetailsRequest) -> TaskDetails:
+        """Record and answer one complete Task-details query."""
+        self.task_details_requests.append(request)
+        self._raise_failure("get_task_details")
+        return self.task_details_result
 
-    def list_tasks_by_view(self, _request: TaskListByViewRequest) -> TaskPage:
-        """Fail an unexpected Phase 3 Task-view query."""
-        self._unexpected_phase_three("query Task views")
+    def list_tasks_by_view(self, request: TaskListByViewRequest) -> TaskPage:
+        """Record and answer one view-bound Task page query."""
+        self.task_view_requests.append(request)
+        self._raise_failure("list_tasks_by_view")
+        return self.task_view_page_result
 
     def read_task_events(self, _request: TaskEventsRequest) -> TaskEventPage:
         """Fail an unexpected Phase 3 Task-event query."""

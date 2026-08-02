@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import replace
+from datetime import UTC, datetime
 from subprocess import CompletedProcess
+from typing import TYPE_CHECKING
 
 import pytest
 from click import unstyle
@@ -13,7 +16,15 @@ from typer.testing import CliRunner, Result
 
 from workaholic.application import ApplicationError, ApplicationErrorCode
 from workaholic.cli.main import create_app
+from workaholic.domain import (
+    AcceptanceCriterion,
+    ApprovalRequirement,
+    ContextReference,
+)
 from workaholic.session import TaskCreateRequest
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 _RUNNER = CliRunner()
 _TASK_ADD_ERRORS = (
@@ -77,10 +88,25 @@ def test_task_add_json_emits_exact_default_task_and_request() -> None:
             "objective": "First persistent task",
             "state": "open",
             "priority": 50,
+            "available_at": None,
+            "approval": "none",
+            "acceptance": [],
+            "context": [],
+            "depends_on": [],
+            "blocking_reason": None,
+            "current_result_id": None,
             "version": 1,
             "created_by": "sub_local",
             "created_at": "2026-07-30T12:30:00Z",
             "updated_at": "2026-07-30T12:30:00Z",
+            "views": {
+                "ready": True,
+                "running": False,
+                "scheduled": False,
+                "stale": False,
+                "awaiting_review": False,
+            },
+            "readiness_reasons": [],
         }
     }
     assert session.task_create_requests == [
@@ -283,6 +309,9 @@ def test_task_add_help_and_non_interactive_never_acquire_input(
         "TITLE",
         "--objective",
         "--priority",
+        "--available-at",
+        "--approval",
+        "--input-file",
         "--idempotency-key",
         "--project",
         "--json",
@@ -309,3 +338,130 @@ def test_task_add_help_and_non_interactive_never_acquire_input(
 
     assert result.exit_code == 0
     assert provider.call_count == 1
+
+
+def test_task_add_accepts_complete_disjoint_structured_definition(
+    tmp_path: Path,
+) -> None:
+    """Task creation combines scalar identity with bounded structured fields."""
+    source = tmp_path / "task.json"
+    source.write_text(
+        json.dumps(
+            {
+                "available_at": "2026-08-02T10:00:00Z",
+                "approval": "human",
+                "acceptance": [
+                    {"id": "ac_tests", "text": "Tests pass", "required": True}
+                ],
+                "context": [{"uri": "https://example.test/spec", "version": "v1"}],
+            }
+        ),
+        encoding="utf-8",
+    )
+    session = RecordingSession()
+
+    result = _RUNNER.invoke(
+        create_app(SessionProviderSpy(session)),
+        [
+            "task",
+            "add",
+            "Structured task",
+            "--objective",
+            "Deliver the structured task",
+            "--priority",
+            "80",
+            "--input-file",
+            str(source),
+            "--json",
+            "--non-interactive",
+        ],
+    )
+
+    require_success(_completed(result))
+    assert session.task_create_requests == [
+        TaskCreateRequest(
+            title="Structured task",
+            objective="Deliver the structured task",
+            priority=80,
+            available_at=datetime(2026, 8, 2, 10, tzinfo=UTC),
+            approval=ApprovalRequirement.HUMAN,
+            acceptance=(
+                AcceptanceCriterion(
+                    id="ac_tests",
+                    text="Tests pass",
+                    required=True,
+                ),
+            ),
+            context=(
+                ContextReference(
+                    uri="https://example.test/spec",
+                    version="v1",
+                ),
+            ),
+        )
+    ]
+
+
+def test_task_add_accepts_structured_stdin_only_when_requested() -> None:
+    """An explicit dash reads one complete JSON definition from stdin."""
+    session = RecordingSession()
+
+    result = _RUNNER.invoke(
+        create_app(SessionProviderSpy(session)),
+        [
+            "task",
+            "add",
+            "Stdin task",
+            "--input-file",
+            "-",
+            "--json",
+            "--non-interactive",
+        ],
+        input='{"priority":75,"approval":"human"}',
+    )
+
+    require_success(_completed(result))
+    assert session.task_create_requests == [
+        TaskCreateRequest(
+            title="Stdin task",
+            priority=75,
+            approval=ApprovalRequirement.HUMAN,
+        )
+    ]
+
+
+@pytest.mark.parametrize(
+    "file_payload",
+    [
+        {"priority": 80},
+        {"title": "File-owned title"},
+        {"unknown": True},
+        {"available_at": None},
+    ],
+)
+def test_task_add_rejects_overlap_unknown_identity_and_null_availability(
+    tmp_path: Path,
+    file_payload: dict[str, object],
+) -> None:
+    """Structured creation has a closed schema and no ambiguous field owner."""
+    source = tmp_path / "invalid-task.json"
+    source.write_text(json.dumps(file_payload), encoding="utf-8")
+    session = RecordingSession()
+    provider = SessionProviderSpy(session)
+    arguments = [
+        "task",
+        "add",
+        "Task title",
+        "--input-file",
+        str(source),
+        "--json",
+        "--non-interactive",
+    ]
+    if "priority" in file_payload:
+        arguments.extend(("--priority", "90"))
+
+    result = _RUNNER.invoke(create_app(provider), arguments)
+
+    require_error(_completed(result), expected_code="INVALID_INPUT")
+    assert provider.call_count == 0
+    assert session.task_create_requests == []

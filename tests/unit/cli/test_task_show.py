@@ -12,7 +12,7 @@ from typer.testing import CliRunner, Result
 
 from workaholic.application import ApplicationError, ApplicationErrorCode
 from workaholic.cli.main import create_app
-from workaholic.session import TaskGetRequest
+from workaholic.session import TaskDetailsRequest
 
 _RUNNER = CliRunner()
 _TASK_SHOW_ERRORS = (
@@ -69,12 +69,29 @@ def test_task_show_json_accepts_stable_key_and_uid(selector: str) -> None:
         "objective": "First persistent task",
         "state": "open",
         "priority": 50,
+        "available_at": None,
+        "approval": "none",
+        "acceptance": [],
+        "context": [],
+        "depends_on": [],
+        "blocking_reason": None,
+        "current_result_id": None,
         "version": 1,
         "created_by": "sub_local",
         "created_at": "2026-07-30T12:30:00Z",
         "updated_at": "2026-07-30T12:30:00Z",
+        "views": {
+            "ready": True,
+            "running": False,
+            "scheduled": False,
+            "stale": False,
+            "awaiting_review": False,
+        },
+        "readiness_reasons": [],
     }
-    assert session.task_get_requests == [TaskGetRequest(task=selector)]
+    assert data["prerequisites"] == []
+    assert data["current_result"] is None
+    assert session.task_details_requests == [TaskDetailsRequest(task=selector)]
     assert provider.call_count == 1
     assert result.stderr == ""
 
@@ -97,7 +114,9 @@ def test_task_show_forwards_explicit_project_override() -> None:
     )
 
     assert result.exit_code == 0
-    assert session.task_get_requests == [TaskGetRequest(task="DOCS-1", project="DOCS")]
+    assert session.task_details_requests == [
+        TaskDetailsRequest(task="DOCS-1", project="DOCS")
+    ]
 
 
 def test_task_show_human_output_is_deterministic() -> None:
@@ -108,7 +127,12 @@ def test_task_show_human_output_is_deterministic() -> None:
     )
 
     assert result.exit_code == 0
-    assert result.stdout == ('ACME-1\topen\tpriority=50\t"First persistent task"\n')
+    assert result.stdout == (
+        'ACME-1\topen\tpriority=50\t"First persistent task"\n'
+        "Version: 1\n"
+        "Readiness: ready (none)\n"
+        "Prerequisites: none\n"
+    )
     assert result.stderr == ""
 
 
@@ -143,7 +167,7 @@ def test_task_show_rejects_invalid_selector_before_session(
     detail = require_error(_completed(result), expected_code="INVALID_INPUT")
     assert detail["message"] == "Task selector is invalid."
     assert provider.call_count == 0
-    assert session.task_get_requests == []
+    assert session.task_details_requests == []
 
 
 @pytest.mark.parametrize("code", _TASK_SHOW_ERRORS)
@@ -152,7 +176,7 @@ def test_task_show_maps_every_documented_failure_to_json(
 ) -> None:
     """The command preserves every documented Task-show failure."""
     session = RecordingSession()
-    session.failures["get_task"] = ApplicationError(
+    session.failures["get_task_details"] = ApplicationError(
         code,
         f"Safe {code.value} message.",
     )
@@ -171,7 +195,7 @@ def test_task_show_unknown_failure_is_fully_redacted() -> None:
     """Unexpected selector diagnostics never leak into either output stream."""
     private_detail = "private SQL and database path diagnostic"
     session = RecordingSession()
-    session.failures["get_task"] = RuntimeError(private_detail)
+    session.failures["get_task_details"] = RuntimeError(private_detail)
 
     result = _RUNNER.invoke(
         create_app(SessionProviderSpy(session)),
@@ -196,7 +220,17 @@ def test_task_group_help_and_show_non_interactive_are_side_effect_free(
     )
 
     assert group_help.exit_code == 0
-    for command in ("add", "list", "show"):
+    for command in (
+        "add",
+        "add-dependency",
+        "block",
+        "cancel",
+        "list",
+        "remove-dependency",
+        "show",
+        "unblock",
+        "update",
+    ):
         assert command in unstyle(group_help.stdout)
     assert show_help.exit_code == 0
     assert "TASK" in unstyle(show_help.stdout)

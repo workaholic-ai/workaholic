@@ -15,7 +15,7 @@ from tests.golden import (
 if TYPE_CHECKING:
     from pathlib import Path
 
-    from tests.golden import GoldenJourneyRunner
+    from tests.golden import GoldenJourneyRunner, JsonObject
 
 pytestmark = [
     pytest.mark.e2e,
@@ -87,10 +87,19 @@ def test_solo_tasks_remain_visible_after_reopening_the_project(
         "objective",
         "state",
         "priority",
+        "available_at",
+        "approval",
+        "acceptance",
+        "context",
+        "depends_on",
+        "blocking_reason",
+        "current_result_id",
         "version",
         "created_by",
         "created_at",
         "updated_at",
+        "views",
+        "readiness_reasons",
     }
 
     assert created_data.keys() == {"task"}
@@ -102,8 +111,23 @@ def test_solo_tasks_remain_visible_after_reopening_the_project(
     assert created_task.get("objective") == "First persistent task"
     assert created_task.get("state") == "open"
     assert created_task.get("priority") == 50
+    assert created_task.get("available_at") is None
+    assert created_task.get("approval") == "none"
+    assert created_task.get("acceptance") == []
+    assert created_task.get("context") == []
+    assert created_task.get("depends_on") == []
+    assert created_task.get("blocking_reason") is None
+    assert created_task.get("current_result_id") is None
     assert created_task.get("version") == 1
     assert created_task.get("created_by") == subject_id
+    assert created_task.get("views") == {
+        "ready": True,
+        "running": False,
+        "scheduled": False,
+        "stale": False,
+        "awaiting_review": False,
+    }
+    assert created_task.get("readiness_reasons") == []
     assert require_string(
         created_task.get("created_at"),
         context="Task created_at",
@@ -171,5 +195,10 @@ def test_solo_tasks_remain_visible_after_reopening_the_project(
         ),
         context="task-show by UID data",
     )
-    assert shown_by_key == {"task": created_task}
-    assert shown_by_uid == {"task": created_task}
+    expected_details: JsonObject = {
+        "task": created_task,
+        "prerequisites": [],
+        "current_result": None,
+    }
+    assert shown_by_key == expected_details
+    assert shown_by_uid == expected_details
