@@ -33,7 +33,7 @@ def open_read_connection(
         A read-only connection with foreign-key enforcement enabled.
 
     Raises:
-        SchemaUnsupportedError: If the store is missing or not exact version 2.
+        SchemaUnsupportedError: If the store is missing or not exact version 3.
         StorageBusyError: If bounded lock handling is exhausted.
         StorageUnavailableError: If the database cannot be read safely.
 
@@ -66,7 +66,7 @@ def open_write_transaction(
         A connection owning one explicit write transaction.
 
     Raises:
-        SchemaUnsupportedError: If the store is missing or not exact version 2.
+        SchemaUnsupportedError: If the store is missing or not exact version 3.
         StorageBusyError: If bounded write-lock acquisition is exhausted.
         StorageUnavailableError: If the transaction cannot complete safely.
 

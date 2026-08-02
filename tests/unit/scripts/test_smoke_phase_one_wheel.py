@@ -12,7 +12,7 @@ import pytest
 
 _PROJECT_ROOT = Path(__file__).parents[3]
 _SMOKE_SCRIPT = _PROJECT_ROOT / "scripts" / "smoke-phase-1-wheel.sh"
-_EXPECTED_VERSION = "0.2.0a1"
+_EXPECTED_VERSION = "0.3.0a1"
 
 
 def _write_executable(path: Path, source: str) -> None:

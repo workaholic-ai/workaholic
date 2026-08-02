@@ -1,6 +1,6 @@
 # Workaholic AI CLI Automation Contract
 
-- Status: Accepted v1 contract through Phase 3 with Phase 2 implementation
+- Status: Accepted v1 contract through Phase 3 with Phase 3 implementation
 - Decision date: 2026-07-29
 - Contract family: `workaholic.cli/v1`
 - Public surface: Documented JSON output of the `workaholic` executable
@@ -8,22 +8,20 @@
 ## Current implementation notice
 
 This document specifies the accepted v1 automation contract through its Phase 8
-freeze. The current `0.2.0a1` development package implements the versioned
-envelopes and all nine Phase 2 commands through an injected Session boundary.
+freeze. The current `0.3.0a1` development package implements the versioned
+envelopes and all 19 Phase 3 operations through an injected Session boundary.
 Its default executable composes the embedded `LocalSession`, trusted local
-profiles, canonical upward Workspace discovery, and SQLite schema version `2`.
-No compatibility guarantee applies before `1.0.0`.
+profiles, canonical upward Workspace discovery, and SQLite schema version `3`.
+It includes existing-Task mutations, dependencies, readiness views, Human
+Results and review, and TaskEvent history. No compatibility guarantee applies
+before `1.0.0`.
 
-The alpha does not run Agents, issue Tokens, use remote profiles or
-credentials, use `RemoteSession`, start a server, update Tasks, archive
+The alpha does not run Agents, create Attempts or Leases, issue Tokens, use
+remote profiles or credentials, use `RemoteSession`, start a server, archive
 Projects, migrate schemas, or select JSON or PostgreSQL adapters. Those later
 command contracts remain normative roadmap requirements, not current
-implementation claims.
-
-The Phase 3 section is an accepted implementation contract. It does not claim
-that the current `0.2.0a1` package already supports existing-Task mutations,
-Results, review, dependencies, readiness views, event history, or SQLite schema
-version `3`.
+implementation claims. Phase 3 Human Results always carry a null Attempt
+identity, and proposed follow-ups never create Tasks automatically.
 
 ## Normative language
 
@@ -867,7 +865,7 @@ The command-specific additions are:
 ## Phase 3 command contract
 
 Phase 3 adds Human-operated Task lifecycle and audit behavior to the embedded
-Session. The contract in this section is not implemented by `0.2.0a1`.
+Session. This section is the implemented normative contract for `0.3.0a1`.
 Every command retains `--json`, `--non-interactive`, and optional
 `--project KEY` where one selected Project is required.
 

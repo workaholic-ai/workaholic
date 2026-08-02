@@ -21,20 +21,23 @@ Python package: workaholic-ai
 Executable:     workaholic
 ```
 
-## Current implementation: `0.2.0a1`
+## Current implementation: `0.3.0a1`
 
-The Phase 2 alpha implements the embedded `LocalSession`, trusted embedded
-profiles, canonical upward `.workaholic.env` discovery, multiple named
-Projects, safe Workspace binding, SQLite schema version `2`, and the nine
-documented local Project, context, and Task operations. Each CLI invocation
-composes these adapters in-process, performs one operation, and exits; no
-daemon is started.
+The Phase 3 Human Workflow Alpha implements the embedded `LocalSession`,
+trusted embedded profiles, canonical upward `.workaholic.env` discovery,
+multiple named Projects, safe Workspace binding, and SQLite schema version
+`3`. Its 19 local operations cover complete Task definitions, optimistic
+updates, explicit state transitions, dependencies, readiness, structured Human
+Results, review, and attributable event history. Each CLI invocation composes
+these adapters in-process, performs one operation, and exits; no daemon is
+started.
 
 The remaining diagrams and decisions describe the accepted v1 destination, not
-the current feature inventory. `0.2.0a1` does not implement Agents, Tokens,
-remote profiles, credentials, `RemoteSession`, a server, JSON/PostgreSQL
-adapters, Project archival, Task updates, or schema migration. Alpha storage
-and automation remain disposable.
+the current feature inventory. `0.3.0a1` does not implement Agents, Attempts,
+Leases, Tokens, remote profiles, credentials, `RemoteSession`, a server,
+JSON/PostgreSQL adapters, Project archival, parent/child Task hierarchy, or
+schema migration. Proposed Result follow-ups never create Tasks automatically.
+Alpha storage and automation remain disposable.
 
 ## 1. Architectural decisions
 
@@ -436,12 +439,14 @@ The historical Phase 1 baseline resolved only the exact path
 directory, load a user configuration file, or permit an arbitrary profile definition.
 `WORKAHOLIC_PROFILE=local` selects the built-in embedded SQLite profile.
 
-The current Phase 2 implementation extends this baseline with upward discovery
-and configurable trusted embedded profiles using the exact resolution rules
-above. It introduces
-disposable SQLite schema version `2`, named Projects, explicit same-Instance
-Project selection, and all-Project Task listing. It rejects schema version `1`
-unchanged and provides no migration or conversion path.
+The Phase 2 foundation extends this baseline with upward discovery and
+configurable trusted embedded profiles using the exact resolution rules above.
+It introduced disposable SQLite schema version `2`, named Projects, explicit
+same-Instance Project selection, and all-Project Task listing. That layout
+rejected schema version `1` unchanged. Phase 3 retains those context rules while
+replacing the store with schema version `3` and the complete Human Task
+lifecycle. Version `2` is rejected unchanged, and there is no migration or
+conversion path.
 
 Remote profiles, endpoints, credentials, Tokens, `RemoteSession`, and network
 transport remain deferred to Phases 5 and 6. The repository-local file remains
@@ -460,6 +465,7 @@ The primary persistent entities are:
 | ProjectGrant      | Subject role within a project                    |
 | Task              | Desired outcome and lifecycle state              |
 | Attempt           | One agent’s leased execution attempt             |
+| Result            | Structured submitted outcome and review          |
 | TaskEvent         | Append-only audit and activity record            |
 | IdempotencyRecord | Deduplicates retried mutations                   |
 
@@ -877,11 +883,11 @@ SQLite is the default for local use.
 
 Each CLI invocation opens a short-lived connection. Compound operations such as number allocation, claiming, event creation, and idempotency recording occur in one write transaction.
 
-Phase 3 introduces disposable SQLite schema version `3` for lifecycle state,
+Phase 3 uses disposable SQLite schema version `3` for lifecycle state,
 dependencies, Results, reviews, and expanded events. It rejects Phase 2 version
 `2` unchanged and provides no migration, conversion, import, export, or
-automatic reset. The current `0.2.0a1` implementation remains on version `2`
-until that complete Phase 3 slice is delivered.
+automatic reset. This is the exact schema used by the current `0.3.0a1`
+implementation.
 
 ### PostgreSQL backend
 

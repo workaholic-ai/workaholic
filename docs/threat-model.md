@@ -1,6 +1,6 @@
 # Workaholic AI Threat Model
 
-- Status: Accepted through Phase 3 contract
+- Status: Accepted through Phase 3 implementation
 - Decision date: 2026-07-29
 - Scope: Embedded and shared-server behavior required for v1
 - Security contact: [pg@ithesion.com](mailto:pg@ithesion.com)
@@ -9,15 +9,13 @@
 
 This threat model turns the accepted v1 security boundary into explicit
 engineering constraints and verification targets. It covers planned behavior;
-the current `0.2.0a1` development package implements trusted embedded profiles,
+the current `0.3.0a1` development package implements trusted embedded profiles,
 canonical upward Workspace discovery, safe binding, multi-project
-authorization checks, local SQLite schema version `2`, and bootstrap-Human
-attribution. It does not implement bearer authentication, Agent execution,
-remote profiles, credentials, `RemoteSession`, or network services.
-
-The Phase 3 controls below are accepted implementation requirements, not a
-claim that `0.2.0a1` already supports Task lifecycle mutations or SQLite schema
-version `3`. Phase 3 rejects schema version `2` unchanged.
+authorization checks, local SQLite schema version `3`, optimistic Task
+mutations, bounded structured input, Human Result and review attribution, and
+append-only TaskEvents. It rejects schema version `2` unchanged. It does not
+implement bearer authentication, Agent execution, remote profiles,
+credentials, `RemoteSession`, or network services.
 
 Terms such as Subject, ProjectGrant, Attempt, Lease, and TaskEvent use their
 canonical definitions in the [glossary](glossary.md).
@@ -148,9 +146,9 @@ file, and it never changes a shared `.gitignore`.
 ### Remote transport
 
 Phase 2 has no remote profiles, endpoints, credentials, Tokens,
-`RemoteSession`, or network transport. It rejects any configuration that
-attempts to introduce them. Authenticated remote operation begins in Phases 5
-and 6.
+`RemoteSession`, or network transport. Phase 3 retains that boundary and
+rejects any configuration that attempts to introduce them. Authenticated remote
+operation begins in Phases 5 and 6.
 
 When delivered, remote bearer-token traffic uses HTTPS through trusted
 deployment infrastructure. A trusted profile owns the server URL and expected

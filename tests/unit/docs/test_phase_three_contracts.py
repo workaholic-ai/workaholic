@@ -282,7 +282,7 @@ def test_phase_three_json_input_objects_cursors_and_errors_are_exact() -> None:
 
 
 def test_phase_three_schema_security_and_current_status_are_explicit() -> None:
-    """Keep planned schema/security controls separate from current claims."""
+    """Keep implemented Human controls separate from deferred Agent claims."""
     architecture = _read_normalized(_ARCHITECTURE)
     cli_contract = _read_normalized(_CLI_CONTRACT)
     persistence = _read_normalized(_PERSISTENCE_CONTRACT)
@@ -301,11 +301,18 @@ def test_phase_three_schema_security_and_current_status_are_explicit() -> None:
     assert "no migration, conversion, import, export, or automatic reset" in (
         persistence
     )
-    assert "current `0.2.0a1`" in cli_contract
-    assert "not implemented by `0.2.0a1`" in cli_contract
+    for document in (architecture, cli_contract, persistence, threat_model, readme):
+        assert "`0.3.0a1`" in document
+    assert "implemented normative contract for `0.3.0a1`" in cli_contract
+    assert "Human Workflow Alpha implements" in architecture
     assert "does not implement Agents" in architecture
     assert "Task updates" in architecture
-    assert "Task updates" in readme
+    assert "`workaholic task update`" in readme
+    assert "Attempts are Agent-only and unavailable" in readme
+    assert "Human Results always record `attempt_id = null`" in readme
+    assert "do not create Tasks, dependencies, or a hierarchy automatically" in readme
+    assert "schema version `2`" in readme
+    assert "rejected unchanged" in readme
 
     for threat in (
         "Concurrent mutation overwrite",
@@ -316,6 +323,40 @@ def test_phase_three_schema_security_and_current_status_are_explicit() -> None:
         "bounded structured input",
     ):
         assert threat in threat_model
+
+
+def test_readme_defers_every_post_phase_three_capability() -> None:
+    """Prevent the current public surface from claiming later roadmap slices."""
+    current_cli = _section(
+        _README,
+        "## Current CLI",
+        "## Phase 3 boundaries",
+    )
+    boundaries = _section(
+        _README,
+        "## Phase 3 boundaries",
+        "## Planned for v1 (not implemented)",
+    )
+
+    for unavailable in (
+        "Agents, claims, Attempts, Leases, heartbeats, or progress reporting",
+        "Tokens, credentials, remote profiles, or general identity management",
+        "`RemoteSession`, a server, authentication, or team coordination",
+        "JSON or PostgreSQL persistence adapters",
+        "schema migration or compatibility across alpha versions",
+        "Project archival or parent/child Task hierarchies",
+        "automatic Task creation from proposed follow-ups",
+    ):
+        assert unavailable in boundaries
+    for future_command in (
+        "workaholic task claim",
+        "workaholic task heartbeat",
+        "workaholic task progress",
+        "workaholic task release",
+        "workaholic login",
+        "workaholic server",
+    ):
+        assert future_command not in current_cli
 
 
 def test_phase_three_adr_is_accepted_and_linked() -> None:

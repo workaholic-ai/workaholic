@@ -8,11 +8,56 @@ public versioning begins.
 
 ## Unreleased
 
+## [0.3.0a1] - 2026-08-01
+
+### Added
+
+- Complete Human-operated Task definitions and lifecycle commands for update,
+  block, unblock, cancellation, same-Project dependencies, submission, review,
+  and ordered event inspection.
+- Deterministic readiness, scheduling, blocked, review, done, and cancelled
+  views with stable view-bound cursors.
+- Structured Human Results with acceptance evidence, artifact references,
+  proposed follow-up provenance, and explicit review disposition.
+- Optimistic Task versions, idempotent lifecycle mutations, stable typed
+  TaskEvents, and complete actor, request, timestamp, and cursor attribution.
+- Cumulative Phase 3 SQLite and `LocalSession` conformance suites plus the
+  complete fresh-process Human lifecycle golden journey.
+
 ### Changed
 
+- Replaced the disposable Phase 2 store with clean-store SQLite schema version
+  `3`; schema version `2` is rejected unchanged and has no migration path.
+- Expanded the local CLI from the nine Phase 2 operations to 19 Project,
+  context, and Task operations.
+- Made an explicit expected Task version mandatory for automation while
+  allowing a terminal Human to confirm one displayed current version and
+  semantic action.
 - Removed the speculative parent/child Task hierarchy from planned v1.
   Decomposition uses explicit same-Project dependencies, while attributable
   events and Results preserve the provenance of follow-up work.
+
+### Security
+
+- Bounded structured Task and Result input rejects forged identities, unknown
+  fields, recursive or oversized content, executable interpretation, and
+  ambiguous file/inline values before mutation.
+- Existing-Task writes reject stale versions without refresh or silent retry;
+  transaction rollback preserves Task, Result, dependency, event, and
+  idempotency state.
+- Human submissions derive actor and request attribution through the trusted
+  Session and always persist a null Attempt identity.
+- Golden CLI processes inherit only a small platform-runtime allowlist and
+  strip credentials, Tokens, Python paths, and arbitrary environment state.
+
+### Known limitations
+
+- The alpha remains embedded-only with one bootstrapped Human operator per
+  profile and SQLite persistence.
+- Stores and automation remain disposable. Agents, Attempts, Leases, Tokens,
+  remote profiles, `RemoteSession`, servers, JSON/PostgreSQL adapters, schema
+  migration, Project archival, and parent/child hierarchy are unavailable.
+- Proposed Result follow-ups are provenance only and do not create Tasks.
 
 ## [0.2.0a1] - 2026-07-30
 

@@ -387,7 +387,7 @@ def test_future_golden_operations_remain_explicitly_unsupported(
         runner.published_package_spec()
     with pytest.raises(NotImplementedError, match="uvx execution"):
         runner.uvx(
-            "workaholic-ai==0.2.0a1",
+            "workaholic-ai==0.3.0a1",
             ("--version",),
             cwd=tmp_path,
         )
