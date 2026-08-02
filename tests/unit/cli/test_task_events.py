@@ -6,6 +6,7 @@ from subprocess import CompletedProcess
 from typing import Never
 
 import pytest
+from click import unstyle
 from tests.golden import require_error, require_object, require_success
 from tests.unit.cli.fakes import (
     RecordingSession,
@@ -286,6 +287,7 @@ def test_task_events_help_is_side_effect_free() -> None:
         create_app(provider),
         ["task", "events", "--help"],
     )
+    plain_output = unstyle(result.stdout)
 
     assert result.exit_code == 0
     for option in (
@@ -297,5 +299,5 @@ def test_task_events_help_is_side_effect_free() -> None:
         "--json",
         "--non-interactive",
     ):
-        assert option in result.stdout
+        assert option in plain_output
     assert provider.call_count == 0

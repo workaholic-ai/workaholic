@@ -68,9 +68,11 @@ conflict_command="$conflict_command --json --non-interactive"
 task='{"uid":"tsk_phase1","project_id":"prj_phase1","number":1'
 task="${task}"',"key":"ACME-1","title":"First persistent task"'
 task="${task}"',"objective":"First persistent task","state":"open"'
-task="${task}"',"priority":50,"version":1,"created_by":"sub_phase1"'
+task="${task}"',"priority":50,"approval":"none","version":1'
+task="${task}"',"created_by":"sub_phase1"'
 task="${task}"',"created_at":"2026-07-30T12:00:00Z"'
 task="${task}"',"updated_at":"2026-07-30T12:00:00Z"}'
+shown_task="${task%?}"',"views":{"ready":true},"readiness_reasons":[]}'
 case "$*" in
   "$up_command")
     mkdir -p "$WORKAHOLIC_DATA_DIR"
@@ -92,7 +94,10 @@ case "$*" in
     ;;
   "task show ACME-1 --json --non-interactive" | \
   "task show tsk_phase1 --json --non-interactive")
-    printf '{"schema":"workaholic.cli/v1","ok":true,"data":{"task":%s}}\n' "$task"
+    printf '%s%s%s\n' \
+      '{"schema":"workaholic.cli/v1","ok":true,"data":{"task":' \
+      "$shown_task" \
+      ',"prerequisites":[],"current_result":null}}'
     ;;
   "$conflict_command")
     printf '%s%s%s\n' \
@@ -232,7 +237,7 @@ def _wheel(tmp_path: Path, *, suffix: str = ".whl") -> Path:
 def test_smoke_persists_one_task_across_isolated_cli_processes(
     tmp_path: Path,
 ) -> None:
-    """The happy path validates persistence, replay, lookup, and isolation."""
+    """The milestone fields survive persistence plus additive later fields."""
     wheel = _wheel(tmp_path)
 
     result, uv_calls, cli_calls, remaining = _run_smoke(tmp_path, [str(wheel)])

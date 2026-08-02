@@ -30,37 +30,6 @@ _QUICK_START_PATTERN = re.compile(
     r"## Quick start\n.*?```bash\n(?P<commands>.*?)\n```",
     flags=re.DOTALL,
 )
-_EXPECTED_QUICK_START_COMMANDS = (
-    "uv sync --frozen",
-    'export WORKAHOLIC_CONFIG_DIR="$(mktemp -d '
-    '"${TMPDIR:-/tmp}/workaholic-quickstart-config.XXXXXX")"',
-    'export WORKAHOLIC_DATA_DIR="$(mktemp -d '
-    '"${TMPDIR:-/tmp}/workaholic-quickstart-data.XXXXXX")"',
-    "workaholic_source_directory=$PWD",
-    'workaholic_workspace_directory="$(mktemp -d '
-    '"${TMPDIR:-/tmp}/workaholic-quickstart-workspaces.XXXXXX")"',
-    'mkdir -p "$workaholic_workspace_directory/acme/src/app"',
-    'mkdir -p "$workaholic_workspace_directory/docs/guides/draft"',
-    "(",
-    '  cd "$workaholic_workspace_directory/acme"',
-    '  uv run --project "$workaholic_source_directory" workaholic up '
-    '--project-key ACME --project-name "Acme delivery"',
-    '  uv run --project "$workaholic_source_directory" workaholic project '
-    'create --key DOCS --name "Documentation"',
-    '  uv run --project "$workaholic_source_directory" workaholic project '
-    "bind DOCS ../docs",
-    "  cd src/app",
-    '  uv run --project "$workaholic_source_directory" workaholic task add '
-    '"First ACME task"',
-    ")",
-    "(",
-    '  cd "$workaholic_workspace_directory/docs/guides/draft"',
-    '  uv run --project "$workaholic_source_directory" workaholic task add '
-    '"First DOCS task"',
-    '  uv run --project "$workaholic_source_directory" workaholic task list',
-    ")",
-    "uv run workaholic task list --all-projects",
-)
 
 pytestmark = [
     pytest.mark.e2e,
@@ -396,31 +365,32 @@ def test_phase_one_gate_passes_from_a_fresh_clone(tmp_path: Path) -> None:
     assert result.stdout.endswith("Phase 1 clean-state acceptance gate passed.\n")
 
 
-def test_readme_multi_project_quick_start_passes_in_a_fresh_clone(
+def test_readme_quick_start_passes_in_a_fresh_clone(
     tmp_path: Path,
 ) -> None:
-    """The complete public multi-Project journey works without a gate wrapper."""
+    """The complete current public journey works without a gate wrapper."""
     clone = _clone_current_revision(tmp_path)
     readme = (clone / "README.md").read_text(encoding="utf-8")
     quick_start_match = _QUICK_START_PATTERN.search(readme)
     assert quick_start_match is not None
-    commands = tuple(quick_start_match.group("commands").splitlines())
-    assert commands == _EXPECTED_QUICK_START_COMMANDS
+    commands = quick_start_match.group("commands")
 
     environment = _clean_environment(tmp_path)
     environment["WORKAHOLIC_PHASE_1_GATE_RUNNING"] = "1"
     environment["TMPDIR"] = str(tmp_path)
     result = _run(
-        ["/bin/sh", "-eu", "-c", "\n".join(commands)],
+        ["/bin/sh", "-eu", "-c", commands],
         cwd=clone,
         environment=environment,
     )
     _require_success(result, context="README quick-start shell block")
 
     assert "ACME-1" in result.stdout
-    assert "DOCS-1" in result.stdout
-    assert "First ACME task" in result.stdout
-    assert "First DOCS task" in result.stdout
+    assert "ACME-2" in result.stdout
+    assert "Prepare foundation" in result.stdout
+    assert "Deliver reviewed change" in result.stdout
+    assert "review_approved" in result.stdout
+    assert "task_completed" in result.stdout
     status_result = _run(
         ["git", "status", "--porcelain=v1", "--untracked-files=all"],
         cwd=clone,
