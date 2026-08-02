@@ -185,6 +185,32 @@ def test_human_completes_dependency_bound_reviewed_workflow(  # noqa: PLR0915
         subject_id=subject_id,
     )
 
+    update_data = _json_success(
+        golden_runner,
+        (
+            "task",
+            "update",
+            "ACME-2",
+            "--objective",
+            "Deliver and verify the reviewed change.",
+            "--expected-version",
+            "2",
+            "--idempotency-key",
+            "solo-reviewed-update",
+        ),
+        workspace=workspace,
+        context="reviewed Task update",
+    )
+    updated_task = require_object(update_data["task"], context="updated Task")
+    assert updated_task["objective"] == "Deliver and verify the reviewed change."
+    assert updated_task["version"] == 3
+    _assert_event_batch(
+        update_data,
+        expected_types=("task_updated",),
+        task_uid=reviewed_uid,
+        subject_id=subject_id,
+    )
+
     waiting_details = _shown_task(
         golden_runner,
         "ACME-2",
@@ -303,7 +329,7 @@ def test_human_completes_dependency_bound_reviewed_workflow(  # noqa: PLR0915
         context="newly ready reviewed Task",
     )
     ready_task = require_object(ready_details["task"], context="ready reviewed Task")
-    assert ready_task["version"] == 2
+    assert ready_task["version"] == 3
     ready_views = require_object(ready_task["views"], context="ready Task views")
     assert ready_views["ready"] is True
     assert ready_task["readiness_reasons"] == []
@@ -347,7 +373,7 @@ def test_human_completes_dependency_bound_reviewed_workflow(  # noqa: PLR0915
             "--result-file",
             "-",
             "--expected-version",
-            "2",
+            "3",
             "--idempotency-key",
             "solo-reviewed-submit",
         ),
@@ -369,7 +395,7 @@ def test_human_completes_dependency_bound_reviewed_workflow(  # noqa: PLR0915
     )
     result_id = require_string(pending_result["id"], context="Result ID")
     assert pending_task["state"] == "review"
-    assert pending_task["version"] == 3
+    assert pending_task["version"] == 4
     assert pending_task["current_result_id"] == result_id
     assert pending_result["attempt_id"] is None
     assert pending_result["comment"] == "Ready for Human review."
@@ -414,7 +440,7 @@ def test_human_completes_dependency_bound_reviewed_workflow(  # noqa: PLR0915
             "--comment",
             "Evidence accepted.",
             "--expected-version",
-            "3",
+            "4",
             "--idempotency-key",
             "solo-reviewed-approve",
         ),
@@ -428,7 +454,7 @@ def test_human_completes_dependency_bound_reviewed_workflow(  # noqa: PLR0915
         context="approved Result review",
     )
     assert approved_task["state"] == "done"
-    assert approved_task["version"] == 4
+    assert approved_task["version"] == 5
     assert approved_task["current_result_id"] == result_id
     assert approved_result["id"] == result_id
     assert approved_result["attempt_id"] is None
@@ -455,7 +481,7 @@ def test_human_completes_dependency_bound_reviewed_workflow(  # noqa: PLR0915
     )
     final_task = require_object(final_details["task"], context="persisted done Task")
     assert final_task["state"] == "done"
-    assert final_task["version"] == 4
+    assert final_task["version"] == 5
     assert final_details["current_result"] == approved_result
 
     prerequisite_events = _event_history(
@@ -477,6 +503,7 @@ def test_human_completes_dependency_bound_reviewed_workflow(  # noqa: PLR0915
     ]
     assert [event["type"] for event in reviewed_events] == [
         "task_created",
+        "task_updated",
         "task_updated",
         "result_submitted",
         "review_approved",

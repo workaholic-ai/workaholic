@@ -23,6 +23,9 @@ public versioning begins.
   TaskEvents, and complete actor, request, timestamp, and cursor attribution.
 - Cumulative Phase 3 SQLite and `LocalSession` conformance suites plus the
   complete fresh-process Human lifecycle golden journey.
+- A fail-fast Phase 3 clean-state gate and isolated installed-wheel lifecycle
+  journey that prove source/wheel parity, reject contaminated operator state,
+  and exercise the documented lifecycle and failure boundaries.
 
 ### Changed
 

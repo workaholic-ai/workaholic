@@ -299,8 +299,8 @@ def test_readme_version_output_matches_installed_distribution() -> None:
     )
 
 
-def test_readme_publishes_current_checks_and_historical_clean_state_gates() -> None:
-    """Public development guidance exposes current and milestone checks."""
+def test_readme_publishes_current_checks_and_clean_state_gates() -> None:
+    """Public guidance exposes current checks and the Phase 3 exit gate."""
     readme = " ".join(_README.read_text(encoding="utf-8").split())
 
     assert "## Development checks" in _README.read_text(encoding="utf-8")
@@ -312,8 +312,19 @@ def test_readme_publishes_current_checks_and_historical_clean_state_gates() -> N
         "scripts/verify-phase-0.sh",
         "scripts/verify-phase-1.sh",
         "scripts/verify-phase-2.sh",
+        "scripts/verify-phase-3.sh",
+        "scripts/smoke-phase-3-wheel.sh",
     ):
         assert command in readme
+    for guarantee in (
+        "## Phase 3 acceptance gate",
+        "no active virtual environment",
+        "refuses a dirty checkout",
+        "temporary config, data, and Workspace roots",
+        "structured Human Results",
+        "ordered TaskEvents",
+    ):
+        assert guarantee in readme
 
 
 def test_phase_three_status_and_limitations_are_explicit() -> None:

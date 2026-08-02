@@ -244,7 +244,25 @@ uv build
 scripts/smoke-install.sh dist/*.whl
 ```
 
-The historical clean-state gates remain available as
+## Phase 3 acceptance gate
+
+From a clean checkout with no active virtual environment, pre-existing
+`.venv` or `dist`, or inherited Workaholic config/data/profile selectors, run:
+
+```bash
+scripts/verify-phase-3.sh
+```
+
+The gate synchronizes the locked environment, runs all pre-commit controls and
+tests, builds the distribution, verifies isolated wheel installation, and
+executes the installed-wheel Human lifecycle through
+`scripts/smoke-phase-3-wheel.sh dist/*.whl`. It owns and removes temporary
+config, data, and Workspace roots, and refuses a dirty checkout or any caller
+state that could redirect persistence. The source suite and wheel journey
+jointly pin Task versions, readiness, structured Human Results, state changes,
+documented error codes, and ordered TaskEvents.
+
+Earlier milestone gates remain available as
 `scripts/verify-phase-0.sh`, `scripts/verify-phase-1.sh`, and
 `scripts/verify-phase-2.sh`. Each uses temporary state and validates its own
 milestone from a clean checkout.
