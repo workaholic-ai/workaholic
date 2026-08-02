@@ -15,7 +15,9 @@ Python parsing, Ruff, and the contract tests that execute them. No production
 package is excluded from typing or Import Linter.
 
 Persistence and Session conformance state is generated at runtime through the
-typed factories in `tests.contract.phase_one` and `tests.contract.phase_two`.
-Do not add backend snapshots, database files, profile files, credentials, or
-operator-specific paths here; those would make shared behavioral expectations
-adapter- or machine-dependent.
+typed factories in `tests.contract.phase_one`, `tests.contract.phase_two`, and
+`tests.contract.phase_three`. Phase 3 rollback faults are also injected at
+runtime through semantic factory hooks. Do not add backend snapshots, database
+files, profile files, failure-marker files, credentials, or operator-specific
+paths here; those would make shared behavioral expectations adapter- or
+machine-dependent.
