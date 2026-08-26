@@ -1682,7 +1682,7 @@ class ClaimTaskMutation(_ClaimOperationMutation):
     task_uid: TaskId
     lease_duration_seconds: int
     task_claimed_event_id: TaskEventId
-    claim_expired_event_id: TaskEventId | None = None
+    claim_expired_event_id: TaskEventId
 
     @model_validator(mode="after")
     def _validate_claim_contract(self) -> ClaimTaskMutation:
@@ -1713,7 +1713,7 @@ class ClaimNextTaskMutation(_ClaimOperationMutation):
     attempt_id: AttemptId
     lease_duration_seconds: int
     task_claimed_event_id: TaskEventId
-    claim_expired_event_id: TaskEventId | None = None
+    claim_expired_event_id: TaskEventId
 
     @model_validator(mode="after")
     def _validate_claim_contract(self) -> ClaimNextTaskMutation:

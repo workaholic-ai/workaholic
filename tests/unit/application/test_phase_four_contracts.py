@@ -285,11 +285,13 @@ def test_claim_mutations_reject_invalid_duration_identity_and_time(
             "task_uid": TaskId("tsk_claimed"),
             "lease_duration_seconds": 28_800,
             "task_claimed_event_id": TaskEventId("evt_claimed"),
+            "claim_expired_event_id": TaskEventId("evt_expired"),
         },
         ClaimNextTaskMutation: {
             "attempt_id": _ATTEMPT_ID,
             "lease_duration_seconds": 900,
             "task_claimed_event_id": TaskEventId("evt_claimed"),
+            "claim_expired_event_id": TaskEventId("evt_expired"),
         },
         RenewClaimMutation: {
             "task_uid": TaskId("tsk_claimed"),
@@ -314,6 +316,7 @@ def test_phase_four_mutations_reject_unknown_and_reused_event_fields() -> None:
                 "task_uid": TaskId("tsk_claimed"),
                 "lease_duration_seconds": 28_800,
                 "task_claimed_event_id": TaskEventId("evt_claimed"),
+                "claim_expired_event_id": TaskEventId("evt_expired"),
                 "database_path": "/unsafe/local.db",
             }
         )

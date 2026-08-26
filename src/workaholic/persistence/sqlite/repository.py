@@ -12,6 +12,10 @@ from workaholic.persistence.sqlite._bootstrap import (
     bootstrap_local_project as _bootstrap_local_project,
 )
 from workaholic.persistence.sqlite._projects import create_project as _create_project
+from workaholic.persistence.sqlite._task_claims import (
+    claim_next_task as _claim_next_task,
+)
+from workaholic.persistence.sqlite._task_claims import claim_task as _claim_task
 from workaholic.persistence.sqlite._task_dependencies import (
     add_task_dependency as _add_task_dependency,
 )
@@ -46,6 +50,8 @@ if TYPE_CHECKING:
         ApproveResultMutation,
         BootstrapMutation,
         BootstrapResult,
+        ClaimNextTaskMutation,
+        ClaimTaskMutation,
         Clock,
         GetLocalStatus,
         GetProjectByKey,
@@ -64,6 +70,7 @@ if TYPE_CHECKING:
         SubmitHumanResultMutation,
         TaskBlockMutation,
         TaskCancelMutation,
+        TaskClaimResult,
         TaskCreationMutation,
         TaskDetails,
         TaskEventPage,
@@ -197,6 +204,33 @@ class SQLiteRepository:
 
         """
         return _cancel_task(self._database_path, mutation)
+
+    def claim_task(self, mutation: ClaimTaskMutation) -> TaskClaimResult:
+        """Atomically acquire one explicit ready Task for a Human.
+
+        Args:
+            mutation: Validated targeted Human Claim mutation.
+
+        Returns:
+            Current Human Claim with ordered acquisition events.
+
+        """
+        return _claim_task(self._database_path, mutation)
+
+    def claim_next_task(
+        self,
+        mutation: ClaimNextTaskMutation,
+    ) -> TaskClaimResult:
+        """Atomically pull the highest-ranked ready Task for an Agent.
+
+        Args:
+            mutation: Validated Project-scoped Agent Claim mutation.
+
+        Returns:
+            Selected Task, active Claim/Attempt, and ordered events.
+
+        """
+        return _claim_next_task(self._database_path, mutation)
 
     def add_task_dependency(
         self,

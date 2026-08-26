@@ -29,7 +29,10 @@ from workaholic.persistence.sqlite._records import (
 from workaholic.persistence.sqlite.errors import StorageUnavailableError
 
 if TYPE_CHECKING:
-    from workaholic.domain import JsonValue
+    import sqlite3
+    from datetime import datetime
+
+    from workaholic.domain import JsonValue, Task
 
 TASK_EVENT_FIELDS: Final = (
     "cursor",
@@ -80,6 +83,92 @@ class TaskEventRecord:
             or self.attempt_id != candidate_event.attempt_id
         ):
             raise StorageUnavailableError
+
+
+def insert_task_event(  # noqa: PLR0913 - exact durable event boundary.
+    connection: sqlite3.Connection,
+    *,
+    event_id: TaskEventId,
+    task: Task,
+    actor_subject_id: SubjectId,
+    request_id: RequestId,
+    event_type: TaskEventType,
+    occurred_at: datetime,
+    payload: Mapping[str, JsonValue],
+    attempt_id: AttemptId | None,
+) -> TaskEventRecord:
+    """Append one attributable Task event in an active write transaction.
+
+    Args:
+        connection: Active schema-validated SQLite write transaction.
+        event_id: Globally unique candidate event identity.
+        task: Complete Task receiving the event.
+        actor_subject_id: Authenticated bootstrap Subject identity.
+        request_id: Current logical request identity.
+        event_type: Closed semantic event type.
+        occurred_at: Authoritative UTC transaction time.
+        payload: Validated JSON-compatible event payload.
+        attempt_id: Agent Attempt attribution or ``None`` for Human execution.
+
+    Returns:
+        Persisted event with its allocated monotonic cursor.
+
+    Raises:
+        StorageUnavailableError: If an input or allocated cursor is malformed.
+
+    """
+    try:
+        event = TaskEvent(
+            id=event_id,
+            cursor=1,
+            task_uid=task.uid,
+            project_id=task.project_id,
+            actor_subject_id=actor_subject_id,
+            request_id=request_id,
+            event_type=event_type,
+            occurred_at=occurred_at,
+            payload=payload,
+            attempt_id=attempt_id,
+        )
+    except (TypeError, ValueError) as error:
+        raise StorageUnavailableError from error
+    inserted = connection.execute(
+        """
+        INSERT INTO task_events (
+            id, task_uid, project_id, actor_subject_id, actor_kind, attempt_id,
+            request_id, event_type, occurred_at, payload_json
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            str(event.id),
+            str(event.task_uid),
+            str(event.project_id),
+            str(event.actor_subject_id),
+            SubjectKind.HUMAN.value,
+            None if attempt_id is None else str(attempt_id),
+            str(event.request_id),
+            event.event_type.value,
+            serialize_timestamp(event.occurred_at),
+            canonical_json(event.payload),
+        ),
+    )
+    persisted = TaskEvent(
+        id=event.id,
+        cursor=require_integer(inserted.lastrowid),
+        task_uid=event.task_uid,
+        project_id=event.project_id,
+        actor_subject_id=event.actor_subject_id,
+        request_id=event.request_id,
+        event_type=event.event_type,
+        occurred_at=event.occurred_at,
+        payload=event.payload,
+        attempt_id=event.attempt_id,
+    )
+    return TaskEventRecord(
+        event=persisted,
+        actor_kind=SubjectKind.HUMAN,
+        attempt_id=attempt_id,
+    )
 
 
 def task_event_record_mapping(record: TaskEventRecord) -> dict[str, object]:

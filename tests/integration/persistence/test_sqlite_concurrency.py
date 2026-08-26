@@ -15,18 +15,28 @@ from tests.contract.phase_one import (
 )
 
 from workaholic.application import (
+    ClaimNextTaskMutation,
     ListTasks,
+    NoTaskAvailableError,
     ProjectCreationMutation,
     ProjectCreationResult,
     ProjectKeyConflictError,
     TaskBlockMutation,
     TaskCancelMutation,
+    TaskClaimResult,
     TaskMutationResult,
     TaskUpdateMutation,
     TaskUpdatePatch,
     VersionConflictError,
 )
-from workaholic.domain import ProjectId, RequestId, TaskEventId, TaskState
+from workaholic.domain import (
+    AttemptId,
+    ProjectId,
+    RequestId,
+    TaskEventId,
+    TaskEventType,
+    TaskState,
+)
 from workaholic.persistence.sqlite import (
     SQLiteRepository,
     open_read_connection,
@@ -302,6 +312,97 @@ def test_concurrent_block_and_cancel_have_one_versioned_winner(
     assert counts == (2, 1)
 
 
+def test_concurrent_agent_claims_have_exactly_one_owner(tmp_path: Path) -> None:
+    """Independent unkeyed pulls cannot both acquire the sole ready Task."""
+    database_path = tmp_path / "local.db"
+    repository = SQLiteRepository(database_path)
+    bootstrap = repository.bootstrap_local_project(bootstrap_mutation("bootstrap"))
+    task = repository.create_task(task_mutation(bootstrap, "claim-target"))
+    barrier = Barrier(_WORKER_COUNT)
+    arguments = tuple(
+        (database_path, bootstrap, index, None, barrier)
+        for index in range(1, _WORKER_COUNT + 1)
+    )
+
+    with ThreadPoolExecutor(max_workers=_WORKER_COUNT) as executor:
+        outcomes = tuple(executor.map(_claim_next_or_unavailable, arguments))
+
+    winners = tuple(item for item in outcomes if isinstance(item, TaskClaimResult))
+    unavailable = tuple(
+        item for item in outcomes if isinstance(item, NoTaskAvailableError)
+    )
+    assert len(winners) == 1
+    assert len(unavailable) == _WORKER_COUNT - 1
+    assert winners[0].task == task
+    assert winners[0].claim is not None
+    assert winners[0].attempt is not None
+    with open_read_connection(database_path) as connection:
+        counts = connection.execute(
+            """
+            SELECT
+                (SELECT count(*) FROM task_attempts),
+                (SELECT count(*) FROM task_claims),
+                (
+                    SELECT count(*) FROM task_events
+                    WHERE event_type = 'task_claimed'
+                ),
+                (
+                    SELECT count(*) FROM idempotency_records
+                    WHERE operation = 'task.claim.next'
+                )
+            """
+        ).fetchone()
+        stored_version = connection.execute(
+            "SELECT version FROM tasks WHERE uid = ?",
+            (str(task.uid),),
+        ).fetchone()
+    assert counts == (1, 1, 1, 0)
+    assert stored_version == (task.version,)
+
+
+def test_concurrent_idempotent_agent_claims_share_one_closed_outcome(
+    tmp_path: Path,
+) -> None:
+    """Concurrent equivalent retries create one Attempt, Claim, event, and key."""
+    database_path = tmp_path / "local.db"
+    repository = SQLiteRepository(database_path)
+    bootstrap = repository.bootstrap_local_project(bootstrap_mutation("bootstrap"))
+    repository.create_task(task_mutation(bootstrap, "idempotent-claim"))
+    barrier = Barrier(_WORKER_COUNT)
+    arguments = tuple(
+        (database_path, bootstrap, index, "claim-once", barrier)
+        for index in range(1, _WORKER_COUNT + 1)
+    )
+
+    with ThreadPoolExecutor(max_workers=_WORKER_COUNT) as executor:
+        outcomes = tuple(executor.map(_claim_next_or_unavailable, arguments))
+
+    assert all(isinstance(item, TaskClaimResult) for item in outcomes)
+    assert all(item == outcomes[0] for item in outcomes[1:])
+    committed = outcomes[0]
+    assert isinstance(committed, TaskClaimResult)
+    assert tuple(event.event_type for event in committed.events) == (
+        TaskEventType.TASK_CLAIMED,
+    )
+    with open_read_connection(database_path) as connection:
+        counts = connection.execute(
+            """
+            SELECT
+                (SELECT count(*) FROM task_attempts),
+                (SELECT count(*) FROM task_claims),
+                (
+                    SELECT count(*) FROM task_events
+                    WHERE event_type = 'task_claimed'
+                ),
+                (
+                    SELECT count(*) FROM idempotency_records
+                    WHERE operation = 'task.claim.next'
+                )
+            """
+        ).fetchone()
+    assert counts == (1, 1, 1, 1)
+
+
 def _create_task(
     arguments: tuple[Path, BootstrapResult, int, Barrier],
 ) -> Task:
@@ -324,6 +425,44 @@ def _create_task(
             occurred_at=later_timestamp(index),
         )
     )
+
+
+def _claim_next_or_unavailable(
+    arguments: tuple[
+        Path,
+        BootstrapResult,
+        int,
+        str | None,
+        Barrier,
+    ],
+) -> TaskClaimResult | NoTaskAvailableError:
+    """Run one contended Agent pull through an independent connection.
+
+    Args:
+        arguments: Store, identity graph, worker, optional key, and barrier.
+
+    Returns:
+        The committed/replayed Claim or expected no-Task outcome.
+
+    """
+    database_path, bootstrap, index, caller_key, barrier = arguments
+    repository = SQLiteRepository(database_path)
+    mutation = ClaimNextTaskMutation(
+        project_id=bootstrap.project.id,
+        actor_subject_id=bootstrap.subject.id,
+        request_id=RequestId(f"req_claim_{index}"),
+        occurred_at=later_timestamp(index),
+        attempt_id=AttemptId(f"atm_claim_{index}"),
+        lease_duration_seconds=900,
+        task_claimed_event_id=TaskEventId(f"evt_claim_{index}"),
+        claim_expired_event_id=TaskEventId(f"evt_expire_claim_{index}"),
+        idempotency_key=caller_key,
+    )
+    barrier.wait(timeout=10)
+    try:
+        return repository.claim_next_task(mutation)
+    except NoTaskAvailableError as error:
+        return error
 
 
 def _update_task_or_conflict(
