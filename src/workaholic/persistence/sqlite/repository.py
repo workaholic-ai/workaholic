@@ -44,6 +44,9 @@ from workaholic.persistence.sqlite._task_results import (
 )
 from workaholic.persistence.sqlite._task_results import reject_result as _reject_result
 from workaholic.persistence.sqlite._task_results import (
+    submit_agent_result as _submit_agent_result,
+)
+from workaholic.persistence.sqlite._task_results import (
     submit_human_result as _submit_human_result,
 )
 from workaholic.persistence.sqlite._tasks import create_task as _create_task
@@ -75,6 +78,7 @@ if TYPE_CHECKING:
         RenewClaimMutation,
         ReportTaskProgressMutation,
         StatusResult,
+        SubmitAgentResultMutation,
         SubmitHumanResultMutation,
         TaskBlockMutation,
         TaskCancelMutation,
@@ -324,6 +328,21 @@ class SQLiteRepository:
 
         """
         return _submit_human_result(self._database_path, mutation)
+
+    def submit_agent_result(
+        self,
+        mutation: SubmitAgentResultMutation,
+    ) -> TaskSubmissionResult:
+        """Atomically submit one Result through an exact current Agent Attempt.
+
+        Args:
+            mutation: Validated optimistic Agent submission mutation.
+
+        Returns:
+            Committed Task, Result, terminal Attempt, and ordered events.
+
+        """
+        return _submit_agent_result(self._database_path, mutation)
 
     def approve_result(
         self,

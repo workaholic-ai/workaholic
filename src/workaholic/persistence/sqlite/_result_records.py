@@ -30,10 +30,9 @@ from workaholic.persistence.sqlite._claim_records import (
     task_attempt_record_mapping,
 )
 from workaholic.persistence.sqlite._event_records import (
-    TASK_EVENT_FIELDS,
     TaskEventRecord,
+    require_persisted_task_event_record,
     task_event_record_from_mapping,
-    task_event_record_from_row,
     task_event_record_mapping,
 )
 from workaholic.persistence.sqlite._records import (
@@ -239,7 +238,7 @@ def task_result_from_row(value: Sequence[object]) -> TaskResult:
         value: SQLite row values in canonical Result field order.
 
     Returns:
-        Validated Human Result.
+        Validated Human or Agent Result.
 
     Raises:
         StorageUnavailableError: If row shape or values are malformed.
@@ -265,7 +264,7 @@ def _build_result(
         collections_are_json: Whether collection values are serialized JSON.
 
     Returns:
-        Validated Human Result.
+        Validated Human or Agent Result.
 
     Raises:
         StorageUnavailableError: If any persisted value is invalid.
@@ -411,20 +410,9 @@ def read_idempotent_result_outcome(
         raise IdempotencyConflictError
     result, event_records = parse_result_outcome(require_text(row[1]))
     for event_record in event_records:
-        actual = connection.execute(
-            f"""
-            SELECT {", ".join(TASK_EVENT_FIELDS)}
-            FROM task_events
-            WHERE id = ?
-            """,  # noqa: S608 - field names are a closed module constant.
-            (str(event_record.event.id),),
-        ).fetchone()
-        if (
-            actual is None
-            or task_event_record_from_row(actual) != event_record
-            or str(event_record.event.actor_subject_id) != actor_subject_id
-        ):
+        if str(event_record.event.actor_subject_id) != actor_subject_id:
             raise StorageUnavailableError
+        require_persisted_task_event_record(connection, expected=event_record)
     if result.attempt is not None:
         actual_attempt = connection.execute(
             f"""

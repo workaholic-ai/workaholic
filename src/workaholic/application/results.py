@@ -500,9 +500,15 @@ class TaskSubmissionResult(_ResultModel):
             message = "Task submission state must match the Result review disposition."
             raise ValueError(message)
         event_types = tuple(event.event_type for event in self.events)
-        has_expiry_prefix = event_types[:1] == (
-            TaskEventType.CLAIM_EXPIRED,
-        ) and status in (ResultReviewStatus.NOT_REQUIRED, ResultReviewStatus.PENDING)
+        has_expiry_prefix = (
+            event_types[:1] == (TaskEventType.CLAIM_EXPIRED,)
+            and self.result.attempt_id is None
+            and status
+            in (
+                ResultReviewStatus.NOT_REQUIRED,
+                ResultReviewStatus.PENDING,
+            )
+        )
         if has_expiry_prefix:
             _validate_claim_expiry_event(self.events[0])
         operation_events = self.events[1:] if has_expiry_prefix else self.events

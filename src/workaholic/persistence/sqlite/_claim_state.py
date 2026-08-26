@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Final
 
 from workaholic.application import LeaseLostError, TaskLockedError
 from workaholic.domain import (
     AttemptId,
+    AttemptStatus,
+    DomainValidationError,
     ProjectId,
     RequestId,
     SubjectId,
@@ -437,3 +439,94 @@ def end_human_claim(
     )
     if deleted.rowcount != 1:
         raise StorageUnavailableError
+
+
+def end_agent_claim_as_submitted(  # noqa: PLR0913 - exact owner boundary.
+    connection: sqlite3.Connection,
+    *,
+    task: Task,
+    state: StoredClaimState,
+    actor_subject_id: SubjectId,
+    attempt_id: AttemptId,
+    occurred_at: datetime,
+) -> TaskAttempt:
+    """Delete one Agent Claim and terminalize its exact Attempt as submitted.
+
+    Args:
+        connection: Active SQLite write transaction.
+        task: Complete Task owned by the current Claim.
+        state: Current Agent ownership snapshot returned by the owner guard.
+        actor_subject_id: Authenticated bootstrap Subject identity.
+        attempt_id: Exact Agent owner token.
+        occurred_at: Authoritative successful submission time.
+
+    Returns:
+        Submitted terminal Attempt retained for execution history.
+
+    Raises:
+        StorageUnavailableError: If ownership, Lease, or stored rows differ.
+
+    """
+    candidate_task: object = task
+    candidate_state: object = state
+    candidate_actor: object = actor_subject_id
+    candidate_attempt: object = attempt_id
+    if (
+        not isinstance(candidate_task, Task)
+        or not isinstance(candidate_state, StoredClaimState)
+        or not isinstance(candidate_actor, SubjectId)
+        or not isinstance(candidate_attempt, AttemptId)
+        or candidate_state.project_id != candidate_task.project_id
+        or candidate_state.claim.task_uid != candidate_task.uid
+        or candidate_state.claim.subject_id != candidate_actor
+        or candidate_state.claim.attempt_id != candidate_attempt
+        or candidate_state.attempt is None
+        or candidate_state.attempt.id != candidate_attempt
+        or current_claim_state(candidate_state, now=occurred_at) is None
+    ):
+        raise StorageUnavailableError
+    try:
+        submitted = replace(
+            candidate_state.attempt,
+            status=AttemptStatus.SUBMITTED,
+            ended_at=occurred_at,
+        )
+    except DomainValidationError as error:
+        raise StorageUnavailableError from error
+    deleted = connection.execute(
+        """
+        DELETE FROM task_claims
+        WHERE task_uid = ? AND project_id = ? AND subject_id = ?
+          AND attempt_id = ? AND claimed_at = ? AND lease_expires_at = ?
+        """,
+        (
+            str(candidate_task.uid),
+            str(candidate_task.project_id),
+            str(candidate_actor),
+            str(candidate_attempt),
+            serialize_timestamp(candidate_state.claim.claimed_at),
+            serialize_timestamp(candidate_state.claim.lease_expires_at),
+        ),
+    )
+    if deleted.rowcount != 1:
+        raise StorageUnavailableError
+    changed = connection.execute(
+        """
+        UPDATE task_attempts
+        SET status = 'submitted', ended_at = ?
+        WHERE id = ? AND task_uid = ? AND project_id = ?
+          AND subject_id = ? AND status = 'active' AND ended_at IS NULL
+          AND lease_expires_at = ?
+        """,
+        (
+            serialize_timestamp(occurred_at),
+            str(candidate_attempt),
+            str(candidate_task.uid),
+            str(candidate_task.project_id),
+            str(candidate_actor),
+            serialize_timestamp(candidate_state.attempt.lease_expires_at),
+        ),
+    )
+    if changed.rowcount != 1:
+        raise StorageUnavailableError
+    return submitted

@@ -32,6 +32,7 @@ from workaholic.domain import (
     derive_task_readiness,
     ready_task_ordering_key,
     transition_task_state,
+    validate_agent_submission,
     validate_dependency_addition,
     validate_dependency_removal,
     validate_human_submission,
@@ -508,6 +509,39 @@ def test_human_submission_rejects_unfinished_dependency_and_agent_attempt() -> N
             task=replace(task, depends_on=()),
             prerequisites=(),
             result=_result(task, attempt_id=AttemptId("atm_agent")),
+        )
+
+
+def test_agent_submission_requires_attempt_and_done_dependencies() -> None:
+    """Agent submission requires exact Attempt attribution and done prerequisites."""
+    prerequisite = _task(suffix="prerequisite", number=2, state=TaskState.DONE)
+    task = replace(
+        _task(),
+        approval=ApprovalRequirement.HUMAN,
+        depends_on=(prerequisite.uid,),
+        acceptance=(AcceptanceCriterion("ac_done", "Done", required=True),),
+    )
+    agent_result = _result(task, attempt_id=AttemptId("atm_agent"))
+
+    assert (
+        validate_agent_submission(
+            task=task,
+            prerequisites=(prerequisite,),
+            result=agent_result,
+        )
+        is TaskState.REVIEW
+    )
+    with pytest.raises(DomainValidationError, match="Attempt"):
+        validate_agent_submission(
+            task=task,
+            prerequisites=(prerequisite,),
+            result=_result(task),
+        )
+    with pytest.raises(DomainValidationError, match="prerequisite"):
+        validate_agent_submission(
+            task=task,
+            prerequisites=(replace(prerequisite, state=TaskState.OPEN),),
+            result=agent_result,
         )
 
 

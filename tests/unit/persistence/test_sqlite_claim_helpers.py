@@ -46,6 +46,7 @@ from workaholic.persistence.sqlite._claim_records import (
 from workaholic.persistence.sqlite._claim_state import (
     StoredClaimState,
     current_claim_state,
+    end_agent_claim_as_submitted,
     end_human_claim,
     guard_human_task_mutation,
     load_claim_state,
@@ -599,6 +600,47 @@ def test_human_claim_end_rejects_wrong_owner_shape_or_changed_row() -> None:
             task=_task(),
             state=human_state,
             actor_subject_id=_SUBJECT_ID,
+        )
+
+
+def test_agent_submission_end_requires_current_exact_rows() -> None:
+    """Agent submission terminalizes only an exact current Claim and Attempt pair."""
+    state = StoredClaimState(
+        project_id=_PROJECT_ID,
+        claim=_agent_claim(),
+        attempt=_agent_attempt(),
+    )
+    submitted_at = _NOW + timedelta(minutes=1)
+
+    submitted = end_agent_claim_as_submitted(
+        cast("sqlite3.Connection", _RowCountConnection([1, 1])),
+        task=_task(),
+        state=state,
+        actor_subject_id=_SUBJECT_ID,
+        attempt_id=AttemptId("atm_claim"),
+        occurred_at=submitted_at,
+    )
+
+    assert submitted.status is AttemptStatus.SUBMITTED
+    assert submitted.ended_at == submitted_at
+    for rowcounts in ([0], [1, 0]):
+        with pytest.raises(StorageUnavailableError):
+            end_agent_claim_as_submitted(
+                cast("sqlite3.Connection", _RowCountConnection(rowcounts)),
+                task=_task(),
+                state=state,
+                actor_subject_id=_SUBJECT_ID,
+                attempt_id=AttemptId("atm_claim"),
+                occurred_at=submitted_at,
+            )
+    with pytest.raises(StorageUnavailableError):
+        end_agent_claim_as_submitted(
+            cast("sqlite3.Connection", object()),
+            task=_task(),
+            state=state,
+            actor_subject_id=_SUBJECT_ID,
+            attempt_id=AttemptId("atm_other"),
+            occurred_at=submitted_at,
         )
 
 

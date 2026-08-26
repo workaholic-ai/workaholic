@@ -1295,6 +1295,64 @@ def validate_human_submission(
         DomainValidationError: If submission violates a lifecycle invariant.
 
     """
+    return _validate_submission(
+        task=task,
+        prerequisites=prerequisites,
+        result=result,
+        human_submission=True,
+    )
+
+
+def validate_agent_submission(
+    *,
+    task: object,
+    prerequisites: Iterable[object],
+    result: object,
+) -> TaskState:
+    """Validate Agent submission and return its approval-dependent target state.
+
+    Args:
+        task: Authoritative claimed Task being submitted.
+        prerequisites: Complete Task projections named by ``task.depends_on``.
+        result: Agent-attributed Result for the Task.
+
+    Returns:
+        ``done`` when approval is none, otherwise ``review``.
+
+    Raises:
+        DomainValidationError: If submission violates a lifecycle invariant.
+
+    """
+    return _validate_submission(
+        task=task,
+        prerequisites=prerequisites,
+        result=result,
+        human_submission=False,
+    )
+
+
+def _validate_submission(
+    *,
+    task: object,
+    prerequisites: Iterable[object],
+    result: object,
+    human_submission: bool,
+) -> TaskState:
+    """Validate shared submission state, dependencies, and Result attribution.
+
+    Args:
+        task: Authoritative open Task being submitted.
+        prerequisites: Complete Task projections named by ``task.depends_on``.
+        result: Human- or Agent-attributed Result for the Task.
+        human_submission: Whether null Attempt attribution is required.
+
+    Returns:
+        Approval-dependent target Task state.
+
+    Raises:
+        DomainValidationError: If submission violates a lifecycle invariant.
+
+    """
     candidate = _validate_lifecycle_task(task, label="Task")
     target_state = transition_task_state(
         candidate.state,
@@ -1303,12 +1361,13 @@ def validate_human_submission(
     )
     for prerequisite in _validated_prerequisites(candidate, prerequisites):
         if prerequisite.state is not TaskState.DONE:
-            message = "Human submission requires every prerequisite to be done."
+            owner = "Human" if human_submission else "Agent"
+            message = f"{owner} submission requires every prerequisite to be done."
             raise DomainValidationError(message)
     validate_task_result_consistency(
         task=candidate,
         result=result,
-        human_submission=True,
+        human_submission=human_submission,
     )
     return target_state
 
