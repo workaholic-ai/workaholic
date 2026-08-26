@@ -18,6 +18,9 @@ from pydantic import (
 
 from workaholic.application.commands import TaskListView
 from workaholic.domain import (
+    PROGRESS_OBSERVATIONS_MAX_ITEMS,
+    AttemptId,
+    AttemptStatus,
     DomainValidationError,
     Instance,
     JsonValue,
@@ -31,6 +34,8 @@ from workaholic.domain import (
     SubjectId,
     SubjectKind,
     Task,
+    TaskAttempt,
+    TaskClaim,
     TaskEvent,
     TaskEventId,
     TaskEventType,
@@ -40,6 +45,7 @@ from workaholic.domain import (
     TaskState,
     WorkspaceBinding,
     ready_task_ordering_key,
+    validate_claim_attempt_consistency,
     validate_profile_name,
 )
 
@@ -237,6 +243,8 @@ class TaskDetails(_ResultModel):
     readiness: TaskReadiness
     prerequisites: tuple[Task, ...]
     current_result: TaskResult | None
+    claim: TaskClaim | None = None
+    attempt: TaskAttempt | None = None
 
     @model_validator(mode="after")
     def _validate_consistency(self) -> TaskDetails:
@@ -272,6 +280,23 @@ class TaskDetails(_ResultModel):
         ):
             message = "Task details current Result must match the Task selection."
             raise ValueError(message)
+        if self.claim is None:
+            if self.attempt is not None or self.readiness.running:
+                message = "Task details without a current Claim cannot be running."
+                raise ValueError(message)
+        else:
+            _validate_claim_task_identity(self.task, self.claim)
+            validate_claim_attempt_consistency(
+                claim=self.claim,
+                attempt=self.attempt,
+            )
+            if (
+                not self.readiness.running
+                or self.readiness.ready
+                or self.readiness.stale
+            ):
+                message = "Task details current Claim must match running readiness."
+                raise ValueError(message)
         return self
 
 
@@ -299,12 +324,129 @@ class TaskMutationResult(_ResultModel):
         return self
 
 
+class TaskClaimResult(_ResultModel):
+    """Task plus current or released Claim state and ordered Claim events."""
+
+    task: Task
+    claim: TaskClaim | None
+    attempt: TaskAttempt | None
+    events: tuple[TaskEvent, ...]
+
+    @model_validator(mode="after")
+    def _validate_consistency(self) -> TaskClaimResult:
+        """Validate current/no-op and explicit release outcome shapes.
+
+        Returns:
+            The internally consistent Claim operation result.
+
+        Raises:
+            ValueError: If Task, Claim, Attempt, or events disagree.
+
+        """
+        if self.events:
+            _validate_event_batch(self.task, self.events)
+        if self.claim is not None:
+            _validate_claim_task_identity(self.task, self.claim)
+            validate_claim_attempt_consistency(
+                claim=self.claim,
+                attempt=self.attempt,
+            )
+            event_types = tuple(event.event_type for event in self.events)
+            allowed_sequences = {
+                (),
+                (TaskEventType.TASK_CLAIMED,),
+                (TaskEventType.CLAIM_EXPIRED, TaskEventType.TASK_CLAIMED),
+                (TaskEventType.CLAIM_RENEWED,),
+            }
+            if event_types not in allowed_sequences:
+                message = "Current Claim result has an invalid event sequence."
+                raise ValueError(message)
+            if self.events:
+                last_attempt = self.events[-1].attempt_id
+                if last_attempt != self.claim.attempt_id or any(
+                    event.actor_subject_id != self.claim.subject_id
+                    for event in self.events
+                ):
+                    message = "Current Claim events must match its owner attribution."
+                    raise ValueError(message)
+            return self
+
+        if tuple(event.event_type for event in self.events) != (
+            TaskEventType.CLAIM_RELEASED,
+        ):
+            message = "Released Claim result requires one claim_released event."
+            raise ValueError(message)
+        event_attempt = self.events[0].attempt_id
+        if self.attempt is None:
+            if event_attempt is not None:
+                message = "Human release must have null Attempt attribution."
+                raise ValueError(message)
+        elif (
+            self.attempt.task_uid != self.task.uid
+            or self.attempt.status is not AttemptStatus.RELEASED
+            or self.attempt.id != event_attempt
+            or self.attempt.subject_id != self.events[0].actor_subject_id
+            or self.attempt.ended_at != self.events[0].occurred_at
+        ):
+            message = "Agent release must return its terminal released Attempt."
+            raise ValueError(message)
+        return self
+
+
+class TaskProgressResult(_ResultModel):
+    """Current Agent ownership plus one ordered structured progress event batch."""
+
+    task: Task
+    claim: TaskClaim
+    attempt: TaskAttempt
+    events: tuple[TaskEvent, ...]
+
+    @model_validator(mode="after")
+    def _validate_consistency(self) -> TaskProgressResult:
+        """Validate active Agent ownership and exact progress event ordering.
+
+        Returns:
+            The internally consistent progress result.
+
+        Raises:
+            ValueError: If ownership, attribution, or event order is invalid.
+
+        """
+        _validate_claim_task_identity(self.task, self.claim)
+        validate_claim_attempt_consistency(claim=self.claim, attempt=self.attempt)
+        if self.claim.attempt_id is None:
+            message = "Task progress requires an Agent Claim."
+            raise ValueError(message)
+        _validate_event_batch(self.task, self.events)
+        event_types = tuple(event.event_type for event in self.events)
+        if not event_types or event_types[0] is not TaskEventType.PROGRESS_REPORTED:
+            message = "Task progress must begin with progress_reported."
+            raise ValueError(message)
+        if any(
+            event_type is not TaskEventType.OBSERVATION_ADDED
+            for event_type in event_types[1:]
+        ):
+            message = "Task progress may contain only observation_added after progress."
+            raise ValueError(message)
+        maximum_event_count = PROGRESS_OBSERVATIONS_MAX_ITEMS + 1
+        if len(self.events) > maximum_event_count or any(
+            event.attempt_id != self.attempt.id
+            or event.actor_subject_id != self.claim.subject_id
+            or event.occurred_at >= self.claim.lease_expires_at
+            for event in self.events
+        ):
+            message = "Task progress event count and Attempt attribution are invalid."
+            raise ValueError(message)
+        return self
+
+
 class TaskSubmissionResult(_ResultModel):
     """Committed Task, retained Result, and ordered submission/review events."""
 
     task: Task
     result: TaskResult
     events: tuple[TaskEvent, ...]
+    attempt: TaskAttempt | None = None
 
     @model_validator(mode="after")
     def _validate_consistency(self) -> TaskSubmissionResult:
@@ -372,6 +514,12 @@ class TaskSubmissionResult(_ResultModel):
                 "Task submission attribution and timestamps must match its events."
             )
             raise ValueError(message)
+        _validate_submission_attempt(
+            task=self.task,
+            result=self.result,
+            events=self.events,
+            attempt=self.attempt,
+        )
         return self
 
 
@@ -384,7 +532,7 @@ class TaskEventResult(_ResultModel):
     project_id: ProjectId
     actor_subject_id: SubjectId
     actor_kind: SubjectKind
-    attempt_id: None = None
+    attempt_id: AttemptId | None = None
     request_id: RequestId
     event_type: TaskEventType = Field(serialization_alias="type")
     occurred_at: datetime
@@ -427,6 +575,7 @@ class TaskEventResult(_ResultModel):
             event_type=self.event_type,
             occurred_at=self.occurred_at,
             payload=self.payload,
+            attempt_id=self.attempt_id,
         )
         object.__setattr__(self, "payload", event.payload)
         return self
@@ -582,6 +731,66 @@ class TaskPage(_ResultModel):
                 raise ValueError(message)
             previous_position = position
         return self
+
+
+def _validate_claim_task_identity(task: Task, claim: TaskClaim) -> None:
+    """Require a Claim to name the returned Task by both identities.
+
+    Args:
+        task: Returned authoritative Task.
+        claim: Current Claim projection.
+
+    Raises:
+        ValueError: If canonical or Human identities disagree.
+
+    """
+    if claim.task_uid != task.uid or claim.task_key != task.key:
+        message = "Task Claim must match the returned Task identities."
+        raise ValueError(message)
+
+
+def _validate_submission_attempt(
+    *,
+    task: Task,
+    result: TaskResult,
+    events: tuple[TaskEvent, ...],
+    attempt: TaskAttempt | None,
+) -> None:
+    """Validate nullable Human or Agent submission attribution.
+
+    Args:
+        task: Task returned by the submission or review operation.
+        result: Retained Human- or Agent-submitted Result.
+        events: Ordered events appended by the current operation.
+        attempt: Terminal Agent Attempt returned only during Agent submission.
+
+    Raises:
+        ValueError: If Attempt ownership or event attribution is inconsistent.
+
+    """
+    if result.attempt_id is None:
+        if attempt is not None or any(event.attempt_id is not None for event in events):
+            message = "Human submission and review require null Attempt data."
+            raise ValueError(message)
+        return
+    if attempt is None:
+        if events[0].event_type is TaskEventType.RESULT_SUBMITTED:
+            message = "Agent submission must return its submitted Attempt."
+            raise ValueError(message)
+        if any(event.attempt_id is not None for event in events):
+            message = "Human review events require null Attempt attribution."
+            raise ValueError(message)
+        return
+    if (
+        attempt.id != result.attempt_id
+        or attempt.task_uid != task.uid
+        or attempt.subject_id != result.submitted_by
+        or attempt.status is not AttemptStatus.SUBMITTED
+        or attempt.ended_at != events[0].occurred_at
+        or any(event.attempt_id != attempt.id for event in events)
+    ):
+        message = "Agent submission Attempt and event attribution must match."
+        raise ValueError(message)
 
 
 def _validate_event_batch(task: Task, events: tuple[TaskEvent, ...]) -> None:

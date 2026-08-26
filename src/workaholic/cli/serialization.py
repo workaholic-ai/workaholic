@@ -402,7 +402,7 @@ def task_event_result_data(event: TaskEventResult) -> dict[str, JsonValue]:
         "project_id": str(event.project_id),
         "actor_subject_id": str(event.actor_subject_id),
         "actor_kind": event.actor_kind.value,
-        "attempt_id": event.attempt_id,
+        "attempt_id": str(event.attempt_id) if event.attempt_id is not None else None,
         "request_id": str(event.request_id),
         "type": event.event_type.value,
         "occurred_at": normalize_json_value(event.occurred_at),

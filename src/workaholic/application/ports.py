@@ -11,6 +11,8 @@ if TYPE_CHECKING:
         AddTaskDependencyMutation,
         ApproveResultMutation,
         BootstrapMutation,
+        ClaimNextTaskMutation,
+        ClaimTaskMutation,
         GetLocalStatus,
         GetProjectByKey,
         GetTask,
@@ -22,7 +24,11 @@ if TYPE_CHECKING:
         ProjectCreationMutation,
         ReadTaskEvents,
         RejectResultMutation,
+        ReleaseClaimMutation,
         RemoveTaskDependencyMutation,
+        RenewClaimMutation,
+        ReportTaskProgressMutation,
+        SubmitAgentResultMutation,
         SubmitHumanResultMutation,
         TaskBlockMutation,
         TaskCancelMutation,
@@ -34,13 +40,16 @@ if TYPE_CHECKING:
         BootstrapResult,
         ProjectCreationResult,
         StatusResult,
+        TaskClaimResult,
         TaskDetails,
         TaskEventPage,
         TaskMutationResult,
         TaskPage,
+        TaskProgressResult,
         TaskSubmissionResult,
     )
     from workaholic.domain import (
+        AttemptId,
         InstanceId,
         Project,
         ProjectId,
@@ -150,6 +159,19 @@ class ResultIdentifierFactory(Protocol):
 
         Returns:
             A new opaque RequestId.
+
+        """
+        ...
+
+
+class ExecutionIdentifierFactory(ResultIdentifierFactory, Protocol):
+    """Generate identities required by Claim and Agent execution services."""
+
+    def new_attempt_id(self) -> AttemptId:
+        """Create a candidate Agent Attempt identifier.
+
+        Returns:
+            A new opaque AttemptId.
 
         """
         ...
@@ -320,6 +342,88 @@ class TaskRepository(TaskCreationRepository, Protocol):
         ...
 
 
+class ClaimExecutionRepository(Protocol):
+    """Persist Phase 4 Claim and Agent execution semantic operations."""
+
+    def claim_task(self, mutation: ClaimTaskMutation) -> TaskClaimResult:
+        """Atomically acquire one explicit ready Task for a Human.
+
+        Args:
+            mutation: Validated targeted Human Claim mutation.
+
+        Returns:
+            The current Task, Human Claim, and ordered events.
+
+        """
+        ...
+
+    def claim_next_task(self, mutation: ClaimNextTaskMutation) -> TaskClaimResult:
+        """Atomically pull the highest-ranked ready Task for an Agent.
+
+        Args:
+            mutation: Validated Project-scoped Agent Claim mutation.
+
+        Returns:
+            The selected Task, current Claim and Attempt, and ordered events.
+
+        """
+        ...
+
+    def renew_claim(self, mutation: RenewClaimMutation) -> TaskClaimResult:
+        """Atomically renew a Human Claim or Agent heartbeat.
+
+        Args:
+            mutation: Validated shared renewal mutation.
+
+        Returns:
+            The Task and renewed ownership state.
+
+        """
+        ...
+
+    def release_claim(self, mutation: ReleaseClaimMutation) -> TaskClaimResult:
+        """Atomically release one exact current Claim owner token.
+
+        Args:
+            mutation: Validated shared release mutation.
+
+        Returns:
+            The Task, no current Claim, optional terminal Attempt, and event.
+
+        """
+        ...
+
+    def report_task_progress(
+        self,
+        mutation: ReportTaskProgressMutation,
+    ) -> TaskProgressResult:
+        """Atomically append structured progress for a current Agent Attempt.
+
+        Args:
+            mutation: Validated progress and event identities.
+
+        Returns:
+            Current ownership and ordered progress events.
+
+        """
+        ...
+
+    def submit_agent_result(
+        self,
+        mutation: SubmitAgentResultMutation,
+    ) -> TaskSubmissionResult:
+        """Atomically submit one Result through a current Agent Attempt.
+
+        Args:
+            mutation: Validated optimistic Agent submission.
+
+        Returns:
+            Committed Task, Result, terminal Attempt, and ordered events.
+
+        """
+        ...
+
+
 class ProjectRepository(Protocol):
     """Persist atomic Project creation through one semantic operation."""
 
@@ -461,6 +565,7 @@ class QueryRepository(TaskViewQueryRepository, Protocol):
 
 class WorkaholicRepository(
     BootstrapRepository,
+    ClaimExecutionRepository,
     ProjectRepository,
     TaskRepository,
     QueryRepository,

@@ -850,7 +850,7 @@ def test_application_modules_import_only_owned_and_declared_boundaries() -> None
         assert imported_roots <= sys.stdlib_module_names | {"pydantic", "workaholic"}
 
 
-def test_cumulative_repository_port_declares_phase_three_semantics() -> None:
+def test_cumulative_repository_port_declares_phase_four_semantics() -> None:
     """Adapters receive one explicit cumulative semantic operation surface."""
     methods = {
         "add_task_dependency",
@@ -858,6 +858,8 @@ def test_cumulative_repository_port_declares_phase_three_semantics() -> None:
         "block_task",
         "bootstrap_local_project",
         "cancel_task",
+        "claim_next_task",
+        "claim_task",
         "create_project",
         "create_task",
         "get_local_status",
@@ -869,9 +871,13 @@ def test_cumulative_repository_port_declares_phase_three_semantics() -> None:
         "list_tasks_by_view",
         "get_task",
         "read_task_events_after",
+        "release_claim",
+        "renew_claim",
+        "report_task_progress",
         "reject_result",
         "remove_task_dependency",
         "submit_human_result",
+        "submit_agent_result",
         "unblock_task",
         "update_task_if_version",
     }
