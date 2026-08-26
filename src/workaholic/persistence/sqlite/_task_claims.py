@@ -45,6 +45,7 @@ from workaholic.persistence.sqlite._claim_state import (
     StoredClaimState,
     current_claim_state,
     load_claim_state,
+    materialize_expired_claim,
     require_current_claim_owner,
 )
 from workaholic.persistence.sqlite._event_records import (
@@ -268,11 +269,14 @@ def _execute_claim(
             event_records: list[TaskEventRecord] = []
             if stored_claim is not None:
                 event_records.append(
-                    _materialize_expired_claim(
+                    materialize_expired_claim(
                         connection,
                         task=task,
                         state=stored_claim,
-                        mutation=mutation,
+                        actor_subject_id=mutation.actor_subject_id,
+                        request_id=mutation.request_id,
+                        event_id=mutation.claim_expired_event_id,
+                        occurred_at=mutation.occurred_at,
                     )
                 )
             claim, attempt = _insert_claim_ownership(
@@ -502,60 +506,6 @@ def _is_owned_human_noop(
         and state.claim.subject_id == mutation.actor_subject_id
         and state.claim.attempt_id is None
         and state.attempt is None
-    )
-
-
-def _materialize_expired_claim(
-    connection: sqlite3.Connection,
-    *,
-    task: Task,
-    state: StoredClaimState,
-    mutation: _ClaimMutation,
-) -> TaskEventRecord:
-    """End one selected stale owner and append its expiry event."""
-    if current_claim_state(state, now=mutation.occurred_at) is not None:
-        raise StorageUnavailableError
-    deleted = connection.execute(
-        """
-        DELETE FROM task_claims
-        WHERE task_uid = ? AND project_id = ? AND lease_expires_at = ?
-        """,
-        (
-            str(task.uid),
-            str(task.project_id),
-            serialize_timestamp(state.claim.lease_expires_at),
-        ),
-    )
-    if deleted.rowcount != 1:
-        raise StorageUnavailableError
-    expired_attempt_id = state.claim.attempt_id
-    if state.attempt is not None:
-        changed = connection.execute(
-            """
-            UPDATE task_attempts
-            SET status = 'expired', ended_at = lease_expires_at
-            WHERE id = ? AND task_uid = ? AND project_id = ?
-              AND subject_id = ? AND status = 'active' AND ended_at IS NULL
-            """,
-            (
-                str(state.attempt.id),
-                str(task.uid),
-                str(task.project_id),
-                str(state.attempt.subject_id),
-            ),
-        )
-        if changed.rowcount != 1:
-            raise StorageUnavailableError
-    return insert_task_event(
-        connection,
-        event_id=mutation.claim_expired_event_id,
-        task=task,
-        actor_subject_id=mutation.actor_subject_id,
-        request_id=mutation.request_id,
-        event_type=TaskEventType.CLAIM_EXPIRED,
-        occurred_at=mutation.occurred_at,
-        payload={"lease_expires_at": serialize_timestamp(state.claim.lease_expires_at)},
-        attempt_id=expired_attempt_id,
     )
 
 

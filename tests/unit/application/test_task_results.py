@@ -341,6 +341,7 @@ def test_submit_without_approval_builds_exact_multi_event_mutation() -> None:
             result_id=ResultId("res_new"),
             result_submitted_event_id=TaskEventId("evt_1"),
             task_completed_event_id=TaskEventId("evt_2"),
+            claim_expired_event_id=TaskEventId("evt_3"),
             request_id=RequestId("req_result"),
             occurred_at=_NOW,
             expected_version=1,
@@ -348,6 +349,34 @@ def test_submit_without_approval_builds_exact_multi_event_mutation() -> None:
             comment="Manual result",
         )
     ]
+
+
+def test_submit_accepts_one_fresh_lazy_expiry_prefix() -> None:
+    """Human submission validates its exact conditional expiry event."""
+    base = _outcome(ResultReviewStatus.NOT_REQUIRED)
+    expired = replace(
+        base.events[0],
+        id=TaskEventId("evt_3"),
+        cursor=2,
+        event_type=TaskEventType.CLAIM_EXPIRED,
+        payload={"lease_expires_at": "2026-08-01T11:59:00Z"},
+    )
+    expected = TaskSubmissionResult(
+        task=base.task,
+        result=base.result,
+        events=(expired, *base.events),
+    )
+    repository = _Repository()
+    repository.submission = expected
+
+    actual = _application(repository).submit(
+        SubmitHumanResultInput(
+            **_input_data(),
+            comment="Manual result",
+        )
+    )
+
+    assert actual is expected
 
 
 def test_submit_for_human_review_preserves_complete_content_and_one_event() -> None:

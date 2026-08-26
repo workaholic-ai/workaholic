@@ -169,6 +169,7 @@ def _submit(  # noqa: PLR0913 - explicit mutation controls aid adapter tests.
         actor_subject_id=SubjectId("sub_local"),
         result_id=ResultId(f"res_{suffix}"),
         result_submitted_event_id=TaskEventId(f"evt_{suffix}_submitted"),
+        claim_expired_event_id=TaskEventId(f"evt_{suffix}_expired"),
         task_completed_event_id=(
             TaskEventId(f"evt_{suffix}_completed")
             if selected_approval is ApprovalRequirement.NONE
@@ -470,6 +471,7 @@ def test_submission_requires_done_dependencies_and_classifies_cancelled(
             actor_subject_id=SubjectId("sub_local"),
             prerequisite_uid=prerequisite.uid,
             event_id=TaskEventId("evt_dependency"),
+            claim_expired_event_id=TaskEventId("evt_dependency_expired"),
             request_id=RequestId("req_dependency"),
             occurred_at=_CREATED_AT + timedelta(minutes=1),
             expected_version=target.version,

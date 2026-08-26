@@ -31,9 +31,11 @@ from workaholic.domain import (
     validate_human_submission,
     validate_task_result_consistency,
 )
-from workaholic.persistence.sqlite._records import (
-    canonical_json,
+from workaholic.persistence.sqlite._claim_state import (
+    end_human_claim,
+    guard_human_task_mutation,
 )
+from workaholic.persistence.sqlite._records import canonical_json, parse_timestamp
 from workaholic.persistence.sqlite._result_records import (
     TASK_RESULT_FIELDS,
     read_idempotent_result_outcome,
@@ -229,6 +231,17 @@ def _execute_result_mutation(
             if replay is not None:
                 _require_matching_result(replay, mutation=mutation, fresh=False)
                 return replay
+            owner_state = None
+            expiry_records: tuple[TaskEventRecord, ...] = ()
+            if isinstance(mutation, SubmitHumanResultMutation):
+                owner_state, expiry_records = guard_human_task_mutation(
+                    connection,
+                    task=current,
+                    actor_subject_id=mutation.actor_subject_id,
+                    request_id=mutation.request_id,
+                    occurred_at=mutation.occurred_at,
+                    claim_expired_event_id=mutation.claim_expired_event_id,
+                )
             if current.version != mutation.expected_version:
                 raise VersionConflictError
             _require_monotonic_time(current, mutation=mutation)
@@ -239,6 +252,12 @@ def _execute_result_mutation(
                     mutation=mutation,
                 )
                 _insert_result(connection, result=result)
+                end_human_claim(
+                    connection,
+                    task=current,
+                    state=owner_state,
+                    actor_subject_id=mutation.actor_subject_id,
+                )
             else:
                 result, target_state = _prepare_review(
                     connection,
@@ -261,12 +280,13 @@ def _execute_result_mutation(
                 updated_at=mutation.occurred_at,
             )
             _write_task_if_version(connection, previous=current, updated=updated)
-            event_records = _append_events(
+            operation_records = _append_events(
                 connection,
                 mutation=mutation,
                 task=updated,
                 result=result,
             )
+            event_records = (*expiry_records, *operation_records)
             outcome = TaskSubmissionResult(
                 task=updated,
                 result=result,
@@ -664,6 +684,11 @@ def _require_matching_result(
     task = result.task
     stored_result = result.result
     records = result.events
+    has_expiry_prefix = (
+        isinstance(mutation, SubmitHumanResultMutation)
+        and records[0].event_type is TaskEventType.CLAIM_EXPIRED
+    )
+    operation_events = records[1:] if has_expiry_prefix else records
     expected_specs = _event_specs(mutation)
     if (
         task.uid != mutation.task_uid
@@ -671,16 +696,47 @@ def _require_matching_result(
         or task.version != mutation.expected_version + 1
         or stored_result.task_uid != task.uid
         or stored_result.attempt_id is not None
-        or tuple(event.event_type for event in records)
+        or tuple(event.event_type for event in operation_events)
         != tuple(event_type for _event_id, event_type in expected_specs)
         or any(event.actor_subject_id != mutation.actor_subject_id for event in records)
         or any(
             dict(event.payload)
             != _event_payload(event.event_type, task=task, result=stored_result)
-            for event in records
+            for event in operation_events
         )
     ):
         raise StorageUnavailableError
+    if fresh and any(
+        event.id != event_id
+        or event.request_id != mutation.request_id
+        or event.occurred_at != mutation.occurred_at
+        for event, (event_id, _event_type) in zip(
+            operation_events,
+            expected_specs,
+            strict=True,
+        )
+    ):
+        raise StorageUnavailableError
+    if has_expiry_prefix:
+        if not isinstance(mutation, SubmitHumanResultMutation):
+            raise StorageUnavailableError
+        expired = records[0]
+        payload = expired.payload
+        if (
+            expired.actor_subject_id != mutation.actor_subject_id
+            or (
+                fresh
+                and (
+                    expired.id != mutation.claim_expired_event_id
+                    or expired.request_id != mutation.request_id
+                    or expired.occurred_at != mutation.occurred_at
+                )
+            )
+            or set(payload) != {"lease_expires_at"}
+            or not isinstance(payload["lease_expires_at"], str)
+            or parse_timestamp(payload["lease_expires_at"]) > expired.occurred_at
+        ):
+            raise StorageUnavailableError
     if isinstance(mutation, SubmitHumanResultMutation):
         valid_semantics = (
             stored_result.submitted_by == mutation.actor_subject_id
@@ -721,7 +777,7 @@ def _require_matching_result(
         raise StorageUnavailableError
     if fresh and (
         not valid_fresh_identity
-        or tuple(event.id for event in records)
+        or tuple(event.id for event in operation_events)
         != tuple(event_id for event_id, _event_type in expected_specs)
         or any(event.request_id != mutation.request_id for event in records)
         or any(event.occurred_at != mutation.occurred_at for event in records)

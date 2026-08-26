@@ -10,10 +10,13 @@ from workaholic.application import LeaseLostError, TaskLockedError
 from workaholic.domain import (
     AttemptId,
     ProjectId,
+    RequestId,
     SubjectId,
     Task,
     TaskAttempt,
     TaskClaim,
+    TaskEventId,
+    TaskEventType,
     TaskId,
     is_lease_current,
     validate_claim_attempt_consistency,
@@ -25,7 +28,11 @@ from workaholic.persistence.sqlite._claim_records import (
     task_attempt_record_from_row,
     task_claim_record_from_row,
 )
-from workaholic.persistence.sqlite._records import require_text
+from workaholic.persistence.sqlite._event_records import (
+    TaskEventRecord,
+    insert_task_event,
+)
+from workaholic.persistence.sqlite._records import require_text, serialize_timestamp
 from workaholic.persistence.sqlite.errors import StorageUnavailableError
 
 if TYPE_CHECKING:
@@ -244,3 +251,189 @@ def require_current_claim_owner(
     ):
         raise LeaseLostError
     return current
+
+
+def guard_human_task_mutation(  # noqa: PLR0913 - explicit attribution boundary.
+    connection: sqlite3.Connection,
+    *,
+    task: Task,
+    actor_subject_id: SubjectId,
+    request_id: RequestId,
+    occurred_at: datetime,
+    claim_expired_event_id: TaskEventId,
+) -> tuple[StoredClaimState | None, tuple[TaskEventRecord, ...]]:
+    """Authorize a Human Task mutation and lazily materialize stale ownership.
+
+    Args:
+        connection: Active SQLite write transaction.
+        task: Authorized Task selected by the Human mutation.
+        actor_subject_id: Authenticated bootstrap Human Subject.
+        request_id: Current logical request identity.
+        occurred_at: Authoritative transaction time.
+        claim_expired_event_id: Candidate event identity used only for expiry.
+
+    Returns:
+        The retained current Human owner, if any, and an optional expiry prefix.
+
+    Raises:
+        TaskLockedError: If another current Human or Agent Claim owns the Task.
+        StorageUnavailableError: If inputs or persisted ownership are malformed.
+
+    """
+    candidate_task: object = task
+    candidate_actor: object = actor_subject_id
+    candidate_request: object = request_id
+    candidate_event: object = claim_expired_event_id
+    if (
+        not isinstance(candidate_task, Task)
+        or not isinstance(candidate_actor, SubjectId)
+        or not isinstance(candidate_request, RequestId)
+        or not isinstance(candidate_event, TaskEventId)
+    ):
+        raise StorageUnavailableError
+    state = load_claim_state(connection, task=candidate_task)
+    current = current_claim_state(state, now=occurred_at)
+    if current is not None:
+        if (
+            current.claim.subject_id != candidate_actor
+            or current.claim.attempt_id is not None
+            or current.attempt is not None
+        ):
+            raise TaskLockedError
+        return current, ()
+    if state is None:
+        return None, ()
+    expired = materialize_expired_claim(
+        connection,
+        task=candidate_task,
+        state=state,
+        actor_subject_id=candidate_actor,
+        request_id=candidate_request,
+        event_id=candidate_event,
+        occurred_at=occurred_at,
+    )
+    return None, (expired,)
+
+
+def materialize_expired_claim(  # noqa: PLR0913 - explicit event attribution.
+    connection: sqlite3.Connection,
+    *,
+    task: Task,
+    state: StoredClaimState,
+    actor_subject_id: SubjectId,
+    request_id: RequestId,
+    event_id: TaskEventId,
+    occurred_at: datetime,
+) -> TaskEventRecord:
+    """Remove one stale Claim, end its Agent Attempt, and append expiry.
+
+    Args:
+        connection: Active SQLite write transaction.
+        task: Complete Task owning the stale Claim.
+        state: Exact stored Claim and nullable Attempt snapshot.
+        actor_subject_id: Authenticated Subject observing the expiry.
+        request_id: Logical request that materializes the expiry.
+        event_id: Globally unique candidate expiry-event identity.
+        occurred_at: Authoritative transaction time at or after expiry.
+
+    Returns:
+        Persisted ``claim_expired`` event record.
+
+    Raises:
+        StorageUnavailableError: If the Claim is current or changed concurrently.
+
+    """
+    if current_claim_state(state, now=occurred_at) is not None:
+        raise StorageUnavailableError
+    deleted = connection.execute(
+        """
+        DELETE FROM task_claims
+        WHERE task_uid = ? AND project_id = ? AND subject_id = ?
+          AND attempt_id IS ? AND claimed_at = ? AND lease_expires_at = ?
+        """,
+        (
+            str(task.uid),
+            str(task.project_id),
+            str(state.claim.subject_id),
+            None if state.claim.attempt_id is None else str(state.claim.attempt_id),
+            serialize_timestamp(state.claim.claimed_at),
+            serialize_timestamp(state.claim.lease_expires_at),
+        ),
+    )
+    if deleted.rowcount != 1:
+        raise StorageUnavailableError
+    if state.attempt is not None:
+        changed = connection.execute(
+            """
+            UPDATE task_attempts
+            SET status = 'expired', ended_at = lease_expires_at
+            WHERE id = ? AND task_uid = ? AND project_id = ?
+              AND subject_id = ? AND status = 'active' AND ended_at IS NULL
+              AND lease_expires_at = ?
+            """,
+            (
+                str(state.attempt.id),
+                str(task.uid),
+                str(task.project_id),
+                str(state.attempt.subject_id),
+                serialize_timestamp(state.attempt.lease_expires_at),
+            ),
+        )
+        if changed.rowcount != 1:
+            raise StorageUnavailableError
+    return insert_task_event(
+        connection,
+        event_id=event_id,
+        task=task,
+        actor_subject_id=actor_subject_id,
+        request_id=request_id,
+        event_type=TaskEventType.CLAIM_EXPIRED,
+        occurred_at=occurred_at,
+        payload={"lease_expires_at": serialize_timestamp(state.claim.lease_expires_at)},
+        attempt_id=state.claim.attempt_id,
+    )
+
+
+def end_human_claim(
+    connection: sqlite3.Connection,
+    *,
+    task: Task,
+    state: StoredClaimState | None,
+    actor_subject_id: SubjectId,
+) -> None:
+    """Delete a retained current Human Claim during submit or cancellation.
+
+    Args:
+        connection: Active SQLite write transaction.
+        task: Complete Task owning the nullable Claim.
+        state: Current Human owner returned by ``guard_human_task_mutation``.
+        actor_subject_id: Authenticated Human owner identity.
+
+    Raises:
+        StorageUnavailableError: If ownership changed or is not exactly Human.
+
+    """
+    if state is None:
+        return
+    if (
+        state.claim.subject_id != actor_subject_id
+        or state.claim.attempt_id is not None
+        or state.attempt is not None
+    ):
+        raise StorageUnavailableError
+    deleted = connection.execute(
+        """
+        DELETE FROM task_claims
+        WHERE task_uid = ? AND project_id = ? AND subject_id = ?
+          AND attempt_id IS NULL AND claimed_at = ? AND lease_expires_at = ?
+        """,
+        (
+            str(task.uid),
+            str(task.project_id),
+            str(actor_subject_id),
+            serialize_timestamp(state.claim.claimed_at),
+            serialize_timestamp(state.claim.lease_expires_at),
+        ),
+    )
+    if deleted.rowcount != 1:
+        raise StorageUnavailableError

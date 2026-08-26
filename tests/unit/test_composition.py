@@ -564,7 +564,7 @@ def test_phase_three_composition_owns_clock_and_exact_identifier_allocation(
     ).task
     assert clock.calls == 1
     assert identifiers.counts["result"] == 0
-    assert identifiers.counts["event"] == 1
+    assert identifiers.counts["event"] == 2
     assert identifiers.counts["request"] == 1
 
     clock.calls = 0
@@ -574,7 +574,7 @@ def test_phase_three_composition_owns_clock_and_exact_identifier_allocation(
     )
     assert clock.calls == 1
     assert identifiers.counts["result"] == 1
-    assert identifiers.counts["event"] == 2
+    assert identifiers.counts["event"] == 3
     assert identifiers.counts["request"] == 1
 
     review_task = session.create_task(
@@ -593,7 +593,7 @@ def test_phase_three_composition_owns_clock_and_exact_identifier_allocation(
     )
     assert clock.calls == 1
     assert identifiers.counts["result"] == 1
-    assert identifiers.counts["event"] == 1
+    assert identifiers.counts["event"] == 2
     assert identifiers.counts["request"] == 1
 
     clock.calls = 0

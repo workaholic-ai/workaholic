@@ -1468,14 +1468,44 @@ class _ExistingTaskMutation(_CommandModel):
         )
 
 
-class TaskUpdateMutation(_ExistingTaskMutation):
+class _ClaimGuardedTaskMutation(_ExistingTaskMutation):
+    """Human Task mutation carrying a candidate lazy-expiry event identity."""
+
+    claim_expired_event_id: TaskEventId
+
+    @model_validator(mode="after")
+    def _validate_all_event_ids_are_distinct(self) -> _ClaimGuardedTaskMutation:
+        """Prevent requested and conditional expiry events from sharing an ID.
+
+        Returns:
+            The mutation with pairwise-distinct candidate event identities.
+
+        Raises:
+            ValueError: If any event identity is reused within the mutation.
+
+        """
+        event_ids = tuple(
+            value
+            for name in type(self).model_fields
+            if name.endswith("event_id")
+            and isinstance((value := getattr(self, name)), TaskEventId)
+        )
+        _validate_distinct_event_ids(
+            event_ids[0],
+            *event_ids[1:],
+            label="Task mutation",
+        )
+        return self
+
+
+class TaskUpdateMutation(_ClaimGuardedTaskMutation):
     """Atomically apply one Task definition patch at an expected version."""
 
     event_id: TaskEventId
     patch: TaskUpdatePatch
 
 
-class TaskBlockMutation(_ExistingTaskMutation):
+class TaskBlockMutation(_ClaimGuardedTaskMutation):
     """Atomically block one open Task at an expected version."""
 
     event_id: TaskEventId
@@ -1496,13 +1526,13 @@ class TaskBlockMutation(_ExistingTaskMutation):
         return _validate_required_reason(value, label="Task blocking reason")
 
 
-class TaskUnblockMutation(_ExistingTaskMutation):
+class TaskUnblockMutation(_ClaimGuardedTaskMutation):
     """Atomically unblock one Task at an expected version."""
 
     event_id: TaskEventId
 
 
-class TaskCancelMutation(_ExistingTaskMutation):
+class TaskCancelMutation(_ClaimGuardedTaskMutation):
     """Atomically cancel one mutable Task at an expected version."""
 
     event_id: TaskEventId
@@ -1523,7 +1553,7 @@ class TaskCancelMutation(_ExistingTaskMutation):
         return _validate_optional_reason(value, label="Task cancellation reason")
 
 
-class AddTaskDependencyMutation(_ExistingTaskMutation):
+class AddTaskDependencyMutation(_ClaimGuardedTaskMutation):
     """Atomically add one same-Project prerequisite edge."""
 
     event_id: TaskEventId
@@ -1534,7 +1564,7 @@ class RemoveTaskDependencyMutation(AddTaskDependencyMutation):
     """Atomically remove one existing prerequisite edge."""
 
 
-class SubmitHumanResultMutation(_ExistingTaskMutation):
+class SubmitHumanResultMutation(_ClaimGuardedTaskMutation):
     """Atomically submit a Human Result without an Agent Attempt."""
 
     result_id: ResultId
@@ -1556,22 +1586,6 @@ class SubmitHumanResultMutation(_ExistingTaskMutation):
 
         """
         return _validate_optional_result_text(value, label="Result comment")
-
-    @model_validator(mode="after")
-    def _validate_distinct_event_ids(self) -> SubmitHumanResultMutation:
-        """Require distinct submitted and optional completion events.
-
-        Returns:
-            The validated submission mutation.
-
-        Raises:
-            ValueError: If one event identity is reused.
-
-        """
-        if self.task_completed_event_id == self.result_submitted_event_id:
-            message = "Result submission event identities must be distinct."
-            raise ValueError(message)
-        return self
 
 
 class ApproveResultMutation(_ExistingTaskMutation):

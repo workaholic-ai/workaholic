@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from datetime import datetime  # noqa: TC003
+from datetime import datetime, timedelta
 from pathlib import Path  # noqa: TC003
 from typing import Literal, Self
 
@@ -50,6 +50,7 @@ from workaholic.domain import (
 )
 
 _CURSOR_MAX_LENGTH = 2_048
+_MAX_TASK_MUTATION_EVENTS = 2
 
 
 class _ResultModel(BaseModel):
@@ -301,14 +302,14 @@ class TaskDetails(_ResultModel):
 
 
 class TaskMutationResult(_ResultModel):
-    """Committed Task and its single attributable mutation event."""
+    """Committed Task with an optional lazy-expiry event prefix."""
 
     task: Task
     events: tuple[TaskEvent, ...]
 
     @model_validator(mode="after")
     def _validate_consistency(self) -> TaskMutationResult:
-        """Require exactly one event matching the committed Task.
+        """Require one mutation event after an optional expiry prefix.
 
         Returns:
             The internally consistent mutation result.
@@ -317,10 +318,15 @@ class TaskMutationResult(_ResultModel):
             ValueError: If event count or identities are inconsistent.
 
         """
-        if len(self.events) != 1:
-            message = "Task mutation result must contain exactly one TaskEvent."
+        if len(self.events) not in (1, _MAX_TASK_MUTATION_EVENTS) or (
+            len(self.events) == _MAX_TASK_MUTATION_EVENTS
+            and self.events[0].event_type is not TaskEventType.CLAIM_EXPIRED
+        ):
+            message = "Task mutation result has an invalid TaskEvent sequence."
             raise ValueError(message)
         _validate_event_batch(self.task, self.events)
+        if len(self.events) == _MAX_TASK_MUTATION_EVENTS:
+            _validate_claim_expiry_event(self.events[0])
         return self
 
 
@@ -492,10 +498,17 @@ class TaskSubmissionResult(_ResultModel):
         if not consistent:
             message = "Task submission state must match the Result review disposition."
             raise ValueError(message)
-        if tuple(event.event_type for event in self.events) != expected:
+        event_types = tuple(event.event_type for event in self.events)
+        has_expiry_prefix = event_types[:1] == (
+            TaskEventType.CLAIM_EXPIRED,
+        ) and status in (ResultReviewStatus.NOT_REQUIRED, ResultReviewStatus.PENDING)
+        if has_expiry_prefix:
+            _validate_claim_expiry_event(self.events[0])
+        operation_events = self.events[1:] if has_expiry_prefix else self.events
+        if tuple(event.event_type for event in operation_events) != expected:
             message = "Task submission events must match the Result review disposition."
             raise ValueError(message)
-        first = self.events[0]
+        first = operation_events[0]
         if status in (
             ResultReviewStatus.NOT_REQUIRED,
             ResultReviewStatus.PENDING,
@@ -768,16 +781,21 @@ def _validate_submission_attempt(
         ValueError: If Attempt ownership or event attribution is inconsistent.
 
     """
+    operation_events = (
+        events[1:] if events[0].event_type is TaskEventType.CLAIM_EXPIRED else events
+    )
     if result.attempt_id is None:
-        if attempt is not None or any(event.attempt_id is not None for event in events):
+        if attempt is not None or any(
+            event.attempt_id is not None for event in operation_events
+        ):
             message = "Human submission and review require null Attempt data."
             raise ValueError(message)
         return
     if attempt is None:
-        if events[0].event_type is TaskEventType.RESULT_SUBMITTED:
+        if operation_events[0].event_type is TaskEventType.RESULT_SUBMITTED:
             message = "Agent submission must return its submitted Attempt."
             raise ValueError(message)
-        if any(event.attempt_id is not None for event in events):
+        if any(event.attempt_id is not None for event in operation_events):
             message = "Human review events require null Attempt attribution."
             raise ValueError(message)
         return
@@ -786,10 +804,43 @@ def _validate_submission_attempt(
         or attempt.task_uid != task.uid
         or attempt.subject_id != result.submitted_by
         or attempt.status is not AttemptStatus.SUBMITTED
-        or attempt.ended_at != events[0].occurred_at
-        or any(event.attempt_id != attempt.id for event in events)
+        or attempt.ended_at != operation_events[0].occurred_at
+        or any(event.attempt_id != attempt.id for event in operation_events)
     ):
         message = "Agent submission Attempt and event attribution must match."
+        raise ValueError(message)
+
+
+def _validate_claim_expiry_event(event: TaskEvent) -> None:
+    """Validate the closed payload and half-open time of an expiry prefix.
+
+    Args:
+        event: Candidate leading ``claim_expired`` event.
+
+    Raises:
+        ValueError: If the event payload is open, malformed, or future-dated.
+
+    """
+    payload = event.payload
+    if (
+        event.event_type is not TaskEventType.CLAIM_EXPIRED
+        or set(payload) != {"lease_expires_at"}
+        or not isinstance(payload["lease_expires_at"], str)
+    ):
+        message = "Claim expiry event payload is invalid."
+        raise ValueError(message)
+    value = payload["lease_expires_at"]
+    try:
+        lease_expires_at = datetime.fromisoformat(value)
+    except ValueError as error:
+        message = "Claim expiry event Lease timestamp is invalid."
+        raise ValueError(message) from error
+    if (
+        not value.endswith("Z")
+        or lease_expires_at.utcoffset() != timedelta(0)
+        or lease_expires_at > event.occurred_at
+    ):
+        message = "Claim expiry event Lease timestamp is invalid."
         raise ValueError(message)
 
 

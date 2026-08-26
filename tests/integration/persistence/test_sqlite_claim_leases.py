@@ -223,9 +223,7 @@ def test_renewal_replaces_expiry_at_every_owner_bound(
     """Renewal replaces, rather than extends, Lease expiry at every exact bound."""
     repository, _bootstrap, task = _repository(tmp_path)
     claimed = (
-        _claim_human(repository, task)
-        if owner == "human"
-        else _claim_agent(repository)
+        _claim_human(repository, task) if owner == "human" else _claim_agent(repository)
     )
     assert claimed.claim is not None
     attempt_id = None if owner == "human" else AttemptId("atm_current")
@@ -279,16 +277,12 @@ def test_release_removes_claim_and_terminalizes_nullable_attempt(
     """Release removes ownership and ends only the Agent execution record."""
     repository, _bootstrap, task = _repository(tmp_path)
     claimed = (
-        _claim_human(repository, task)
-        if owner == "human"
-        else _claim_agent(repository)
+        _claim_human(repository, task) if owner == "human" else _claim_agent(repository)
     )
     assert claimed.claim is not None
     attempt_id = None if owner == "human" else AttemptId("atm_current")
 
-    released = repository.release_claim(
-        _release(task, owner, attempt_id=attempt_id)
-    )
+    released = repository.release_claim(_release(task, owner, attempt_id=attempt_id))
 
     assert released.task == task
     assert released.claim is None
@@ -319,9 +313,7 @@ def test_release_removes_claim_and_terminalizes_nullable_attempt(
     assert details.attempt is None
     assert details.task.version == task.version
     with pytest.raises(LeaseLostError):
-        reopened.release_claim(
-            _release(task, f"{owner}_again", attempt_id=attempt_id)
-        )
+        reopened.release_claim(_release(task, f"{owner}_again", attempt_id=attempt_id))
 
 
 @pytest.mark.parametrize("operation", ["renew", "release"])

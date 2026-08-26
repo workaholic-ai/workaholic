@@ -46,8 +46,11 @@ from workaholic.persistence.sqlite._claim_records import (
 from workaholic.persistence.sqlite._claim_state import (
     StoredClaimState,
     current_claim_state,
+    end_human_claim,
+    guard_human_task_mutation,
     load_claim_state,
     load_claim_states,
+    materialize_expired_claim,
     require_current_claim_owner,
 )
 from workaholic.persistence.sqlite._event_records import (
@@ -60,7 +63,6 @@ from workaholic.persistence.sqlite._event_records import (
 from workaholic.persistence.sqlite._records import canonical_json, serialize_timestamp
 from workaholic.persistence.sqlite._task_claims import (
     _execute_claim,
-    _materialize_expired_claim,
     _parse_claim_outcome,
     _release_claim_ownership,
     _renew_claim_ownership,
@@ -558,6 +560,48 @@ def test_current_claim_owner_rejects_missing_expired_and_bad_tokens() -> None:
         )
 
 
+def test_human_mutation_guard_rejects_untrusted_runtime_inputs() -> None:
+    """The centralized write guard validates its Task and attribution boundary."""
+    with pytest.raises(StorageUnavailableError):
+        guard_human_task_mutation(
+            cast("sqlite3.Connection", object()),
+            task=cast("Task", object()),
+            actor_subject_id=_SUBJECT_ID,
+            request_id=RequestId("req_guard"),
+            occurred_at=_NOW,
+            claim_expired_event_id=TaskEventId("evt_guard_expired"),
+        )
+
+
+def test_human_claim_end_rejects_wrong_owner_shape_or_changed_row() -> None:
+    """Terminal Human writes delete only their exact retained Human Claim."""
+    agent_state = StoredClaimState(
+        project_id=_PROJECT_ID,
+        claim=_agent_claim(),
+        attempt=_agent_attempt(),
+    )
+    with pytest.raises(StorageUnavailableError):
+        end_human_claim(
+            cast("sqlite3.Connection", object()),
+            task=_task(),
+            state=agent_state,
+            actor_subject_id=_SUBJECT_ID,
+        )
+
+    human_state = StoredClaimState(
+        project_id=_PROJECT_ID,
+        claim=_human_claim(),
+        attempt=None,
+    )
+    with pytest.raises(StorageUnavailableError):
+        end_human_claim(
+            cast("sqlite3.Connection", _RowCountConnection([0])),
+            task=_task(),
+            state=human_state,
+            actor_subject_id=_SUBJECT_ID,
+        )
+
+
 def test_claim_record_wrappers_reject_wrong_runtime_types() -> None:
     """Attempt and Claim durable wrappers fail before serialization."""
     with pytest.raises(StorageUnavailableError):
@@ -841,11 +885,14 @@ def test_materialized_expiry_defenses_reject_current_or_changed_state() -> None:
         attempt=None,
     )
     with pytest.raises(StorageUnavailableError):
-        _materialize_expired_claim(
+        materialize_expired_claim(
             cast("sqlite3.Connection", object()),
             task=_task(),
             state=current,
-            mutation=_human_mutation(),
+            actor_subject_id=_SUBJECT_ID,
+            request_id=RequestId("req_claim"),
+            event_id=TaskEventId("evt_expired"),
+            occurred_at=_NOW,
         )
 
     stale_claim = replace(
@@ -859,11 +906,14 @@ def test_materialized_expiry_defenses_reject_current_or_changed_state() -> None:
         attempt=None,
     )
     with pytest.raises(StorageUnavailableError):
-        _materialize_expired_claim(
+        materialize_expired_claim(
             cast("sqlite3.Connection", _RowCountConnection([0])),
             task=_task(),
             state=stale_human,
-            mutation=_human_mutation(),
+            actor_subject_id=_SUBJECT_ID,
+            request_id=RequestId("req_claim"),
+            event_id=TaskEventId("evt_expired"),
+            occurred_at=_NOW,
         )
 
     stale_attempt = replace(
@@ -881,11 +931,14 @@ def test_materialized_expiry_defenses_reject_current_or_changed_state() -> None:
         attempt=stale_attempt,
     )
     with pytest.raises(StorageUnavailableError):
-        _materialize_expired_claim(
+        materialize_expired_claim(
             cast("sqlite3.Connection", _RowCountConnection([1, 0])),
             task=_task(),
             state=stale_agent,
-            mutation=_agent_mutation(),
+            actor_subject_id=_SUBJECT_ID,
+            request_id=RequestId("req_claim"),
+            event_id=TaskEventId("evt_expired"),
+            occurred_at=_NOW,
         )
 
 

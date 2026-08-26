@@ -252,6 +252,7 @@ def update_mutation(  # noqa: PLR0913 - explicit fixture controls
         actor_subject_id=actor,
         request_id=RequestId(f"req_{label}"),
         event_id=TaskEventId(f"evt_{label}"),
+        claim_expired_event_id=TaskEventId(f"evt_{label}_expired"),
         occurred_at=(
             phase_three_time(task.version) if occurred_at is None else occurred_at
         ),
@@ -285,6 +286,7 @@ def block_mutation(
     return TaskBlockMutation(
         **_existing_values(task, actor, label, expected_version=expected_version),
         event_id=TaskEventId(f"evt_{label}"),
+        claim_expired_event_id=TaskEventId(f"evt_{label}_expired"),
         reason="Waiting for an explicit prerequisite.",
     )
 
@@ -308,6 +310,7 @@ def unblock_mutation(
     return TaskUnblockMutation(
         **_existing_values(task, actor, label),
         event_id=TaskEventId(f"evt_{label}"),
+        claim_expired_event_id=TaskEventId(f"evt_{label}_expired"),
     )
 
 
@@ -330,6 +333,7 @@ def cancel_mutation(
     return TaskCancelMutation(
         **_existing_values(task, actor, label),
         event_id=TaskEventId(f"evt_{label}"),
+        claim_expired_event_id=TaskEventId(f"evt_{label}_expired"),
         reason="No longer required.",
     )
 
@@ -383,6 +387,7 @@ def dependency_mutation(
     return mutation_type(
         **_existing_values(task, actor, label),
         event_id=TaskEventId(f"evt_{label}"),
+        claim_expired_event_id=TaskEventId(f"evt_{label}_expired"),
         prerequisite_uid=prerequisite.uid,
     )
 
@@ -422,6 +427,7 @@ def submit_mutation(  # noqa: PLR0913 - explicit Result fixture contract
         ),
         result_id=ResultId(f"res_{label}"),
         result_submitted_event_id=TaskEventId(f"evt_{label}_submitted"),
+        claim_expired_event_id=TaskEventId(f"evt_{label}_expired"),
         task_completed_event_id=(
             TaskEventId(f"evt_{label}_completed")
             if task.approval is ApprovalRequirement.NONE

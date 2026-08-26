@@ -33,6 +33,10 @@ from workaholic.domain import (
     build_task_key,
     transition_task_state,
 )
+from workaholic.persistence.sqlite._claim_state import (
+    end_human_claim,
+    guard_human_task_mutation,
+)
 from workaholic.persistence.sqlite._event_records import (
     TASK_EVENT_FIELDS,
     TaskEventRecord,
@@ -44,6 +48,7 @@ from workaholic.persistence.sqlite._records import (
     IDEMPOTENCY_OUTCOME_JSON_MAX_LENGTH,
     canonical_json,
     parse_json_object,
+    parse_timestamp,
     require_integer,
     require_text,
     serialize_timestamp,
@@ -74,7 +79,7 @@ if TYPE_CHECKING:
         TaskEventId,
     )
 
-_MUTATION_OUTCOME_KEYS: Final = frozenset(("event", "task"))
+_MUTATION_OUTCOME_KEYS: Final = frozenset(("events", "task"))
 
 type _LifecycleMutation = (
     TaskUpdateMutation | TaskBlockMutation | TaskUnblockMutation | TaskCancelMutation
@@ -85,6 +90,15 @@ class _TaskEventMutation(Protocol):
     """Attribution fields shared by semantic Task-event mutations."""
 
     event_id: TaskEventId
+    actor_subject_id: SubjectId
+    request_id: RequestId
+    occurred_at: datetime
+
+
+class _ClaimGuardedMutation(Protocol):
+    """Attribution and conditional-expiry identity for Human Task writes."""
+
+    claim_expired_event_id: TaskEventId
     actor_subject_id: SubjectId
     request_id: RequestId
     occurred_at: datetime
@@ -260,8 +274,21 @@ def _execute_mutation(
                 request_fingerprint=request_fingerprint,
             )
             if replay is not None:
-                _require_matching_mutation(replay, mutation=mutation, plan=plan)
+                _require_matching_mutation(
+                    replay,
+                    mutation=mutation,
+                    plan=plan,
+                    fresh=False,
+                )
                 return replay
+            owner_state, expiry_records = guard_human_task_mutation(
+                connection,
+                task=current,
+                actor_subject_id=mutation.actor_subject_id,
+                request_id=mutation.request_id,
+                occurred_at=mutation.occurred_at,
+                claim_expired_event_id=mutation.claim_expired_event_id,
+            )
             if current.version != mutation.expected_version:
                 raise VersionConflictError
             try:
@@ -277,6 +304,13 @@ def _execute_mutation(
                 mutation=mutation,
                 next_state=next_state,
             )
+            if isinstance(mutation, TaskCancelMutation):
+                end_human_claim(
+                    connection,
+                    task=current,
+                    state=owner_state,
+                    actor_subject_id=mutation.actor_subject_id,
+                )
             _write_task_if_version(
                 connection,
                 previous=current,
@@ -289,8 +323,17 @@ def _execute_mutation(
                 event_type=plan.event_type,
                 payload=_event_payload(mutation, task=updated),
             )
-            result = TaskMutationResult(task=updated, events=(event.event,))
-            _require_matching_mutation(result, mutation=mutation, plan=plan)
+            event_records = (*expiry_records, event)
+            result = TaskMutationResult(
+                task=updated,
+                events=tuple(record.event for record in event_records),
+            )
+            _require_matching_mutation(
+                result,
+                mutation=mutation,
+                plan=plan,
+                fresh=True,
+            )
             _record_idempotent_mutation(
                 connection,
                 operation=plan.operation,
@@ -299,7 +342,7 @@ def _execute_mutation(
                 request_fingerprint=request_fingerprint,
                 occurred_at=mutation.occurred_at,
                 result=result,
-                event_record=event,
+                event_records=event_records,
             )
             return result
     except ApplicationError:
@@ -703,21 +746,22 @@ def _read_idempotent_mutation(
         return None
     if require_text(row[0]) != request_fingerprint:
         raise IdempotencyConflictError
-    result, event_record = _parse_mutation_outcome(require_text(row[1]))
-    actual_event_row = connection.execute(
-        f"""
-        SELECT {", ".join(TASK_EVENT_FIELDS)}
-        FROM task_events
-        WHERE id = ?
-        """,  # noqa: S608 - field names are a closed module constant.
-        (str(event_record.event.id),),
-    ).fetchone()
-    if (
-        actual_event_row is None
-        or task_event_record_from_row(actual_event_row) != event_record
-        or event_record.event.actor_subject_id.value != actor_subject_id
-    ):
-        raise StorageUnavailableError
+    result, event_records = _parse_mutation_outcome(require_text(row[1]))
+    for event_record in event_records:
+        actual_event_row = connection.execute(
+            f"""
+            SELECT {", ".join(TASK_EVENT_FIELDS)}
+            FROM task_events
+            WHERE id = ?
+            """,  # noqa: S608 - field names are a closed module constant.
+            (str(event_record.event.id),),
+        ).fetchone()
+        if (
+            actual_event_row is None
+            or task_event_record_from_row(actual_event_row) != event_record
+            or event_record.event.actor_subject_id.value != actor_subject_id
+        ):
+            raise StorageUnavailableError
     return result
 
 
@@ -730,7 +774,7 @@ def _record_idempotent_mutation(  # noqa: PLR0913 - exact durable record contrac
     request_fingerprint: str,
     occurred_at: datetime,
     result: TaskMutationResult,
-    event_record: TaskEventRecord,
+    event_records: Sequence[TaskEventRecord],
 ) -> None:
     """Persist one canonical replay outcome inside the owning transaction."""
     if caller_key is None:
@@ -749,7 +793,9 @@ def _record_idempotent_mutation(  # noqa: PLR0913 - exact durable record contrac
             request_fingerprint,
             canonical_json(
                 {
-                    "event": task_event_record_mapping(event_record),
+                    "events": [
+                        task_event_record_mapping(record) for record in event_records
+                    ],
                     "task": task_mapping(result.task),
                 }
             ),
@@ -758,7 +804,9 @@ def _record_idempotent_mutation(  # noqa: PLR0913 - exact durable record contrac
     )
 
 
-def _parse_mutation_outcome(value: str) -> tuple[TaskMutationResult, TaskEventRecord]:
+def _parse_mutation_outcome(
+    value: str,
+) -> tuple[TaskMutationResult, tuple[TaskEventRecord, ...]]:
     """Parse and validate one exact canonical mutation replay outcome."""
     decoded = parse_json_object(
         value,
@@ -767,22 +815,28 @@ def _parse_mutation_outcome(value: str) -> tuple[TaskMutationResult, TaskEventRe
     if set(decoded) != _MUTATION_OUTCOME_KEYS:
         raise StorageUnavailableError
     task_value = decoded["task"]
-    event_value = decoded["event"]
+    events_value = decoded["events"]
     if (
         not isinstance(task_value, dict)
         or set(task_value) != TASK_FIELD_SET
-        or not isinstance(event_value, dict)
+        or not isinstance(events_value, list)
+        or len(events_value) not in (1, 2)
+        or any(not isinstance(item, dict) for item in events_value)
     ):
         raise StorageUnavailableError
     task = task_from_mapping(cast("Mapping[str, object]", task_value))
-    event_record = task_event_record_from_mapping(
-        cast("Mapping[str, object]", event_value)
+    event_records = tuple(
+        task_event_record_from_mapping(cast("Mapping[str, object]", item))
+        for item in events_value
     )
     try:
-        result = TaskMutationResult(task=task, events=(event_record.event,))
+        result = TaskMutationResult(
+            task=task,
+            events=tuple(record.event for record in event_records),
+        )
     except ValueError as error:
         raise StorageUnavailableError from error
-    return result, event_record
+    return result, event_records
 
 
 def _require_matching_mutation(
@@ -790,14 +844,23 @@ def _require_matching_mutation(
     *,
     mutation: _LifecycleMutation,
     plan: _MutationPlan,
+    fresh: bool,
 ) -> None:
     """Validate one fresh or replayed lifecycle result against its mutation."""
     task = result.task
-    event = result.events[0]
+    event = result.events[-1]
     invalid_common = (
         task.uid != mutation.task_uid
         or task.project_id != mutation.project_id
         or task.version != mutation.expected_version + 1
+        or (
+            fresh
+            and (
+                event.id != mutation.event_id
+                or event.request_id != mutation.request_id
+                or event.occurred_at != mutation.occurred_at
+            )
+        )
         or event.event_type is not plan.event_type
         or event.actor_subject_id != mutation.actor_subject_id
         or event.occurred_at != task.updated_at
@@ -805,6 +868,7 @@ def _require_matching_mutation(
     )
     if invalid_common:
         raise StorageUnavailableError
+    _require_matching_expiry_prefix(result, mutation=mutation, fresh=fresh)
     if isinstance(mutation, TaskUpdateMutation):
         valid_outcome = task.state in (TaskState.OPEN, TaskState.BLOCKED) and all(
             getattr(task, name) == getattr(mutation.patch, name)
@@ -821,4 +885,33 @@ def _require_matching_mutation(
             task.state is TaskState.CANCELLED and task.blocking_reason is None
         )
     if not valid_outcome:
+        raise StorageUnavailableError
+
+
+def _require_matching_expiry_prefix(
+    result: TaskMutationResult,
+    *,
+    mutation: _ClaimGuardedMutation,
+    fresh: bool,
+) -> None:
+    """Validate a nullable lazy-expiry prefix against the owning mutation."""
+    if len(result.events) == 1:
+        return
+    expired = result.events[0]
+    payload = expired.payload
+    if (
+        expired.event_type is not TaskEventType.CLAIM_EXPIRED
+        or expired.actor_subject_id != mutation.actor_subject_id
+        or (
+            fresh
+            and (
+                expired.id != mutation.claim_expired_event_id
+                or expired.request_id != mutation.request_id
+                or expired.occurred_at != mutation.occurred_at
+            )
+        )
+        or set(payload) != {"lease_expires_at"}
+        or not isinstance(payload["lease_expires_at"], str)
+        or parse_timestamp(payload["lease_expires_at"]) > mutation.occurred_at
+    ):
         raise StorageUnavailableError
