@@ -101,7 +101,9 @@ from workaholic.application.results import (
     TaskProgressResult,
     TaskSubmissionResult,
 )
+from workaholic.application.task_claims import TaskClaimApplication
 from workaholic.application.task_dependencies import TaskDependencyApplication
+from workaholic.application.task_execution import TaskExecutionApplication
 from workaholic.application.task_lifecycle import TaskLifecycleApplication
 from workaholic.application.task_results import TaskResultApplication
 from workaholic.application.tasks import TaskApplication
@@ -176,6 +178,7 @@ __all__ = [
     "TaskApplication",
     "TaskBlockMutation",
     "TaskCancelMutation",
+    "TaskClaimApplication",
     "TaskClaimResult",
     "TaskCreationMutation",
     "TaskCreationRepository",
@@ -183,6 +186,7 @@ __all__ = [
     "TaskDetails",
     "TaskEventPage",
     "TaskEventResult",
+    "TaskExecutionApplication",
     "TaskLifecycleApplication",
     "TaskListView",
     "TaskLockedError",
