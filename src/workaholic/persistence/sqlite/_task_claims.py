@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+from dataclasses import replace
 from datetime import timedelta
 from typing import TYPE_CHECKING, Final, cast
 
@@ -13,6 +14,8 @@ from workaholic.application import (
     IdempotencyConflictError,
     InvalidTransitionError,
     NoTaskAvailableError,
+    ReleaseClaimMutation,
+    RenewClaimMutation,
     TaskClaimResult,
     TaskLockedError,
 )
@@ -42,6 +45,7 @@ from workaholic.persistence.sqlite._claim_state import (
     StoredClaimState,
     current_claim_state,
     load_claim_state,
+    require_current_claim_owner,
 )
 from workaholic.persistence.sqlite._event_records import (
     TASK_EVENT_FIELDS,
@@ -82,9 +86,13 @@ if TYPE_CHECKING:
     from workaholic.domain import AttemptId, Project
 
 type _ClaimMutation = ClaimTaskMutation | ClaimNextTaskMutation
+type _LeaseMutation = RenewClaimMutation | ReleaseClaimMutation
+type _ClaimPersistenceMutation = _ClaimMutation | _LeaseMutation
 
 _CLAIM_TASK_OPERATION: Final = "task.claim"
 _CLAIM_NEXT_OPERATION: Final = "task.claim.next"
+_RENEW_CLAIM_OPERATION: Final = "task.claim.renew"
+_RELEASE_CLAIM_OPERATION: Final = "task.claim.release"
 _CLAIM_OUTCOME_KEYS: Final = frozenset(("attempt", "claim", "events", "task"))
 _MAX_CLAIM_EVENTS: Final = 2
 
@@ -135,6 +143,54 @@ def claim_next_task(
     if not isinstance(candidate, ClaimNextTaskMutation):
         raise StorageUnavailableError
     return _execute_claim(database_path, mutation=candidate)
+
+
+def renew_claim(
+    database_path: Path,
+    mutation: RenewClaimMutation,
+) -> TaskClaimResult:
+    """Atomically renew a Human Claim or heartbeat an Agent Attempt.
+
+    Args:
+        database_path: Absolute path to the validated SQLite store.
+        mutation: Validated exact owner token and replacement Lease duration.
+
+    Returns:
+        Renewed or idempotently replayed Claim ownership state.
+
+    Raises:
+        ApplicationError: If authorization, ownership, Lease, or replay fails.
+        StorageUnavailableError: If persistence violates its closed contract.
+
+    """
+    candidate: object = mutation
+    if not isinstance(candidate, RenewClaimMutation):
+        raise StorageUnavailableError
+    return _execute_lease_operation(database_path, mutation=candidate)
+
+
+def release_claim(
+    database_path: Path,
+    mutation: ReleaseClaimMutation,
+) -> TaskClaimResult:
+    """Atomically release one exact current Human or Agent owner token.
+
+    Args:
+        database_path: Absolute path to the validated SQLite store.
+        mutation: Validated exact owner token and release event identity.
+
+    Returns:
+        Released ownership with a nullable terminal Agent Attempt.
+
+    Raises:
+        ApplicationError: If authorization, ownership, Lease, or replay fails.
+        StorageUnavailableError: If persistence violates its closed contract.
+
+    """
+    candidate: object = mutation
+    if not isinstance(candidate, ReleaseClaimMutation):
+        raise StorageUnavailableError
+    return _execute_lease_operation(database_path, mutation=candidate)
 
 
 def _execute_claim(
@@ -234,9 +290,7 @@ def _execute_claim(
                     event_type=TaskEventType.TASK_CLAIMED,
                     occurred_at=mutation.occurred_at,
                     payload={
-                        "lease_expires_at": serialize_timestamp(
-                            claim.lease_expires_at
-                        )
+                        "lease_expires_at": serialize_timestamp(claim.lease_expires_at)
                     },
                     attempt_id=claim.attempt_id,
                 )
@@ -255,6 +309,100 @@ def _execute_claim(
                 request_fingerprint=request_fingerprint,
                 result=result,
                 event_records=tuple(event_records),
+            )
+            return result
+    except ApplicationError:
+        raise
+    except (
+        DomainValidationError,
+        IndexError,
+        OverflowError,
+        TypeError,
+        ValueError,
+    ) as error:
+        raise StorageUnavailableError from error
+
+
+def _execute_lease_operation(
+    database_path: Path,
+    *,
+    mutation: _LeaseMutation,
+) -> TaskClaimResult:
+    """Execute renewal or release through one shared ownership transaction."""
+    operation = _lease_operation(mutation)
+    request_fingerprint = _lease_fingerprint(mutation)
+    try:
+        with open_write_transaction(database_path) as connection:
+            task = _load_authorized_task(
+                connection,
+                task_uid=mutation.task_uid,
+                project_id=str(mutation.project_id),
+                actor_subject_id=str(mutation.actor_subject_id),
+            )
+            replay = _read_idempotent_claim(
+                connection,
+                operation=operation,
+                actor_subject_id=str(mutation.actor_subject_id),
+                caller_key=mutation.idempotency_key,
+                request_fingerprint=request_fingerprint,
+            )
+            if replay is not None:
+                _require_matching_lease_result(replay, mutation=mutation)
+                return replay
+            state = require_current_claim_owner(
+                load_claim_state(connection, task=task),
+                subject_id=mutation.actor_subject_id,
+                attempt_id=mutation.attempt_id,
+                now=mutation.occurred_at,
+            )
+            if mutation.occurred_at < task.updated_at:
+                raise StorageUnavailableError
+            if isinstance(mutation, RenewClaimMutation):
+                claim, attempt = _renew_claim_ownership(
+                    connection,
+                    task=task,
+                    state=state,
+                    mutation=mutation,
+                )
+                event_type = TaskEventType.CLAIM_RENEWED
+                event_id = mutation.claim_renewed_event_id
+                payload_expiry = claim.lease_expires_at
+            else:
+                claim = None
+                attempt = _release_claim_ownership(
+                    connection,
+                    task=task,
+                    state=state,
+                    mutation=mutation,
+                )
+                event_type = TaskEventType.CLAIM_RELEASED
+                event_id = mutation.claim_released_event_id
+                payload_expiry = state.claim.lease_expires_at
+            event_record = insert_task_event(
+                connection,
+                event_id=event_id,
+                task=task,
+                actor_subject_id=mutation.actor_subject_id,
+                request_id=mutation.request_id,
+                event_type=event_type,
+                occurred_at=mutation.occurred_at,
+                payload={"lease_expires_at": serialize_timestamp(payload_expiry)},
+                attempt_id=mutation.attempt_id,
+            )
+            result = TaskClaimResult(
+                task=task,
+                claim=claim,
+                attempt=attempt,
+                events=(event_record.event,),
+            )
+            _require_matching_lease_result(result, mutation=mutation)
+            _record_idempotent_claim(
+                connection,
+                operation=operation,
+                mutation=mutation,
+                request_fingerprint=request_fingerprint,
+                result=result,
+                event_records=(event_record,),
             )
             return result
     except ApplicationError:
@@ -406,9 +554,7 @@ def _materialize_expired_claim(
         request_id=mutation.request_id,
         event_type=TaskEventType.CLAIM_EXPIRED,
         occurred_at=mutation.occurred_at,
-        payload={
-            "lease_expires_at": serialize_timestamp(state.claim.lease_expires_at)
-        },
+        payload={"lease_expires_at": serialize_timestamp(state.claim.lease_expires_at)},
         attempt_id=expired_attempt_id,
     )
 
@@ -467,12 +613,135 @@ def _insert_claim_ownership(
     return claim, attempt
 
 
+def _renew_claim_ownership(
+    connection: sqlite3.Connection,
+    *,
+    task: Task,
+    state: StoredClaimState,
+    mutation: RenewClaimMutation,
+) -> tuple[TaskClaim, TaskAttempt | None]:
+    """Replace one exact current owner Lease without changing Task state."""
+    lease_expires_at = mutation.occurred_at + timedelta(
+        seconds=mutation.lease_duration_seconds
+    )
+    renewed_attempt: TaskAttempt | None = None
+    if state.attempt is not None:
+        changed_attempt = connection.execute(
+            """
+            UPDATE task_attempts
+            SET lease_expires_at = ?
+            WHERE id = ? AND task_uid = ? AND project_id = ?
+              AND subject_id = ? AND status = 'active' AND ended_at IS NULL
+              AND lease_expires_at = ?
+            """,
+            (
+                serialize_timestamp(lease_expires_at),
+                str(state.attempt.id),
+                str(task.uid),
+                str(task.project_id),
+                str(state.attempt.subject_id),
+                serialize_timestamp(state.attempt.lease_expires_at),
+            ),
+        )
+        if changed_attempt.rowcount != 1:
+            raise StorageUnavailableError
+        renewed_attempt = replace(
+            state.attempt,
+            lease_expires_at=lease_expires_at,
+        )
+    changed_claim = connection.execute(
+        """
+        UPDATE task_claims
+        SET lease_expires_at = ?
+        WHERE task_uid = ? AND project_id = ? AND subject_id = ?
+          AND attempt_id IS ? AND claimed_at = ? AND lease_expires_at = ?
+        """,
+        (
+            serialize_timestamp(lease_expires_at),
+            str(task.uid),
+            str(task.project_id),
+            str(state.claim.subject_id),
+            (None if state.claim.attempt_id is None else str(state.claim.attempt_id)),
+            serialize_timestamp(state.claim.claimed_at),
+            serialize_timestamp(state.claim.lease_expires_at),
+        ),
+    )
+    if changed_claim.rowcount != 1:
+        raise StorageUnavailableError
+    return (
+        replace(state.claim, lease_expires_at=lease_expires_at),
+        renewed_attempt,
+    )
+
+
+def _release_claim_ownership(
+    connection: sqlite3.Connection,
+    *,
+    task: Task,
+    state: StoredClaimState,
+    mutation: ReleaseClaimMutation,
+) -> TaskAttempt | None:
+    """Delete one current Claim and terminalize its nullable Agent Attempt."""
+    deleted = connection.execute(
+        """
+        DELETE FROM task_claims
+        WHERE task_uid = ? AND project_id = ? AND subject_id = ?
+          AND attempt_id IS ? AND claimed_at = ? AND lease_expires_at = ?
+        """,
+        (
+            str(task.uid),
+            str(task.project_id),
+            str(state.claim.subject_id),
+            (None if state.claim.attempt_id is None else str(state.claim.attempt_id)),
+            serialize_timestamp(state.claim.claimed_at),
+            serialize_timestamp(state.claim.lease_expires_at),
+        ),
+    )
+    if deleted.rowcount != 1:
+        raise StorageUnavailableError
+    if state.attempt is None:
+        return None
+    changed_attempt = connection.execute(
+        """
+        UPDATE task_attempts
+        SET status = 'released', ended_at = ?
+        WHERE id = ? AND task_uid = ? AND project_id = ?
+          AND subject_id = ? AND status = 'active' AND ended_at IS NULL
+          AND lease_expires_at = ?
+        """,
+        (
+            serialize_timestamp(mutation.occurred_at),
+            str(state.attempt.id),
+            str(task.uid),
+            str(task.project_id),
+            str(state.attempt.subject_id),
+            serialize_timestamp(state.attempt.lease_expires_at),
+        ),
+    )
+    if changed_attempt.rowcount != 1:
+        raise StorageUnavailableError
+    return replace(
+        state.attempt,
+        status=AttemptStatus.RELEASED,
+        ended_at=mutation.occurred_at,
+    )
+
+
 def _claim_operation(mutation: _ClaimMutation) -> str:
     """Return the closed idempotency operation for one acquisition path."""
     return (
         _CLAIM_TASK_OPERATION
         if isinstance(mutation, ClaimTaskMutation)
         else _CLAIM_NEXT_OPERATION
+    )
+
+
+def _lease_operation(mutation: _LeaseMutation) -> str:
+    """Return the closed idempotency operation for renewal or release."""
+    return (
+        _RENEW_CLAIM_OPERATION
+        if isinstance(mutation, RenewClaimMutation)
+        else _RELEASE_CLAIM_OPERATION
     )
 
 
@@ -489,6 +758,26 @@ def _claim_fingerprint(mutation: _ClaimMutation) -> str:
                 if isinstance(mutation, ClaimTaskMutation)
                 else None
             ),
+        }
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _lease_fingerprint(mutation: _LeaseMutation) -> str:
+    """Hash exact caller-controlled Lease mutation semantics."""
+    encoded = canonical_json(
+        {
+            "actor_subject_id": str(mutation.actor_subject_id),
+            "attempt_id": (
+                None if mutation.attempt_id is None else str(mutation.attempt_id)
+            ),
+            "lease_duration_seconds": (
+                mutation.lease_duration_seconds
+                if isinstance(mutation, RenewClaimMutation)
+                else None
+            ),
+            "project_id": str(mutation.project_id),
+            "task_uid": str(mutation.task_uid),
         }
     ).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()
@@ -518,10 +807,16 @@ def _read_idempotent_claim(
     if require_text(row[0]) != request_fingerprint:
         raise IdempotencyConflictError
     result, event_records = _parse_claim_outcome(require_text(row[1]))
-    if (
-        result.claim is not None
-        and result.claim.subject_id.value != actor_subject_id
-    ):
+    outcome_subject_id = (
+        result.claim.subject_id
+        if result.claim is not None
+        else (
+            result.attempt.subject_id
+            if result.attempt is not None
+            else result.events[-1].actor_subject_id
+        )
+    )
+    if outcome_subject_id.value != actor_subject_id:
         raise StorageUnavailableError
     for event_record in event_records:
         actual = connection.execute(
@@ -545,7 +840,7 @@ def _record_idempotent_claim(  # noqa: PLR0913 - exact durable record contract.
     connection: sqlite3.Connection,
     *,
     operation: str,
-    mutation: _ClaimMutation,
+    mutation: _ClaimPersistenceMutation,
     request_fingerprint: str,
     result: TaskClaimResult,
     event_records: Sequence[TaskEventRecord],
@@ -618,8 +913,13 @@ def _parse_claim_outcome(
     if (
         not isinstance(task_value, dict)
         or set(task_value) != TASK_FIELD_SET
-        or not isinstance(claim_value, dict)
-        or set(claim_value) != TASK_CLAIM_MAPPING_FIELD_SET
+        or (
+            claim_value is not None
+            and (
+                not isinstance(claim_value, dict)
+                or set(claim_value) != TASK_CLAIM_MAPPING_FIELD_SET
+            )
+        )
         or (
             attempt_value is not None
             and (
@@ -633,8 +933,10 @@ def _parse_claim_outcome(
     ):
         raise StorageUnavailableError
     task = task_from_mapping(cast("Mapping[str, object]", task_value))
-    claim_record = task_claim_record_from_mapping(
-        cast("Mapping[str, object]", claim_value)
+    claim_record = (
+        None
+        if claim_value is None
+        else task_claim_record_from_mapping(cast("Mapping[str, object]", claim_value))
     )
     attempt_record = (
         None
@@ -647,18 +949,14 @@ def _parse_claim_outcome(
         task_event_record_from_mapping(cast("Mapping[str, object]", item))
         for item in events_value
     )
-    if (
-        claim_record.project_id != task.project_id
-        or (
-            attempt_record is not None
-            and attempt_record.project_id != task.project_id
-        )
+    if (claim_record is not None and claim_record.project_id != task.project_id) or (
+        attempt_record is not None and attempt_record.project_id != task.project_id
     ):
         raise StorageUnavailableError
     try:
         result = TaskClaimResult(
             task=task,
-            claim=claim_record.claim,
+            claim=None if claim_record is None else claim_record.claim,
             attempt=None if attempt_record is None else attempt_record.attempt,
             events=tuple(record.event for record in event_records),
         )
@@ -727,3 +1025,57 @@ def _require_matching_claim_result(
             or expired_event.request_id != claimed_event.request_id
         ):
             raise StorageUnavailableError
+
+
+def _require_matching_lease_result(
+    result: TaskClaimResult,
+    *,
+    mutation: _LeaseMutation,
+) -> None:
+    """Validate one fresh or replayed renewal/release closed outcome."""
+    if (
+        result.task.uid != mutation.task_uid
+        or result.task.project_id != mutation.project_id
+        or len(result.events) != 1
+    ):
+        raise StorageUnavailableError
+    event = result.events[0]
+    if (
+        event.actor_subject_id != mutation.actor_subject_id
+        or event.attempt_id != mutation.attempt_id
+        or set(event.payload) != {"lease_expires_at"}
+        or not isinstance(event.payload["lease_expires_at"], str)
+    ):
+        raise StorageUnavailableError
+    payload_expiry = parse_timestamp(event.payload["lease_expires_at"])
+    if isinstance(mutation, RenewClaimMutation):
+        if (
+            event.event_type is not TaskEventType.CLAIM_RENEWED
+            or result.claim is None
+            or result.claim.subject_id != mutation.actor_subject_id
+            or result.claim.attempt_id != mutation.attempt_id
+            or result.claim.lease_expires_at != payload_expiry
+            or result.claim.lease_expires_at
+            != event.occurred_at + timedelta(seconds=mutation.lease_duration_seconds)
+        ):
+            raise StorageUnavailableError
+        return
+    if (
+        event.event_type is not TaskEventType.CLAIM_RELEASED
+        or result.claim is not None
+        or payload_expiry <= event.occurred_at
+    ):
+        raise StorageUnavailableError
+    if mutation.attempt_id is None:
+        if result.attempt is not None:
+            raise StorageUnavailableError
+        return
+    if (
+        result.attempt is None
+        or result.attempt.id != mutation.attempt_id
+        or result.attempt.subject_id != mutation.actor_subject_id
+        or result.attempt.status is not AttemptStatus.RELEASED
+        or result.attempt.lease_expires_at != payload_expiry
+        or result.attempt.ended_at != event.occurred_at
+    ):
+        raise StorageUnavailableError

@@ -16,6 +16,8 @@ from workaholic.persistence.sqlite._task_claims import (
     claim_next_task as _claim_next_task,
 )
 from workaholic.persistence.sqlite._task_claims import claim_task as _claim_task
+from workaholic.persistence.sqlite._task_claims import release_claim as _release_claim
+from workaholic.persistence.sqlite._task_claims import renew_claim as _renew_claim
 from workaholic.persistence.sqlite._task_dependencies import (
     add_task_dependency as _add_task_dependency,
 )
@@ -65,7 +67,9 @@ if TYPE_CHECKING:
         ProjectCreationResult,
         ReadTaskEvents,
         RejectResultMutation,
+        ReleaseClaimMutation,
         RemoveTaskDependencyMutation,
+        RenewClaimMutation,
         StatusResult,
         SubmitHumanResultMutation,
         TaskBlockMutation,
@@ -231,6 +235,30 @@ class SQLiteRepository:
 
         """
         return _claim_next_task(self._database_path, mutation)
+
+    def renew_claim(self, mutation: RenewClaimMutation) -> TaskClaimResult:
+        """Atomically renew a Human Claim or heartbeat an Agent Attempt.
+
+        Args:
+            mutation: Validated exact owner token and replacement duration.
+
+        Returns:
+            Task and atomically renewed Claim ownership.
+
+        """
+        return _renew_claim(self._database_path, mutation)
+
+    def release_claim(self, mutation: ReleaseClaimMutation) -> TaskClaimResult:
+        """Atomically release one exact current owner token.
+
+        Args:
+            mutation: Validated exact Human or Agent owner token.
+
+        Returns:
+            Task with no Claim and a nullable released Agent Attempt.
+
+        """
+        return _release_claim(self._database_path, mutation)
 
     def add_task_dependency(
         self,

@@ -12,7 +12,11 @@ import pytest
 from workaholic.application import (
     ClaimNextTaskMutation,
     ClaimTaskMutation,
+    LeaseLostError,
+    ReleaseClaimMutation,
+    RenewClaimMutation,
     TaskClaimResult,
+    TaskLockedError,
 )
 from workaholic.domain import (
     AttemptId,
@@ -44,6 +48,7 @@ from workaholic.persistence.sqlite._claim_state import (
     current_claim_state,
     load_claim_state,
     load_claim_states,
+    require_current_claim_owner,
 )
 from workaholic.persistence.sqlite._event_records import (
     TaskEventRecord,
@@ -57,8 +62,13 @@ from workaholic.persistence.sqlite._task_claims import (
     _execute_claim,
     _materialize_expired_claim,
     _parse_claim_outcome,
+    _release_claim_ownership,
+    _renew_claim_ownership,
     _require_matching_claim_result,
+    _require_matching_lease_result,
     claim_task,
+    release_claim,
+    renew_claim,
 )
 from workaholic.persistence.sqlite._task_records import task_mapping
 from workaholic.persistence.sqlite.errors import StorageUnavailableError
@@ -269,6 +279,33 @@ def _agent_mutation() -> ClaimNextTaskMutation:
     )
 
 
+def _renewal(*, attempt_id: AttemptId | None = None) -> RenewClaimMutation:
+    """Build one exact current-owner renewal mutation fixture."""
+    return RenewClaimMutation(
+        project_id=_PROJECT_ID,
+        task_uid=TaskId("tsk_claim"),
+        actor_subject_id=_SUBJECT_ID,
+        request_id=RequestId("req_renew"),
+        occurred_at=_NOW + timedelta(minutes=1),
+        attempt_id=attempt_id,
+        lease_duration_seconds=900 if attempt_id is not None else 28_800,
+        claim_renewed_event_id=TaskEventId("evt_renew"),
+    )
+
+
+def _release(*, attempt_id: AttemptId | None = None) -> ReleaseClaimMutation:
+    """Build one exact current-owner release mutation fixture."""
+    return ReleaseClaimMutation(
+        project_id=_PROJECT_ID,
+        task_uid=TaskId("tsk_claim"),
+        actor_subject_id=_SUBJECT_ID,
+        request_id=RequestId("req_release"),
+        occurred_at=_NOW + timedelta(minutes=1),
+        attempt_id=attempt_id,
+        claim_released_event_id=TaskEventId("evt_release"),
+    )
+
+
 def _claim_event(claim: TaskClaim, *, cursor: int = 2) -> TaskEvent:
     """Build the exact task-claimed event for a Claim fixture."""
     return _event(
@@ -423,6 +460,102 @@ def test_current_claim_projection_rejects_bad_state_and_time() -> None:
     with pytest.raises(StorageUnavailableError):
         current_claim_state(state, now=_NOW.replace(tzinfo=None))
     assert current_claim_state(None, now=_NOW) is None
+
+
+def test_current_claim_owner_requires_exact_human_or_agent_token() -> None:
+    """Ownership checks distinguish Human locks from exact Agent Attempts."""
+    human = StoredClaimState(
+        project_id=_PROJECT_ID,
+        claim=_human_claim(),
+        attempt=None,
+    )
+    agent = StoredClaimState(
+        project_id=_PROJECT_ID,
+        claim=_agent_claim(),
+        attempt=_agent_attempt(),
+    )
+
+    assert (
+        require_current_claim_owner(
+            human,
+            subject_id=_SUBJECT_ID,
+            attempt_id=None,
+            now=_NOW,
+        )
+        is human
+    )
+    assert (
+        require_current_claim_owner(
+            agent,
+            subject_id=_SUBJECT_ID,
+            attempt_id=AttemptId("atm_claim"),
+            now=_NOW,
+        )
+        is agent
+    )
+    with pytest.raises(TaskLockedError):
+        require_current_claim_owner(
+            agent,
+            subject_id=_SUBJECT_ID,
+            attempt_id=None,
+            now=_NOW,
+        )
+    with pytest.raises(TaskLockedError):
+        require_current_claim_owner(
+            human,
+            subject_id=SubjectId("sub_other"),
+            attempt_id=None,
+            now=_NOW,
+        )
+    with pytest.raises(LeaseLostError):
+        require_current_claim_owner(
+            agent,
+            subject_id=_SUBJECT_ID,
+            attempt_id=AttemptId("atm_other"),
+            now=_NOW,
+        )
+    with pytest.raises(LeaseLostError):
+        require_current_claim_owner(
+            human,
+            subject_id=_SUBJECT_ID,
+            attempt_id=AttemptId("atm_claim"),
+            now=_NOW,
+        )
+
+
+def test_current_claim_owner_rejects_missing_expired_and_bad_tokens() -> None:
+    """Missing or expired Leases are lost and untrusted token types fail closed."""
+    expired = StoredClaimState(
+        project_id=_PROJECT_ID,
+        claim=replace(
+            _human_claim(),
+            claimed_at=_NOW - timedelta(minutes=1),
+            lease_expires_at=_NOW,
+        ),
+        attempt=None,
+    )
+    for state in (None, expired):
+        with pytest.raises(LeaseLostError):
+            require_current_claim_owner(
+                state,
+                subject_id=_SUBJECT_ID,
+                attempt_id=None,
+                now=_NOW,
+            )
+    with pytest.raises(StorageUnavailableError):
+        require_current_claim_owner(
+            None,
+            subject_id=cast("SubjectId", object()),
+            attempt_id=None,
+            now=_NOW,
+        )
+    with pytest.raises(StorageUnavailableError):
+        require_current_claim_owner(
+            None,
+            subject_id=_SUBJECT_ID,
+            attempt_id=cast("AttemptId", object()),
+            now=_NOW,
+        )
 
 
 def test_claim_record_wrappers_reject_wrong_runtime_types() -> None:
@@ -614,9 +747,7 @@ def test_matching_claim_result_rejects_invalid_expiry_event() -> None:
         TaskEventType.CLAIM_EXPIRED,
         cursor=1,
         attempt_id=AttemptId("atm_old"),
-        payload={
-            "lease_expires_at": serialize_timestamp(_NOW + timedelta(seconds=1))
-        },
+        payload={"lease_expires_at": serialize_timestamp(_NOW + timedelta(seconds=1))},
     )
     result = TaskClaimResult(
         task=_task(),
@@ -628,6 +759,78 @@ def test_matching_claim_result_rejects_invalid_expiry_event() -> None:
     with pytest.raises(StorageUnavailableError) as caught:
         _require_matching_claim_result(result, mutation=_agent_mutation())
     assert caught.traceback[-1].lineno >= 728
+
+
+def test_matching_lease_result_accepts_exact_renewal_and_release() -> None:
+    """Lease outcomes remain bound to exact replacement and release semantics."""
+    renewal = _renewal()
+    renewed_expiry = renewal.occurred_at + timedelta(
+        seconds=renewal.lease_duration_seconds
+    )
+    renewed_claim = replace(_human_claim(), lease_expires_at=renewed_expiry)
+    renewed_event = replace(
+        _event(
+            TaskEventType.CLAIM_RENEWED,
+            cursor=3,
+            attempt_id=None,
+            payload={"lease_expires_at": serialize_timestamp(renewed_expiry)},
+        ),
+        occurred_at=renewal.occurred_at,
+    )
+    _require_matching_lease_result(
+        TaskClaimResult(
+            task=_task(),
+            claim=renewed_claim,
+            attempt=None,
+            events=(renewed_event,),
+        ),
+        mutation=renewal,
+    )
+
+    release = _release()
+    released_event = replace(
+        _event(
+            TaskEventType.CLAIM_RELEASED,
+            cursor=4,
+            attempt_id=None,
+            payload={
+                "lease_expires_at": serialize_timestamp(_human_claim().lease_expires_at)
+            },
+        ),
+        occurred_at=release.occurred_at,
+    )
+    _require_matching_lease_result(
+        TaskClaimResult(
+            task=_task(),
+            claim=None,
+            attempt=None,
+            events=(released_event,),
+        ),
+        mutation=release,
+    )
+
+
+def test_matching_lease_result_rejects_wrong_event_contracts() -> None:
+    """Lease replay validation rejects missing and semantically wrong events."""
+    mutation = _renewal()
+    missing_event = TaskClaimResult(
+        task=_task(),
+        claim=_human_claim(),
+        attempt=None,
+        events=(),
+    )
+    with pytest.raises(StorageUnavailableError):
+        _require_matching_lease_result(missing_event, mutation=mutation)
+
+    wrong_event = replace(
+        _claim_event(_human_claim()),
+        occurred_at=mutation.occurred_at,
+    )
+    with pytest.raises(StorageUnavailableError):
+        _require_matching_lease_result(
+            missing_event.model_copy(update={"events": (wrong_event,)}),
+            mutation=mutation,
+        )
 
 
 def test_materialized_expiry_defenses_reject_current_or_changed_state() -> None:
@@ -686,6 +889,57 @@ def test_materialized_expiry_defenses_reject_current_or_changed_state() -> None:
         )
 
 
+def test_renewal_defenses_reject_changed_attempt_or_claim() -> None:
+    """Atomic renewal rejects a concurrently changed Attempt or Claim row."""
+    agent_state = StoredClaimState(
+        project_id=_PROJECT_ID,
+        claim=_agent_claim(),
+        attempt=_agent_attempt(),
+    )
+    with pytest.raises(StorageUnavailableError):
+        _renew_claim_ownership(
+            cast("sqlite3.Connection", _RowCountConnection([0])),
+            task=_task(),
+            state=agent_state,
+            mutation=_renewal(attempt_id=AttemptId("atm_claim")),
+        )
+    human_state = StoredClaimState(
+        project_id=_PROJECT_ID,
+        claim=_human_claim(),
+        attempt=None,
+    )
+    with pytest.raises(StorageUnavailableError):
+        _renew_claim_ownership(
+            cast("sqlite3.Connection", _RowCountConnection([0])),
+            task=_task(),
+            state=human_state,
+            mutation=_renewal(),
+        )
+
+
+def test_release_defenses_reject_changed_claim_or_attempt() -> None:
+    """Atomic release rejects a concurrently changed Claim or Agent Attempt."""
+    agent_state = StoredClaimState(
+        project_id=_PROJECT_ID,
+        claim=_agent_claim(),
+        attempt=_agent_attempt(),
+    )
+    with pytest.raises(StorageUnavailableError):
+        _release_claim_ownership(
+            cast("sqlite3.Connection", _RowCountConnection([0])),
+            task=_task(),
+            state=agent_state,
+            mutation=_release(attempt_id=AttemptId("atm_claim")),
+        )
+    with pytest.raises(StorageUnavailableError):
+        _release_claim_ownership(
+            cast("sqlite3.Connection", _RowCountConnection([1, 0])),
+            task=_task(),
+            state=agent_state,
+            mutation=_release(attempt_id=AttemptId("atm_claim")),
+        )
+
+
 @pytest.mark.parametrize(
     "failure",
     [
@@ -703,6 +957,7 @@ def test_execute_claim_maps_unexpected_validation_failure(
     tmp_path: Path,
 ) -> None:
     """Unexpected helper validation failures collapse to the storage boundary."""
+
     def _raise_value_error(*args: object, **kwargs: object) -> None:
         """Raise one controlled non-application validation failure."""
         del args, kwargs
@@ -729,6 +984,14 @@ def test_claim_task_runtime_boundary_rejects_wrong_mutation(tmp_path: Path) -> N
     """The Human repository entry point does not trust its mutation type hint."""
     with pytest.raises(StorageUnavailableError):
         claim_task(tmp_path / "missing.db", cast("ClaimTaskMutation", object()))
+
+
+def test_lease_runtime_boundaries_reject_wrong_mutations(tmp_path: Path) -> None:
+    """Renew and release entry points do not trust their mutation type hints."""
+    with pytest.raises(StorageUnavailableError):
+        renew_claim(tmp_path / "missing.db", cast("RenewClaimMutation", object()))
+    with pytest.raises(StorageUnavailableError):
+        release_claim(tmp_path / "missing.db", cast("ReleaseClaimMutation", object()))
 
 
 def test_repository_rejects_clock_without_now(tmp_path: Path) -> None:

@@ -199,9 +199,9 @@ def _row_counts(repository: SQLiteRepository) -> tuple[int, int, int, int]:
             connection.execute("SELECT count(*) FROM task_attempts").fetchone()[0],
             connection.execute("SELECT count(*) FROM task_claims").fetchone()[0],
             connection.execute("SELECT count(*) FROM task_events").fetchone()[0],
-            connection.execute(
-                "SELECT count(*) FROM idempotency_records"
-            ).fetchone()[0],
+            connection.execute("SELECT count(*) FROM idempotency_records").fetchone()[
+                0
+            ],
         )
 
 
@@ -343,9 +343,7 @@ def test_agent_pull_with_no_ready_candidate_commits_nothing(tmp_path: Path) -> N
     before = _row_counts(repository)
 
     with pytest.raises(NoTaskAvailableError):
-        repository.claim_next_task(
-            _agent_mutation("none", idempotency_key="no-task")
-        )
+        repository.claim_next_task(_agent_mutation("none", idempotency_key="no-task"))
 
     assert _row_counts(repository) == before
     assert task.version == 1

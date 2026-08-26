@@ -6,8 +6,11 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Final
 
+from workaholic.application import LeaseLostError, TaskLockedError
 from workaholic.domain import (
+    AttemptId,
     ProjectId,
+    SubjectId,
     Task,
     TaskAttempt,
     TaskClaim,
@@ -193,3 +196,51 @@ def current_claim_state(
     except ValueError as error:
         raise StorageUnavailableError from error
     return state
+
+
+def require_current_claim_owner(
+    state: StoredClaimState | None,
+    *,
+    subject_id: SubjectId,
+    attempt_id: AttemptId | None,
+    now: datetime,
+) -> StoredClaimState:
+    """Require the exact current Human or Agent Claim owner token.
+
+    Args:
+        state: Stored Claim state, including a potentially expired Lease.
+        subject_id: Authenticated bootstrap Subject identity.
+        attempt_id: Null Human token or exact Agent Attempt identity.
+        now: Authoritative UTC transaction time.
+
+    Returns:
+        Current Claim state owned by ``(subject_id, attempt_id)``.
+
+    Raises:
+        LeaseLostError: If an Agent token is missing, stale, or superseded.
+        TaskLockedError: If a Human path encounters another current owner token.
+        StorageUnavailableError: If trusted inputs violate their runtime contract.
+
+    """
+    candidate_subject: object = subject_id
+    candidate_attempt: object = attempt_id
+    if not isinstance(candidate_subject, SubjectId) or (
+        candidate_attempt is not None and not isinstance(candidate_attempt, AttemptId)
+    ):
+        raise StorageUnavailableError
+    current = current_claim_state(state, now=now)
+    if current is None:
+        raise LeaseLostError
+    claim = current.claim
+    if candidate_attempt is None:
+        if claim.subject_id != candidate_subject or claim.attempt_id is not None:
+            raise TaskLockedError
+        return current
+    if (
+        claim.subject_id != candidate_subject
+        or claim.attempt_id != candidate_attempt
+        or current.attempt is None
+        or current.attempt.id != candidate_attempt
+    ):
+        raise LeaseLostError
+    return current
