@@ -1,4 +1,4 @@
-"""Integration tests for the fixed Phase 3 SQLite schema boundary."""
+"""Integration tests for the fixed Phase 4 SQLite schema boundary."""
 
 from __future__ import annotations
 
@@ -33,6 +33,8 @@ if TYPE_CHECKING:
     from contextlib import AbstractContextManager
 
 _TIMESTAMP = "2026-07-30T10:30:00.000000Z"
+_LATER_TIMESTAMP = "2026-07-30T10:35:00.000000Z"
+_LEASE_EXPIRY = "2026-07-30T10:45:00.000000Z"
 _APPLICATION_TABLES = {
     "idempotency_records",
     "instances",
@@ -40,6 +42,8 @@ _APPLICATION_TABLES = {
     "projects",
     "store_metadata",
     "subjects",
+    "task_attempts",
+    "task_claims",
     "task_dependencies",
     "task_events",
     "task_results",
@@ -58,6 +62,12 @@ _IDEMPOTENCY_OPERATIONS = (
     "task.result.submit",
     "task.result.approve",
     "task.result.reject",
+    "task.claim",
+    "task.claim.next",
+    "task.claim.renew",
+    "task.claim.release",
+    "task.progress.report",
+    "task.result.submit.agent",
 )
 _EXPECTED_COLUMNS = {
     "idempotency_records": (
@@ -87,6 +97,24 @@ _EXPECTED_COLUMNS = {
         "is_instance_admin",
     ),
     "task_dependencies": ("task_uid", "prerequisite_uid", "project_id"),
+    "task_attempts": (
+        "id",
+        "task_uid",
+        "project_id",
+        "subject_id",
+        "status",
+        "started_at",
+        "ended_at",
+        "lease_expires_at",
+    ),
+    "task_claims": (
+        "task_uid",
+        "project_id",
+        "subject_id",
+        "attempt_id",
+        "claimed_at",
+        "lease_expires_at",
+    ),
     "task_events": (
         "cursor",
         "id",
@@ -339,6 +367,84 @@ def _insert_event(
     )
 
 
+def _insert_attempt(  # noqa: PLR0913 - explicit physical-record fixture.
+    connection: sqlite3.Connection,
+    *,
+    attempt_id: str = "atm_first",
+    task_uid: str = "tsk_first",
+    project_id: str = "prj_acme",
+    subject_id: str = "sub_local",
+    status: str = "active",
+    ended_at: str | None = None,
+) -> None:
+    """Insert one physical Attempt fixture through exact schema columns.
+
+    Args:
+        connection: Connection owning the test fixture.
+        attempt_id: Opaque Attempt identity.
+        task_uid: Owning Task identity.
+        project_id: Owning Project identity.
+        subject_id: Owning bootstrap Subject identity.
+        status: Persisted Attempt state.
+        ended_at: Nullable terminal time.
+
+    """
+    connection.execute(
+        """
+        INSERT INTO task_attempts (
+            id, task_uid, project_id, subject_id, status, started_at,
+            ended_at, lease_expires_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            attempt_id,
+            task_uid,
+            project_id,
+            subject_id,
+            status,
+            _TIMESTAMP,
+            ended_at,
+            _LEASE_EXPIRY,
+        ),
+    )
+
+
+def _insert_claim(
+    connection: sqlite3.Connection,
+    *,
+    task_uid: str = "tsk_first",
+    project_id: str = "prj_acme",
+    subject_id: str = "sub_local",
+    attempt_id: str | None = "atm_first",
+) -> None:
+    """Insert one physical Human or Agent Claim fixture.
+
+    Args:
+        connection: Connection owning the test fixture.
+        task_uid: Claimed Task identity.
+        project_id: Claimed Task Project.
+        subject_id: Current owner Subject.
+        attempt_id: Null Human token or Agent Attempt identity.
+
+    """
+    connection.execute(
+        """
+        INSERT INTO task_claims (
+            task_uid, project_id, subject_id, attempt_id, claimed_at,
+            lease_expires_at
+        ) VALUES (?, ?, ?, ?, ?, ?)
+        """,
+        (
+            task_uid,
+            project_id,
+            subject_id,
+            attempt_id,
+            _TIMESTAMP,
+            _LEASE_EXPIRY,
+        ),
+    )
+
+
 def _set_short_busy_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
     """Shorten SQLite lock waits for deterministic contention tests.
 
@@ -415,6 +521,12 @@ def test_empty_store_has_exact_columns_indexes_and_foreign_keys(
             "store_metadata": set(),
             "subjects": {("id",), ("id", "kind")},
             "task_dependencies": {("task_uid", "prerequisite_uid")},
+            "task_attempts": {
+                ("id",),
+                ("id", "task_uid", "subject_id"),
+                ("id", "task_uid", "project_id", "subject_id"),
+            },
+            "task_claims": {("task_uid",), ("attempt_id",)},
             "task_events": {("id",)},
             "task_results": {("id",), ("id", "task_uid")},
             "tasks": {
@@ -448,6 +560,15 @@ def test_empty_store_has_exact_columns_indexes_and_foreign_keys(
         assert actual_unique_indexes == expected_unique_indexes
 
         expected_query_indexes = {
+            "idx_task_attempts_active_lease": (
+                "status",
+                "lease_expires_at",
+                "task_uid",
+            ),
+            "idx_task_attempts_task_history": ("task_uid", "started_at", "id"),
+            "idx_task_claims_lease_expiry": ("lease_expires_at", "task_uid"),
+            "idx_task_claims_owner": ("subject_id", "attempt_id", "task_uid"),
+            "idx_task_claims_project_task": ("project_id", "task_uid"),
             "idx_task_dependencies_prerequisite": (
                 "prerequisite_uid",
                 "project_id",
@@ -509,6 +630,28 @@ def test_empty_store_has_exact_columns_indexes_and_foreign_keys(
             ("project_grants", "project_id", "projects", "id", "RESTRICT"),
             ("project_grants", "subject_id", "subjects", "id", "RESTRICT"),
             ("projects", "instance_id", "instances", "id", "RESTRICT"),
+            ("task_attempts", "project_id", "tasks", "project_id", "RESTRICT"),
+            ("task_attempts", "subject_id", "subjects", "id", "RESTRICT"),
+            ("task_attempts", "task_uid", "tasks", "uid", "RESTRICT"),
+            ("task_claims", "attempt_id", "task_attempts", "id", "RESTRICT"),
+            (
+                "task_claims",
+                "project_id",
+                "task_attempts",
+                "project_id",
+                "RESTRICT",
+            ),
+            ("task_claims", "project_id", "tasks", "project_id", "RESTRICT"),
+            (
+                "task_claims",
+                "subject_id",
+                "task_attempts",
+                "subject_id",
+                "RESTRICT",
+            ),
+            ("task_claims", "subject_id", "subjects", "id", "RESTRICT"),
+            ("task_claims", "task_uid", "task_attempts", "task_uid", "RESTRICT"),
+            ("task_claims", "task_uid", "tasks", "uid", "RESTRICT"),
             (
                 "task_dependencies",
                 "prerequisite_uid",
@@ -520,11 +663,42 @@ def test_empty_store_has_exact_columns_indexes_and_foreign_keys(
             ("task_dependencies", "task_uid", "tasks", "uid", "RESTRICT"),
             ("task_events", "actor_kind", "subjects", "kind", "RESTRICT"),
             ("task_events", "actor_subject_id", "subjects", "id", "RESTRICT"),
+            ("task_events", "attempt_id", "task_attempts", "id", "RESTRICT"),
             ("task_events", "project_id", "tasks", "project_id", "RESTRICT"),
+            (
+                "task_events",
+                "project_id",
+                "task_attempts",
+                "project_id",
+                "RESTRICT",
+            ),
+            (
+                "task_events",
+                "actor_subject_id",
+                "task_attempts",
+                "subject_id",
+                "RESTRICT",
+            ),
             ("task_events", "task_uid", "tasks", "uid", "RESTRICT"),
+            ("task_events", "task_uid", "task_attempts", "task_uid", "RESTRICT"),
+            ("task_results", "attempt_id", "task_attempts", "id", "RESTRICT"),
             ("task_results", "reviewed_by", "subjects", "id", "RESTRICT"),
             ("task_results", "submitted_by", "subjects", "id", "RESTRICT"),
+            (
+                "task_results",
+                "submitted_by",
+                "task_attempts",
+                "subject_id",
+                "RESTRICT",
+            ),
             ("task_results", "task_uid", "tasks", "uid", "RESTRICT"),
+            (
+                "task_results",
+                "task_uid",
+                "task_attempts",
+                "task_uid",
+                "RESTRICT",
+            ),
             ("tasks", "created_by", "subjects", "id", "RESTRICT"),
             ("tasks", "current_result_id", "task_results", "id", "RESTRICT"),
             ("tasks", "project_id", "projects", "id", "RESTRICT"),
@@ -839,6 +1013,171 @@ def test_phase_three_dependency_constraints_enforce_identity_and_project(
         connection.close()
 
 
+def test_phase_four_attempt_state_and_claim_ownership_constraints(
+    tmp_path: Path,
+) -> None:
+    """Attempts and Claims enforce lifecycle, uniqueness, and exact ownership."""
+    database_path = tmp_path / "local.db"
+    initialize_empty_store(database_path)
+    connection = _open_physical_database(database_path)
+    try:
+        _seed_authorization_graph(connection)
+        _insert_task(connection)
+        _insert_task(connection, uid="tsk_second", number=2, key="ACME-2")
+        connection.execute(
+            """
+            INSERT INTO subjects (
+                id, kind, display_name, enabled, is_instance_admin
+            ) VALUES (?, ?, ?, ?, ?)
+            """,
+            ("sub_other", "human", "Other operator", 1, 0),
+        )
+        _insert_attempt(connection)
+        _insert_claim(connection)
+        _insert_claim(
+            connection,
+            task_uid="tsk_second",
+            attempt_id=None,
+        )
+        connection.commit()
+
+        assert connection.execute(
+            """
+            SELECT task_uid, subject_id, attempt_id, lease_expires_at
+            FROM task_claims ORDER BY task_uid
+            """
+        ).fetchall() == [
+            ("tsk_first", "sub_local", "atm_first", _LEASE_EXPIRY),
+            ("tsk_second", "sub_local", None, _LEASE_EXPIRY),
+        ]
+
+        invalid_attempts = (
+            ("atm_active_ended", "active", _LATER_TIMESTAMP),
+            ("atm_released_open", "released", None),
+            ("atm_expired_early", "expired", _LATER_TIMESTAMP),
+            ("atm_submitted_late", "submitted", _LEASE_EXPIRY),
+        )
+        for attempt_id, status, ended_at in invalid_attempts:
+            with pytest.raises(sqlite3.IntegrityError):
+                _insert_attempt(
+                    connection,
+                    attempt_id=attempt_id,
+                    status=status,
+                    ended_at=ended_at,
+                )
+            connection.rollback()
+
+        with pytest.raises(sqlite3.IntegrityError):
+            _insert_claim(connection, attempt_id=None)
+        connection.rollback()
+
+        connection.execute("DELETE FROM task_claims")
+        connection.commit()
+        for task_uid, subject_id in (
+            ("tsk_second", "sub_local"),
+            ("tsk_first", "sub_other"),
+        ):
+            with pytest.raises(sqlite3.IntegrityError):
+                _insert_claim(
+                    connection,
+                    task_uid=task_uid,
+                    subject_id=subject_id,
+                )
+            connection.rollback()
+    finally:
+        connection.close()
+
+
+def test_phase_four_attempt_foreign_keys_bind_results_and_events(
+    tmp_path: Path,
+) -> None:
+    """Agent Results and events can reference only their exact owning Attempt."""
+    database_path = tmp_path / "local.db"
+    initialize_empty_store(database_path)
+    connection = _open_physical_database(database_path)
+    try:
+        _seed_authorization_graph(connection)
+        _insert_task(connection)
+        _insert_attempt(
+            connection,
+            status="submitted",
+            ended_at=_LATER_TIMESTAMP,
+        )
+        connection.execute(
+            """
+            INSERT INTO task_results (
+                id, task_uid, submitted_by, attempt_id, submitted_at,
+                review_status
+            ) VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "res_agent",
+                "tsk_first",
+                "sub_local",
+                "atm_first",
+                _LATER_TIMESTAMP,
+                "not_required",
+            ),
+        )
+        connection.execute(
+            """
+            INSERT INTO task_events (
+                id, task_uid, project_id, actor_subject_id, actor_kind,
+                attempt_id, request_id, event_type, occurred_at, payload_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "evt_agent",
+                "tsk_first",
+                "prj_acme",
+                "sub_local",
+                "human",
+                "atm_first",
+                "req_agent",
+                "result_submitted",
+                _LATER_TIMESTAMP,
+                "{}",
+            ),
+        )
+        connection.commit()
+
+        assert connection.execute(
+            "SELECT attempt_id FROM task_results WHERE id = 'res_agent'"
+        ).fetchone() == ("atm_first",)
+        assert connection.execute(
+            "SELECT attempt_id FROM task_events WHERE id = 'evt_agent'"
+        ).fetchone() == ("atm_first",)
+
+        for table, identity in (
+            ("task_results", "res_invalid"),
+            ("task_events", "evt_invalid"),
+        ):
+            if table == "task_results":
+                statement = """
+                    INSERT INTO task_results (
+                        id, task_uid, submitted_by, attempt_id, submitted_at,
+                        review_status
+                    ) VALUES (?, 'tsk_first', 'sub_local', ?, ?, 'pending')
+                """
+                parameters = (identity, "atm_missing", _LATER_TIMESTAMP)
+            else:
+                statement = """
+                    INSERT INTO task_events (
+                        id, task_uid, project_id, actor_subject_id, attempt_id,
+                        request_id, event_type, occurred_at, payload_json
+                    ) VALUES (?, 'tsk_first', 'prj_acme', 'sub_local', ?,
+                              'req_invalid', 'progress_reported', ?, '{}')
+                """
+                parameters = (identity, "atm_missing", _LATER_TIMESTAMP)
+            with pytest.raises(sqlite3.IntegrityError):
+                connection.execute(statement, parameters)
+            connection.rollback()
+
+        assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
+    finally:
+        connection.close()
+
+
 def test_phase_three_result_review_and_current_selection_constraints(
     tmp_path: Path,
 ) -> None:
@@ -971,8 +1310,8 @@ def test_phase_three_result_review_and_current_selection_constraints(
         connection.close()
 
 
-def test_phase_three_event_types_snapshots_and_payload_bounds(tmp_path: Path) -> None:
-    """Every Phase 3 event type accepts exact Human attribution and object JSON."""
+def test_phase_four_event_types_snapshots_and_payload_bounds(tmp_path: Path) -> None:
+    """Every Phase 4 event type accepts Human-kind snapshots and object JSON."""
     database_path = tmp_path / "local.db"
     initialize_empty_store(database_path)
     connection = _open_physical_database(database_path)
@@ -989,6 +1328,12 @@ def test_phase_three_event_types_snapshots_and_payload_bounds(tmp_path: Path) ->
             "review_rejected",
             "task_completed",
             "task_cancelled",
+            "task_claimed",
+            "claim_renewed",
+            "claim_released",
+            "claim_expired",
+            "progress_reported",
+            "observation_added",
         )
         for index, event_type in enumerate(event_types):
             connection.execute(
@@ -1019,7 +1364,7 @@ def test_phase_three_event_types_snapshots_and_payload_bounds(tmp_path: Path) ->
         invalid_rows = (
             ("evt_kind", "agent", None, "task_updated", "{}"),
             ("evt_attempt", "human", "bad", "task_updated", "{}"),
-            ("evt_type", "human", None, "task_claimed", "{}"),
+            ("evt_type", "human", None, "unknown", "{}"),
             ("evt_array", "human", None, "task_updated", "[]"),
             (
                 "evt_large",
@@ -1057,7 +1402,7 @@ def test_phase_three_event_types_snapshots_and_payload_bounds(tmp_path: Path) ->
         connection.close()
 
 
-def test_idempotency_operation_constraint_includes_every_phase_three_mutation(
+def test_idempotency_operation_constraint_includes_every_phase_four_mutation(
     tmp_path: Path,
 ) -> None:
     """The closed semantic operation set includes every cumulative mutation."""
@@ -1310,7 +1655,7 @@ def _build_invalid_store(database_path: Path, scenario: str) -> None:
             )
             connection.executemany(
                 "INSERT INTO store_metadata VALUES (?, ?)",
-                [(1, 3), (2, 3)],
+                [(1, 4), (2, 4)],
             )
         else:
             connection.execute(
@@ -1332,13 +1677,13 @@ def _build_invalid_store(database_path: Path, scenario: str) -> None:
 
 @pytest.mark.parametrize(
     "scenario",
-    ["missing", "malformed", "multiple", "0", "1", "2", "4"],
+    ["missing", "malformed", "multiple", "0", "1", "2", "3", "4", "5"],
 )
 def test_schema_validation_rejects_without_modifying_the_store(
     scenario: str,
     tmp_path: Path,
 ) -> None:
-    """Missing, malformed, older, and newer versions remain byte-identical."""
+    """Missing, malformed-v4, older, and newer stores remain unchanged."""
     database_path = tmp_path / f"{scenario}.db"
     _build_invalid_store(database_path, scenario)
     original_bytes = database_path.read_bytes()

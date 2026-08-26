@@ -148,20 +148,20 @@ requires `--replace`; even then, Workaholic will not replace a malformed file,
 directory, symlink, or concurrently changed context. It may update the local
 `.git/info/exclude`, but it never changes a shared `.gitignore`.
 
-The `0.3.0a1` SQLite store uses disposable schema version `3`. Phase 2 schema
-version `2` and every other unsupported version are rejected unchanged with
-`SCHEMA_UNSUPPORTED`. There is no migration, conversion, import, export, or
-automatic reset. Before an alpha upgrade, preserve anything needed outside
-Workaholic. For an explicit disposable-development reset, first verify the
-exact selected profile data directory and Workspace contexts belong only to
-that alpha, then remove only those verified artifacts and run `up` again.
-Never delete a broad user-data or configuration directory without verifying
-its ownership and contents.
+The `0.3.0a1` SQLite store now uses the disposable Phase 4 schema version `4`
+foundation. Phase 3 schema version `3`, Phase 2 schema version `2`, and every
+other unsupported version are rejected unchanged with `SCHEMA_UNSUPPORTED`.
+There is no migration, conversion, import, export, or automatic reset. Before
+an alpha upgrade, preserve anything needed outside Workaholic. For an explicit
+disposable-development reset, first verify the exact selected profile data
+directory and Workspace contexts belong only to that alpha, then remove only
+those verified artifacts and run `up` again. Never delete a broad user-data or
+configuration directory without verifying its ownership and contents.
 
 ## Current CLI
 
 The default executable composes a short-lived embedded `LocalSession`, trusted
-profile selection, upward Workspace discovery, and SQLite schema version `3`.
+profile selection, upward Workspace discovery, and SQLite schema version `4`.
 It exposes 19 Project, context, and Task operations without starting a daemon.
 
 | Invocation | Current behavior |
@@ -204,7 +204,7 @@ The Human Workflow Alpha supports:
 - `open`, `blocked`, `review`, `done`, and `cancelled` stored states;
 - optimistic versions, idempotent lifecycle mutations, structured Human
   Results, review, and append-only attributable TaskEvents;
-- SQLite schema version `3` through embedded `LocalSession`;
+- SQLite schema version `4` through embedded `LocalSession`;
 - Human-readable output and closed `workaholic.cli/v1` JSON envelopes.
 
 Attempts are Agent-only and unavailable in this alpha. Human Results always

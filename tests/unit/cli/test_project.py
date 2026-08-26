@@ -223,7 +223,7 @@ def test_project_bind_maps_unicode_path_replace_and_exact_context(
     assert require_success(_completed(result)) == {
         "mode": "embedded",
         "profile": "team",
-        "schema_version": 3,
+        "schema_version": 4,
         "instance": {"id": "ins_local"},
         "project": {
             "id": "prj_docs",

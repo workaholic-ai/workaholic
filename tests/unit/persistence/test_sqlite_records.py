@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from dataclasses import replace
+from datetime import UTC, datetime, timedelta
 from typing import cast
 
 import pytest
@@ -11,6 +12,8 @@ from workaholic.domain import (
     AcceptanceCriterion,
     ApprovalRequirement,
     ArtifactReference,
+    AttemptId,
+    AttemptStatus,
     ContextReference,
     CriterionOutcome,
     CriterionStatus,
@@ -25,12 +28,28 @@ from workaholic.domain import (
     SubjectId,
     SubjectKind,
     Task,
+    TaskAttempt,
+    TaskClaim,
     TaskEvent,
     TaskEventId,
     TaskEventType,
     TaskId,
     TaskResult,
     TaskState,
+)
+from workaholic.persistence.sqlite._claim_records import (
+    TASK_ATTEMPT_FIELDS,
+    TASK_CLAIM_FIELDS,
+    TaskAttemptRecord,
+    TaskClaimRecord,
+    task_attempt_record_from_mapping,
+    task_attempt_record_from_row,
+    task_attempt_record_mapping,
+    task_attempt_row,
+    task_claim_record_from_mapping,
+    task_claim_record_from_row,
+    task_claim_record_mapping,
+    task_claim_row,
 )
 from workaholic.persistence.sqlite._event_records import (
     TASK_EVENT_FIELDS,
@@ -164,6 +183,45 @@ def _event_record() -> TaskEventRecord:
         ),
         actor_kind=SubjectKind.HUMAN,
         attempt_id=None,
+    )
+
+
+def _attempt_record() -> TaskAttemptRecord:
+    """Build one canonical active Agent Attempt persistence fixture."""
+    return TaskAttemptRecord(
+        project_id=ProjectId("prj_acme"),
+        attempt=TaskAttempt(
+            id=AttemptId("atm_primary"),
+            task_uid=TaskId("tsk_primary"),
+            subject_id=SubjectId("sub_human"),
+            status=AttemptStatus.ACTIVE,
+            started_at=_NOW,
+            ended_at=None,
+            lease_expires_at=_NOW + timedelta(minutes=15),
+        ),
+    )
+
+
+def _claim_record(*, attempt_id: AttemptId | None) -> TaskClaimRecord:
+    """Build one canonical current Human or Agent Claim persistence fixture.
+
+    Args:
+        attempt_id: Null for Human ownership or one Agent Attempt identity.
+
+    Returns:
+        Valid current Claim record.
+
+    """
+    return TaskClaimRecord(
+        project_id=ProjectId("prj_acme"),
+        claim=TaskClaim(
+            task_uid=TaskId("tsk_primary"),
+            task_key="ACME-7",
+            subject_id=SubjectId("sub_human"),
+            attempt_id=attempt_id,
+            claimed_at=_NOW,
+            lease_expires_at=_NOW + timedelta(minutes=15),
+        ),
     )
 
 
@@ -360,8 +418,20 @@ def test_complete_result_record_round_trips_mapping_and_sqlite_row() -> None:
     assert task_result_from_row(row) == result
 
 
-def test_result_codecs_reject_attempts_open_shapes_and_corrupt_collections() -> None:
-    """Phase 3 codecs reject Agent attribution and malformed Result content."""
+def test_agent_result_record_round_trips_attempt_attribution() -> None:
+    """Agent Result codecs retain their opaque Attempt identity exactly."""
+    result = replace(_result(), attempt_id=AttemptId("atm_primary"))
+
+    mapping = task_result_mapping(result)
+    row = task_result_row(result)
+
+    assert mapping["attempt_id"] == "atm_primary"
+    assert task_result_from_mapping(mapping) == result
+    assert task_result_from_row(row) == result
+
+
+def test_result_codecs_reject_open_shapes_and_corrupt_collections() -> None:
+    """Result codecs reject malformed attribution and structured content."""
     result = _result()
     mapping = task_result_mapping(result)
     row = list(task_result_row(result))
@@ -370,7 +440,7 @@ def test_result_codecs_reject_attempts_open_shapes_and_corrupt_collections() -> 
         task_result_from_mapping({**mapping, "unknown": True})
     with pytest.raises(StorageUnavailableError):
         task_result_mapping(cast("TaskResult", object()))
-    row[3] = "atm_agent"
+    row[3] = "invalid-attempt"
     with pytest.raises(StorageUnavailableError):
         task_result_from_row(tuple(row))
     row = list(task_result_row(result))
@@ -411,8 +481,27 @@ def test_complete_event_record_round_trips_mapping_and_sqlite_row() -> None:
     assert task_event_record_from_row(row) == record
 
 
-def test_event_codecs_reject_agent_attribution_and_noncanonical_payloads() -> None:
-    """Phase 3 event hydration rejects unsupported attribution and corrupt JSON."""
+def test_agent_event_record_round_trips_attempt_attribution() -> None:
+    """Agent event codecs retain matching domain and snapshot attribution."""
+    attempt_id = AttemptId("atm_primary")
+    human = _event_record()
+    event = replace(human.event, attempt_id=attempt_id)
+    record = TaskEventRecord(
+        event=event,
+        actor_kind=SubjectKind.HUMAN,
+        attempt_id=attempt_id,
+    )
+
+    mapping = task_event_record_mapping(record)
+    row = task_event_row(record)
+
+    assert mapping["attempt_id"] == "atm_primary"
+    assert task_event_record_from_mapping(mapping) == record
+    assert task_event_record_from_row(row) == record
+
+
+def test_event_codecs_reject_mismatched_attribution_and_noncanonical_payloads() -> None:
+    """Event hydration rejects malformed attribution and corrupt JSON."""
     record = _event_record()
     mapping = task_event_record_mapping(record)
     row = list(task_event_row(record))
@@ -421,7 +510,7 @@ def test_event_codecs_reject_agent_attribution_and_noncanonical_payloads() -> No
         task_event_record_from_mapping({**mapping, "unknown": True})
     with pytest.raises(StorageUnavailableError):
         task_event_record_mapping(cast("TaskEventRecord", object()))
-    row[6] = "atm_agent"
+    row[6] = "invalid-attempt"
     with pytest.raises(StorageUnavailableError):
         task_event_record_from_row(tuple(row))
     row = list(task_event_row(record))
@@ -432,6 +521,76 @@ def test_event_codecs_reject_agent_attribution_and_noncanonical_payloads() -> No
     row[5] = "agent"
     with pytest.raises(StorageUnavailableError):
         task_event_record_from_row(tuple(row))
+
+
+def test_attempt_record_round_trips_mapping_and_sqlite_row() -> None:
+    """Attempt status, ownership, timestamps, and Lease round trip exactly."""
+    record = _attempt_record()
+    mapping = task_attempt_record_mapping(record)
+    row = task_attempt_row(record)
+
+    assert TASK_ATTEMPT_FIELDS == (
+        "id",
+        "task_uid",
+        "project_id",
+        "subject_id",
+        "status",
+        "started_at",
+        "ended_at",
+        "lease_expires_at",
+    )
+    assert mapping["status"] == "active"
+    assert mapping["ended_at"] is None
+    assert task_attempt_record_from_mapping(mapping) == record
+    assert task_attempt_record_from_row(row) == record
+
+
+@pytest.mark.parametrize("attempt_id", [None, AttemptId("atm_primary")])
+def test_claim_record_round_trips_human_and_agent_ownership(
+    attempt_id: AttemptId | None,
+) -> None:
+    """Claim codecs retain null-Human and non-null-Agent owner tokens."""
+    record = _claim_record(attempt_id=attempt_id)
+    mapping = task_claim_record_mapping(record)
+    row = task_claim_row(record)
+
+    assert TASK_CLAIM_FIELDS == (
+        "task_uid",
+        "project_id",
+        "subject_id",
+        "attempt_id",
+        "claimed_at",
+        "lease_expires_at",
+    )
+    assert mapping["task_key"] == "ACME-7"
+    assert task_claim_record_from_mapping(mapping) == record
+    assert task_claim_record_from_row(row, task_key="ACME-7") == record
+
+
+def test_claim_and_attempt_codecs_fail_closed_on_malformed_records() -> None:
+    """Execution record codecs reject open shapes, invalid states, and aliases."""
+    attempt = _attempt_record()
+    attempt_mapping = task_attempt_record_mapping(attempt)
+    claim = _claim_record(attempt_id=AttemptId("atm_primary"))
+    claim_mapping = task_claim_record_mapping(claim)
+
+    invalid_attempt_row = list(task_attempt_row(attempt))
+    invalid_attempt_row[4] = "unknown"
+    invalid_claim_row = list(task_claim_row(claim))
+    invalid_claim_row[5] = invalid_claim_row[4]
+
+    with pytest.raises(StorageUnavailableError):
+        task_attempt_record_from_mapping({**attempt_mapping, "unknown": True})
+    with pytest.raises(StorageUnavailableError):
+        task_attempt_record_from_row(tuple(invalid_attempt_row))
+    with pytest.raises(StorageUnavailableError):
+        task_attempt_record_mapping(cast("TaskAttemptRecord", object()))
+    with pytest.raises(StorageUnavailableError):
+        task_claim_record_from_mapping({**claim_mapping, "unknown": True})
+    with pytest.raises(StorageUnavailableError):
+        task_claim_record_from_row(tuple(invalid_claim_row), task_key="ACME-7")
+    with pytest.raises(StorageUnavailableError):
+        task_claim_record_mapping(cast("TaskClaimRecord", object()))
 
 
 def test_canonical_serialization_round_trips_supported_values() -> None:

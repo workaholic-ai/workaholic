@@ -1,4 +1,4 @@
-"""Phase 2 SQLite schema and short-lived connection boundaries."""
+"""Cumulative Phase 4 SQLite adapter and connection boundaries."""
 
 from workaholic.persistence.sqlite.actor import SQLiteLocalActorSelector
 from workaholic.persistence.sqlite.connection import (

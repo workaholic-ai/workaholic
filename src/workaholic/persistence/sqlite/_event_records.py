@@ -1,4 +1,4 @@
-"""Canonical Phase 3 TaskEvent serialization and strict row codecs."""
+"""Canonical Phase 4 TaskEvent serialization and strict row codecs."""
 
 from __future__ import annotations
 
@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Final, cast
 
 from workaholic.domain import (
+    AttemptId,
     ProjectId,
     RequestId,
     SubjectId,
@@ -65,10 +66,10 @@ class TaskEventRecord:
 
     event: TaskEvent
     actor_kind: SubjectKind
-    attempt_id: str | None
+    attempt_id: AttemptId | None
 
     def __post_init__(self) -> None:
-        """Validate the Phase 3 event-attribution contract."""
+        """Validate the Phase 4 event-attribution snapshot contract."""
         candidate_event: object = self.event
         candidate_kind: object = self.actor_kind
         if not isinstance(candidate_event, TaskEvent):
@@ -76,7 +77,7 @@ class TaskEventRecord:
         if (
             not isinstance(candidate_kind, SubjectKind)
             or candidate_kind.value != SubjectKind.HUMAN.value
-            or self.attempt_id is not None
+            or self.attempt_id != candidate_event.attempt_id
         ):
             raise StorageUnavailableError
 
@@ -101,7 +102,9 @@ def task_event_record_mapping(record: TaskEventRecord) -> dict[str, object]:
     return {
         "actor_kind": candidate.actor_kind.value,
         "actor_subject_id": str(event.actor_subject_id),
-        "attempt_id": candidate.attempt_id,
+        "attempt_id": (
+            None if candidate.attempt_id is None else str(candidate.attempt_id)
+        ),
         "cursor": event.cursor,
         "event_type": event.event_type.value,
         "id": str(event.id),
@@ -217,8 +220,8 @@ def _build_event_record(
     """
     try:
         actor_kind = SubjectKind(require_text(value[5]))
-        if value[6] is not None:
-            raise StorageUnavailableError
+        attempt_text = None if value[6] is None else require_text(value[6])
+        attempt_id = None if attempt_text is None else AttemptId(attempt_text)
         payload_value = value[10]
         if payload_is_json:
             payload = parse_json_object(
@@ -240,9 +243,10 @@ def _build_event_record(
                 event_type=TaskEventType(require_text(value[8])),
                 occurred_at=parse_timestamp(value[9]),
                 payload=cast("Mapping[str, JsonValue]", payload),
+                attempt_id=attempt_id,
             ),
             actor_kind=actor_kind,
-            attempt_id=None,
+            attempt_id=attempt_id,
         )
     except (IndexError, TypeError, ValueError) as error:
         raise StorageUnavailableError from error
