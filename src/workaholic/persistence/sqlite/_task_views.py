@@ -1,4 +1,4 @@
-"""Authorized, deterministic, non-mutating Phase 3 SQLite Task views."""
+"""Authorized, deterministic, non-mutating Phase 4 SQLite Task views."""
 
 from __future__ import annotations
 
@@ -28,6 +28,11 @@ from workaholic.domain import (
     derive_task_readiness,
     validate_project_key,
     validate_utc_timestamp,
+)
+from workaholic.persistence.sqlite._claim_state import (
+    current_claim_state,
+    load_claim_state,
+    load_claim_states,
 )
 from workaholic.persistence.sqlite._queries import (
     _CursorBinding,
@@ -127,17 +132,22 @@ def get_task_details(
                 selector=candidate.task,
             )
             prerequisites = _load_prerequisite_tasks(connection, (task,))[task.uid]
+            stored_claim = load_claim_state(connection, task=task)
             readiness = derive_task_readiness(
                 task=task,
                 prerequisites=prerequisites,
                 now=current_time,
+                claim=None if stored_claim is None else stored_claim.claim,
             )
+            current_claim = current_claim_state(stored_claim, now=current_time)
             current_result = _load_current_result(connection, task=task)
             return TaskDetails(
                 task=task,
                 readiness=readiness,
                 prerequisites=prerequisites,
                 current_result=current_result,
+                claim=None if current_claim is None else current_claim.claim,
+                attempt=None if current_claim is None else current_claim.attempt,
             )
     except ApplicationError:
         raise
@@ -153,7 +163,7 @@ def list_tasks_by_view(
     *,
     now: datetime,
 ) -> TaskPage:
-    """Read one authorized deterministic Phase 3 Task-view page.
+    """Read one authorized deterministic Phase 4 Task-view page.
 
     Args:
         database_path: Absolute path to the validated SQLite store.
@@ -191,14 +201,19 @@ def list_tasks_by_view(
             selected_rows = rows[: candidate.limit]
             tasks = _tasks_from_view_rows(connection, selected_rows)
             prerequisites = _load_prerequisite_tasks(connection, tasks)
-            readiness = tuple(
-                derive_task_readiness(
-                    task=task,
-                    prerequisites=prerequisites[task.uid],
-                    now=current_time,
+            claim_states = load_claim_states(connection, tasks=tasks)
+            readiness_items: list[TaskReadiness] = []
+            for task in tasks:
+                claim_state = claim_states[task.uid]
+                readiness_items.append(
+                    derive_task_readiness(
+                        task=task,
+                        prerequisites=prerequisites[task.uid],
+                        now=current_time,
+                        claim=None if claim_state is None else claim_state.claim,
+                    )
                 )
-                for task in tasks
-            )
+            readiness = tuple(readiness_items)
             _require_readiness_matches_view(
                 tasks,
                 readiness,
@@ -503,8 +518,14 @@ def _view_filter(
                   AND d.project_id = t.project_id
                   AND prerequisite.state != 'done'
             )
+            AND NOT EXISTS (
+                SELECT 1
+                FROM task_claims AS claim
+                WHERE claim.task_uid = t.uid
+                  AND claim.lease_expires_at > ?
+            )
             """,
-            (timestamp,),
+            (timestamp, timestamp),
         )
     if view is TaskListView.SCHEDULED:
         return "AND t.state = 'open' AND t.available_at > ?", (timestamp,)

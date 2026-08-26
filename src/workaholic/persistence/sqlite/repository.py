@@ -91,7 +91,7 @@ class SQLiteRepository:
         """Bind the adapter to one absolute local database path.
 
         Args:
-            database_path: Absolute path to a schema-version-3 SQLite store.
+            database_path: Absolute path to a schema-version-4 SQLite store.
             clock: Optional authoritative clock for time-derived read views.
 
         Raises:
@@ -380,7 +380,7 @@ class SQLiteRepository:
         )
 
     def list_tasks_by_view(self, command: ListTasksByView) -> TaskPage:
-        """Read one view-bound deterministic Phase 3 Task page.
+        """Read one view-bound deterministic Phase 4 Task page.
 
         Args:
             command: Validated view, scope, and pagination query.
