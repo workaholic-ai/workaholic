@@ -15,6 +15,7 @@ from workaholic.domain import (
     AcceptanceCriterion,
     ApprovalRequirement,
     ArtifactReference,
+    AttemptId,
     ContextReference,
     CriterionOutcome,
     CriterionStatus,
@@ -342,6 +343,18 @@ def test_task_event_defensively_copies_and_freezes_payload() -> None:
     assert dict(event.payload) == {"title": "First task", "priority": 50}
     with pytest.raises(TypeError):
         event.payload["title"] = "Changed"  # type: ignore[index]
+
+
+def test_result_and_event_use_typed_nullable_attempt_identity() -> None:
+    """Agent attribution accepts AttemptId and rejects untyped strings."""
+    attempt_id = AttemptId("atm_current")
+
+    assert replace(_result(), attempt_id=attempt_id).attempt_id == attempt_id
+    assert replace(_event(), attempt_id=attempt_id).attempt_id == attempt_id
+    with pytest.raises(DomainValidationError, match="Result attempt_id"):
+        replace(_result(), attempt_id="atm_current")  # type: ignore[arg-type]
+    with pytest.raises(DomainValidationError, match="TaskEvent attempt_id"):
+        replace(_event(), attempt_id="atm_current")  # type: ignore[arg-type]
 
 
 @pytest.mark.parametrize(

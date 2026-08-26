@@ -11,6 +11,7 @@ import pytest
 from workaholic.domain import (
     AcceptanceCriterion,
     ApprovalRequirement,
+    AttemptId,
     CriterionOutcome,
     CriterionStatus,
     DomainValidationError,
@@ -21,6 +22,7 @@ from workaholic.domain import (
     ResultReviewStatus,
     SubjectId,
     Task,
+    TaskClaim,
     TaskId,
     TaskOperationalView,
     TaskReadiness,
@@ -80,7 +82,7 @@ def _result(
     task: Task,
     *,
     criterion_id: str = "ac_done",
-    attempt_id: str | None = None,
+    attempt_id: AttemptId | None = None,
 ) -> TaskResult:
     """Build one Human Result attributed to a Task.
 
@@ -384,47 +386,58 @@ def test_dependency_reasons_order_by_task_key_and_distinguish_cancelled() -> Non
 
 
 @pytest.mark.parametrize(
-    ("active", "stale", "reason", "view"),
+    ("expires_at", "reason", "view"),
     [
-        (True, False, ReadinessReason.ACTIVE_ATTEMPT, TaskOperationalView.RUNNING),
-        (False, True, ReadinessReason.STALE_ATTEMPT, TaskOperationalView.STALE),
+        (
+            _NOW + timedelta(seconds=1),
+            ReadinessReason.ACTIVE_CLAIM,
+            TaskOperationalView.RUNNING,
+        ),
+        (
+            _NOW,
+            ReadinessReason.STALE_CLAIM,
+            TaskOperationalView.STALE,
+        ),
     ],
 )
-def test_attempt_flags_derive_nonready_operational_views(
-    active: object,
-    stale: object,
+def test_claim_derives_running_or_stale_operational_views(
+    expires_at: datetime,
     reason: ReadinessReason,
     view: TaskOperationalView,
 ) -> None:
-    """Explicit Attempt inputs map to running or stale views without I/O."""
+    """One explicit Claim maps to running or stale views without I/O."""
+    task = _task()
     readiness = derive_task_readiness(
-        task=_task(),
+        task=task,
         prerequisites=(),
         now=_NOW,
-        has_active_attempt=active,
-        has_stale_attempt=stale,
+        claim=TaskClaim(
+            task_uid=task.uid,
+            task_key=task.key,
+            subject_id=SubjectId("sub_human"),
+            attempt_id=None,
+            claimed_at=_NOW - timedelta(minutes=1),
+            lease_expires_at=expires_at,
+        ),
     )
 
     assert readiness.reasons == (reason,)
     assert readiness.includes(view)
+    assert readiness.ready is (reason is ReadinessReason.STALE_CLAIM)
 
 
 @pytest.mark.parametrize(
     ("kwargs", "message"),
     [
         ({"now": _NOW.replace(tzinfo=None)}, "Readiness time"),
-        ({"has_active_attempt": 1}, "flags"),
-        (
-            {"has_active_attempt": True, "has_stale_attempt": True},
-            "simultaneously",
-        ),
+        ({"claim": object()}, "Claim"),
     ],
 )
-def test_readiness_rejects_invalid_time_and_attempt_flags(
+def test_readiness_rejects_invalid_time_and_claim_projection(
     kwargs: dict[str, object],
     message: str,
 ) -> None:
-    """Readiness uses explicit UTC time and unambiguous boolean Attempt flags."""
+    """Readiness uses explicit UTC time and a validated Claim projection."""
     arguments: dict[str, object] = {
         "task": _task(),
         "prerequisites": (),
@@ -494,7 +507,7 @@ def test_human_submission_rejects_unfinished_dependency_and_agent_attempt() -> N
         validate_human_submission(
             task=replace(task, depends_on=()),
             prerequisites=(),
-            result=_result(task, attempt_id="atm_agent"),
+            result=_result(task, attempt_id=AttemptId("atm_agent")),
         )
 
 

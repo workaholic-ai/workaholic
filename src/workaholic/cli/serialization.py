@@ -293,7 +293,9 @@ def task_result_data(result: TaskResult) -> dict[str, JsonValue]:
         "id": str(result.id),
         "task_uid": str(result.task_uid),
         "submitted_by": str(result.submitted_by),
-        "attempt_id": result.attempt_id,
+        "attempt_id": (
+            str(result.attempt_id) if result.attempt_id is not None else None
+        ),
         "submitted_at": normalize_json_value(result.submitted_at),
         "comment": result.comment,
         "summary": result.summary,

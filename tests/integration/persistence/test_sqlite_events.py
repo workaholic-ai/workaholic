@@ -59,6 +59,17 @@ pytestmark = pytest.mark.integration
 _BASE_TIME = datetime(2026, 8, 1, 8, 0, 0, 111111, tzinfo=UTC)
 _ACTOR_ID = SubjectId("sub_local")
 _PROJECT_ID = ProjectId("prj_acme")
+_PHASE_THREE_EVENT_TYPES = {
+    TaskEventType.TASK_CREATED,
+    TaskEventType.TASK_UPDATED,
+    TaskEventType.TASK_BLOCKED,
+    TaskEventType.TASK_UNBLOCKED,
+    TaskEventType.RESULT_SUBMITTED,
+    TaskEventType.REVIEW_APPROVED,
+    TaskEventType.REVIEW_REJECTED,
+    TaskEventType.TASK_COMPLETED,
+    TaskEventType.TASK_CANCELLED,
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -353,7 +364,7 @@ def test_history_replays_every_committed_event_once_across_cursor_gaps(
         event.event_type
         for event in _read(scenario.repository, scenario.cancelled.uid).events
     )
-    assert all_types == set(TaskEventType)
+    assert all_types == _PHASE_THREE_EVENT_TYPES
 
 
 def test_multi_event_transitions_preserve_request_order_and_immutable_payload(

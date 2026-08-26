@@ -8,6 +8,7 @@ from typing import cast
 import pytest
 
 from workaholic.domain import (
+    AttemptId,
     DomainValidationError,
     InstanceId,
     ProjectId,
@@ -19,7 +20,8 @@ from workaholic.domain import (
 )
 
 type _IdentifierType = (
-    type[InstanceId]
+    type[AttemptId]
+    | type[InstanceId]
     | type[ProjectId]
     | type[SubjectId]
     | type[TaskId]
@@ -29,6 +31,7 @@ type _IdentifierType = (
 )
 
 _IDENTIFIER_CASES: tuple[tuple[_IdentifierType, str], ...] = (
+    (AttemptId, "atm_"),
     (InstanceId, "ins_"),
     (ProjectId, "prj_"),
     (SubjectId, "sub_"),

@@ -14,6 +14,7 @@ from urllib.parse import urlsplit
 
 from workaholic.domain.enums import (
     ApprovalRequirement,
+    AttemptStatus,
     ReadinessReason,
     TaskOperationalView,
     TaskState,
@@ -23,7 +24,7 @@ from workaholic.domain.errors import (
     DomainPermissionError,
     DomainValidationError,
 )
-from workaholic.domain.identifiers import ProjectId, SubjectId, TaskId
+from workaholic.domain.identifiers import AttemptId, ProjectId, SubjectId, TaskId
 
 PROJECT_KEY_PATTERN = re.compile(r"^[A-Z][A-Z0-9]{1,15}$")
 PROFILE_NAME_PATTERN = re.compile(r"^[a-z][a-z0-9_-]{0,31}$")
@@ -42,6 +43,10 @@ CONTEXT_REFERENCES_MAX_ITEMS = 100
 RESULT_COLLECTION_MAX_ITEMS = 100
 ACCEPTANCE_CRITERION_TEXT_MAX_LENGTH = 1_000
 RESULT_TEXT_MAX_LENGTH = 4_000
+PROGRESS_TEXT_MAX_LENGTH = 4_000
+PROGRESS_OBSERVATIONS_MAX_ITEMS = 50
+PROGRESS_PERCENT_MINIMUM = 0
+PROGRESS_PERCENT_MAXIMUM = 100
 URI_REFERENCE_MAX_LENGTH = 2_048
 REFERENCE_VERSION_MAX_LENGTH = 256
 JSON_MAX_DEPTH = 16
@@ -50,6 +55,13 @@ JSON_MAX_ARRAY_ITEMS = 500
 JSON_MAX_STRING_LENGTH = 16_384
 JSON_MAX_KEY_LENGTH = 128
 MEDIA_TYPE_MAX_LENGTH = 127
+
+HUMAN_LEASE_DEFAULT = timedelta(hours=8)
+HUMAN_LEASE_MINIMUM = timedelta(minutes=1)
+HUMAN_LEASE_MAXIMUM = timedelta(days=30)
+AGENT_LEASE_DEFAULT = timedelta(minutes=15)
+AGENT_LEASE_MINIMUM = timedelta(seconds=1)
+AGENT_LEASE_MAXIMUM = timedelta(hours=24)
 
 ACCEPTANCE_CRITERION_ID_PATTERN = re.compile(r"^ac_[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
 _RFC3339_UTC_PATTERN = re.compile(
@@ -152,6 +164,30 @@ class _ResultAccess(Protocol):
     submitted_by: SubjectId
     attempt_id: object | None
     criteria: Sequence[_CriterionOutcomeAccess]
+
+
+@runtime_checkable
+class _ClaimAccess(Protocol):
+    """Minimal Claim projection required by pure ownership and Lease rules."""
+
+    task_uid: TaskId
+    subject_id: SubjectId
+    attempt_id: AttemptId | None
+    claimed_at: datetime
+    lease_expires_at: datetime
+
+
+@runtime_checkable
+class _AttemptAccess(Protocol):
+    """Minimal Attempt projection required for Claim consistency checks."""
+
+    id: AttemptId
+    task_uid: TaskId
+    subject_id: SubjectId
+    status: AttemptStatus
+    lease_expires_at: datetime
+    started_at: datetime
+    ended_at: datetime | None
 
 
 @runtime_checkable
@@ -887,13 +923,187 @@ def validate_dependency_removal(
         raise DomainValidationError(message)
 
 
+def resolve_lease_duration(
+    duration: object | None,
+    *,
+    attempt_id: object | None,
+) -> timedelta:
+    """Resolve and validate one Human or Agent Lease duration.
+
+    The nullable Attempt identity selects the owner path. Text parsing belongs
+    to the application or CLI boundary; this pure rule accepts only an exact
+    ``timedelta`` or ``None`` for the documented default.
+
+    Args:
+        duration: Explicit duration, or ``None`` for the owner-path default.
+        attempt_id: Null for Human ownership or one Agent Attempt identity.
+
+    Returns:
+        The validated or default duration.
+
+    Raises:
+        DomainValidationError: If identity or duration violates its bounds.
+
+    """
+    if attempt_id is not None and not isinstance(attempt_id, AttemptId):
+        message = "Lease attempt_id must be null or an AttemptId."
+        raise DomainValidationError(message)
+    if duration is not None and type(duration) is not timedelta:
+        message = "Lease duration must be a timedelta or null."
+        raise DomainValidationError(message)
+
+    is_agent = attempt_id is not None
+    resolved = (
+        (AGENT_LEASE_DEFAULT if is_agent else HUMAN_LEASE_DEFAULT)
+        if duration is None
+        else duration
+    )
+    minimum = AGENT_LEASE_MINIMUM if is_agent else HUMAN_LEASE_MINIMUM
+    maximum = AGENT_LEASE_MAXIMUM if is_agent else HUMAN_LEASE_MAXIMUM
+    if not minimum <= resolved <= maximum:
+        owner = "Agent" if is_agent else "Human"
+        message = f"{owner} Lease duration is outside its inclusive bounds."
+        raise DomainValidationError(message)
+    return resolved
+
+
+def is_lease_current(*, lease_expires_at: object, now: object) -> bool:
+    """Return whether a Lease is current under the half-open time rule.
+
+    Args:
+        lease_expires_at: Authoritative UTC expiry timestamp.
+        now: Authoritative UTC transaction timestamp.
+
+    Returns:
+        ``True`` exactly while ``now < lease_expires_at``.
+
+    Raises:
+        DomainValidationError: If either timestamp is invalid.
+
+    """
+    expiry = validate_utc_timestamp(lease_expires_at, label="Lease expiry")
+    current_time = validate_utc_timestamp(now, label="Lease time")
+    return current_time < expiry
+
+
+def claim_owner_matches(
+    *,
+    claim: object,
+    subject_id: object,
+    attempt_id: object | None,
+) -> bool:
+    """Compare a caller with the complete nullable-Attempt Claim owner token.
+
+    Args:
+        claim: Current Claim projection.
+        subject_id: Authenticated Subject identity.
+        attempt_id: Null for a Human or the exact Agent Attempt identity.
+
+    Returns:
+        Whether both owner-token components match.
+
+    Raises:
+        DomainValidationError: If any input violates the Claim contract.
+
+    """
+    candidate = _validate_claim_access(claim)
+    subject = _require_domain_identifier(
+        subject_id,
+        SubjectId,
+        label="Claim owner subject_id",
+    )
+    if attempt_id is not None and not isinstance(attempt_id, AttemptId):
+        message = "Claim owner attempt_id must be null or an AttemptId."
+        raise DomainValidationError(message)
+    return candidate.subject_id == subject and candidate.attempt_id == attempt_id
+
+
+def transition_attempt_status(
+    current: object,
+    target: object,
+) -> AttemptStatus:
+    """Validate one explicit active-to-terminal Attempt transition.
+
+    Args:
+        current: Current Attempt status.
+        target: Requested terminal status.
+
+    Returns:
+        The validated target status.
+
+    Raises:
+        DomainValidationError: If status types or transition are invalid.
+
+    """
+    if not isinstance(current, AttemptStatus):
+        message = "Current Attempt status must be an AttemptStatus."
+        raise DomainValidationError(message)
+    if not isinstance(target, AttemptStatus):
+        message = "Target Attempt status must be an AttemptStatus."
+        raise DomainValidationError(message)
+    if current is not AttemptStatus.ACTIVE or target is AttemptStatus.ACTIVE:
+        message = "An Attempt may transition only once from active to terminal."
+        raise DomainValidationError(message)
+    return target
+
+
+def validate_claim_attempt_consistency(
+    *,
+    claim: object,
+    attempt: object | None,
+) -> None:
+    """Validate the Human-null or Agent-active Claim/Attempt pairing.
+
+    Args:
+        claim: Current Claim projection.
+        attempt: Null for Human ownership or the current Agent Attempt.
+
+    Raises:
+        DomainValidationError: If the pair disagrees on type or identity.
+
+    """
+    candidate = _validate_claim_access(claim)
+    if candidate.attempt_id is None:
+        if attempt is not None:
+            message = "A Human Claim must not have an Attempt."
+            raise DomainValidationError(message)
+        return
+    if not isinstance(attempt, _AttemptAccess):
+        message = "An Agent Claim requires its current TaskAttempt."
+        raise DomainValidationError(message)
+    attempt_id: object = attempt.id
+    task_uid: object = attempt.task_uid
+    subject_id: object = attempt.subject_id
+    status: object = attempt.status
+    lease_expires_at: object = attempt.lease_expires_at
+    started_at: object = attempt.started_at
+    _require_domain_identifier(attempt_id, AttemptId, label="Attempt id")
+    _require_domain_identifier(task_uid, TaskId, label="Attempt task_uid")
+    _require_domain_identifier(subject_id, SubjectId, label="Attempt subject_id")
+    if not isinstance(status, AttemptStatus):
+        message = "Attempt status must be an AttemptStatus."
+        raise DomainValidationError(message)
+    validate_utc_timestamp(lease_expires_at, label="Attempt lease_expires_at")
+    validate_utc_timestamp(started_at, label="Attempt started_at")
+    if (
+        attempt_id != candidate.attempt_id
+        or task_uid != candidate.task_uid
+        or subject_id != candidate.subject_id
+        or lease_expires_at != candidate.lease_expires_at
+        or started_at != candidate.claimed_at
+        or status is not AttemptStatus.ACTIVE
+        or attempt.ended_at is not None
+    ):
+        message = "An Agent Claim must match one active current Attempt."
+        raise DomainValidationError(message)
+
+
 def derive_task_readiness(
     *,
     task: object,
     prerequisites: Iterable[object],
     now: object,
-    has_active_attempt: object = False,
-    has_stale_attempt: object = False,
+    claim: object | None = None,
 ) -> TaskReadiness:
     """Derive Task operational views from explicit authoritative inputs.
 
@@ -901,8 +1111,8 @@ def derive_task_readiness(
         task: Task to evaluate.
         prerequisites: Complete Task projections named by ``task.depends_on``.
         now: Authoritative current UTC timestamp.
-        has_active_attempt: Whether one unexpired Attempt currently owns the Task.
-        has_stale_attempt: Whether an expired Attempt remains visible as stale.
+        claim: Optional stored Claim projection. Expired Claims remain visible
+            as stale but do not prevent readiness.
 
     Returns:
         An immutable readiness projection with deterministically ordered reasons.
@@ -913,13 +1123,19 @@ def derive_task_readiness(
     """
     candidate = _validate_lifecycle_task(task, label="Task")
     current_time = validate_utc_timestamp(now, label="Readiness time")
-    if type(has_active_attempt) is not bool or type(has_stale_attempt) is not bool:
-        message = "Attempt readiness flags must be booleans."
-        raise DomainValidationError(message)
-    if has_active_attempt and has_stale_attempt:
-        message = "A Task cannot have active and stale Attempt views simultaneously."
-        raise DomainValidationError(message)
     ordered_prerequisites = _validated_prerequisites(candidate, prerequisites)
+    active_claim = False
+    stale_claim = False
+    if claim is not None:
+        claim_projection = _validate_claim_access(claim)
+        if claim_projection.task_uid != candidate.uid:
+            message = "Claim task_uid must match the Task uid."
+            raise DomainValidationError(message)
+        active_claim = is_lease_current(
+            lease_expires_at=claim_projection.lease_expires_at,
+            now=current_time,
+        )
+        stale_claim = not active_claim
 
     reasons: list[ReadinessReason] = []
     state_reason = {
@@ -948,19 +1164,53 @@ def derive_task_readiness(
             else ReadinessReason.UNSATISFIED_DEPENDENCY
         )
 
-    if has_active_attempt:
-        reasons.append(ReadinessReason.ACTIVE_ATTEMPT)
-    if has_stale_attempt:
-        reasons.append(ReadinessReason.STALE_ATTEMPT)
+    if active_claim:
+        reasons.append(ReadinessReason.ACTIVE_CLAIM)
+    if stale_claim:
+        reasons.append(ReadinessReason.STALE_CLAIM)
+
+    blocking_reasons = tuple(
+        reason for reason in reasons if reason is not ReadinessReason.STALE_CLAIM
+    )
 
     return TaskReadiness(
-        ready=not reasons,
-        running=has_active_attempt,
+        ready=not blocking_reasons,
+        running=active_claim,
         scheduled=scheduled,
-        stale=has_stale_attempt,
+        stale=stale_claim,
         awaiting_review=candidate.state is TaskState.REVIEW,
         reasons=tuple(reasons),
     )
+
+
+def is_task_claimable(
+    *,
+    task: object,
+    prerequisites: Iterable[object],
+    now: object,
+    claim: object | None = None,
+) -> bool:
+    """Return whether a Task may receive a Claim at an explicit time.
+
+    Args:
+        task: Task to evaluate.
+        prerequisites: Complete prerequisite projections.
+        now: Authoritative UTC transaction timestamp.
+        claim: Optional stored Claim, including an expired stale Claim.
+
+    Returns:
+        Whether the Task is ready for Claim acquisition.
+
+    Raises:
+        DomainValidationError: If any input projection is invalid.
+
+    """
+    return derive_task_readiness(
+        task=task,
+        prerequisites=prerequisites,
+        now=now,
+        claim=claim,
+    ).ready
 
 
 def validate_task_result_consistency(
@@ -997,6 +1247,9 @@ def validate_task_result_consistency(
     )
     if human_submission and result.attempt_id is not None:
         message = "Human Results must not have an Attempt identity."
+        raise DomainValidationError(message)
+    if not human_submission and not isinstance(result.attempt_id, AttemptId):
+        message = "Agent Results require an AttemptId."
         raise DomainValidationError(message)
 
     acceptance: dict[str, bool] = {}
@@ -1132,6 +1385,41 @@ def _validate_lifecycle_task(value: object, *, label: str) -> _LifecycleTaskAcce
         raise DomainValidationError(message)
     if not isinstance(acceptance, Sequence):
         message = f"{label} acceptance must be a sequence."
+        raise DomainValidationError(message)
+    return value
+
+
+def _validate_claim_access(value: object) -> _ClaimAccess:
+    """Validate one structural Claim projection at a pure-rule boundary.
+
+    Args:
+        value: Candidate Claim projection.
+
+    Returns:
+        The structurally and semantically validated projection.
+
+    Raises:
+        DomainValidationError: If any required Claim field is invalid.
+
+    """
+    if not isinstance(value, _ClaimAccess):
+        message = "Claim must expose the Phase 4 ownership contract."
+        raise DomainValidationError(message)
+    task_uid: object = value.task_uid
+    subject_id: object = value.subject_id
+    attempt_id: object = value.attempt_id
+    claimed_at = validate_utc_timestamp(value.claimed_at, label="Claim claimed_at")
+    lease_expires_at = validate_utc_timestamp(
+        value.lease_expires_at,
+        label="Claim lease_expires_at",
+    )
+    _require_domain_identifier(task_uid, TaskId, label="Claim task_uid")
+    _require_domain_identifier(subject_id, SubjectId, label="Claim subject_id")
+    if attempt_id is not None and not isinstance(attempt_id, AttemptId):
+        message = "Claim attempt_id must be null or an AttemptId."
+        raise DomainValidationError(message)
+    if lease_expires_at <= claimed_at:
+        message = "Claim lease_expires_at must follow claimed_at."
         raise DomainValidationError(message)
     return value
 
