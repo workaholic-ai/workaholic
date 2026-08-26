@@ -91,6 +91,11 @@ therefore prevents stale-process and non-owner command-path mutations but does
 not claim to distinguish different Human operators sharing the embedded
 operating-system account.
 
+Persisted TaskEvent actor kind remains the bootstrap Subject kind `human` in
+Phase 4. A non-null Attempt ID, not a fabricated Agent Subject, attributes
+Agent execution. Structured progress cannot supply identity, Attempt, request,
+event, Result, cursor, or authoritative timestamp fields.
+
 ### Local filesystem and credential storage
 
 The operating-system account running an embedded client is trusted to protect
@@ -233,8 +238,11 @@ capacity, and recovery remain required.
 
 Lease correctness must not depend on a scheduler continuing to run during
 overload. Claims, Human renewals, Agent heartbeats, submissions, mutations, and
-relevant reads evaluate expiry transactionally using the authoritative runtime
-clock and the half-open rule `now < lease_expires_at`.
+writes evaluate expiry transactionally using the authoritative runtime clock
+and the half-open rule `now < lease_expires_at`. Pure reads do not materialize
+expiry or append events; they project an expired Claim as stale and non-owning.
+Phase 4 Lease inputs use the closed duration grammar and bounded Human and Agent
+windows defined in the CLI contract.
 
 ## Verification by delivery phase
 
@@ -249,7 +257,8 @@ clock and the half-open rule `now < lease_expires_at`.
 - Phase 4 tests atomic Human and Agent Claims, exclusive mutation locks, Human
   renewal, current Attempt ownership, Lease expiry, version stability, stale
   submissions, terminal Attempt states, idempotent Results, and bounded Agent
-  payloads.
+  payloads. It uses exact SQLite schema version `4`, rejects version `3`
+  unchanged, and adds no migration or credential surface.
 - Phase 5 tests Token storage, expiry, revocation, redaction, ProjectGrant
   isolation, and compromised-Agent containment.
 - Phase 6 tests authenticated RemoteSession behavior, expected Instance

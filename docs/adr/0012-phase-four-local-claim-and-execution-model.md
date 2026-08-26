@@ -125,9 +125,37 @@ workaholic task release TASK --attempt ATTEMPT
 workaholic task submit TASK --attempt ATTEMPT --expected-version VERSION
 ```
 
-The Phase 4 command contract will add exact Lease bounds, structured output,
-error identifiers, exit categories, and idempotency fingerprints while
-preserving these semantics.
+### Exact local-alpha contract
+
+Lease duration text matches `^[1-9][0-9]*(s|m|h|d)$`. Human claim and renewal
+default to `8h` and accept `1m` through `30d`; Agent claim and heartbeat
+default to `15m` and accept `1s` through `24h`. Renewal always computes expiry
+from authoritative transaction time rather than adding to the old expiry.
+
+Progress is a closed bounded object containing at least one of a message of at
+most 4,000 characters, a real integer percentage from 0 through 100, or at
+most 50 ordered observations. Observation kinds are exactly `note`, `risk`,
+`blocker`, and `question`; their text is at most 4,000 characters. These are
+inert audit records and never change Task state.
+
+Pure reads do not materialize expiry. A stored expired Claim is projected as
+stale and non-owning, so it no longer blocks readiness. The next successful
+write that needs the Task may atomically record `claim_expired`, set an Agent Attempt to `expired`
+with `ended_at = lease_expires_at`, and continue. An expired Agent request
+returns `LEASE_LOST` without committing that request.
+
+Phase 4 adds the exact public errors `NO_TASK_AVAILABLE`, `TASK_LOCKED`, and
+`LEASE_LOST`, the exact Claim/execution event set recorded in the persistence
+contract, and closed success objects recorded in the CLI contract. Idempotency
+fingerprints cover Project, Task selector, nullable Attempt, resolved Lease
+duration, expected version, and complete structured payload wherever those
+values apply.
+
+TaskEvent attribution continues to use the bootstrap Subject kind `human`.
+Agent attribution is the non-null Attempt ID; Phase 4 does not fabricate an
+Agent Subject. The disposable SQLite schema advances from schema version `3`
+to schema version `4`. Version `3` is rejected unchanged and no migration,
+conversion, import, export, or silent reset is provided.
 
 ## Alternatives considered
 

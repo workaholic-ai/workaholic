@@ -1252,15 +1252,36 @@ profiles, and servers are not Phase 3 command surfaces.
 
 ## Accepted Phase 4 Claim and execution contract
 
-This section records the owner-approved Phase 4 boundary. It is not implemented
-by `0.3.0a1`; the Phase 4 implementation plan must add exact success objects,
-Lease bounds, safe errors, exit categories, and idempotency fingerprints
-without changing these semantics.
+This section is the normative implementation contract for the Phase 4 Local
+Agent Alpha. It extends the Phase 3 embedded command contract; `0.3.0a1` does
+not implement it. README continues to describe Phase 3 behavior until the
+Phase 4 golden journey passes.
+
+Phase 4 commands retain the `workaholic.cli/v1` envelope, JSON-only stdout,
+diagnostics-only stderr, non-interactive behavior, Project selection, bounded
+input, and safe error rules defined above. All objects below are closed: every
+listed field is required, nullable values are explicit JSON `null`, and unknown
+input fields are invalid.
+
+### Lease duration contract
+
+Lease text matches the complete regular expression
+`^[1-9][0-9]*(s|m|h|d)$`. Compound, fractional, signed, zero,
+whitespace-padded, and unitless values are invalid.
+
+| Command path | Default | Minimum | Maximum |
+| --- | ---: | ---: | ---: |
+| Human claim or renew | `8h` | `1m` | `30d` |
+| Agent claim or heartbeat | `15m` | `1s` | `24h` |
+
+The application resolves duration text before persistence. Renewal sets
+`lease_expires_at = authoritative_now + resolved_duration`; it never adds to
+the previous expiry. Omitting `--lease` on a renewal uses the applicable
+default rather than the previous duration.
 
 ### Shared Claim object
 
-Every successful Claim read or mutation returns a closed Claim object containing
-at least:
+Every successful Claim operation returns this exact `TaskClaim` object:
 
 ```json
 {
@@ -1275,7 +1296,61 @@ at least:
 
 An existing Claim with `attempt_id = null` is Human-owned. A non-null Attempt
 identifies Agent execution. Claim absence, rather than null Attempt alone,
-means unclaimed. Human Lease windows are longer than Agent Lease windows.
+means unclaimed. Phase 4 uses the sole bootstrap Subject for both command paths;
+the ownership token is `(subject_id, attempt_id)`. `TaskEvent.actor_kind`
+therefore remains `human`; a non-null `attempt_id` is the Agent attribution.
+Human Lease windows are longer than Agent Lease windows.
+
+Every Agent operation also returns this exact `TaskAttempt` object:
+
+```json
+{
+  "id": "atm_01K9R...",
+  "task_uid": "tsk_01K9Q...",
+  "subject_id": "sub_01K9...",
+  "status": "active",
+  "lease_expires_at": "2026-08-02T09:15:00Z",
+  "started_at": "2026-08-02T09:00:00Z",
+  "ended_at": null
+}
+```
+
+Status is exactly `active`, `released`, `expired`, or `submitted`. `ended_at`
+is null only for `active`; every terminal Attempt has a non-null `ended_at`.
+The Attempt and its Claim always contain the same Task, Subject, and Lease
+expiry while active.
+
+Successful claim and renewal data is:
+
+```json
+{
+  "task": {},
+  "claim": {},
+  "attempt": null,
+  "events": [{}]
+}
+```
+
+`task` is the complete shared Task object, `claim` is `TaskClaim`, and
+`attempt` is null for a Human or `TaskAttempt` for an Agent. Claim appends one
+`task_claimed`; renew or heartbeat appends one `claim_renewed`. An idempotent
+replay returns the original closed object and events without appending again.
+
+Successful release data is:
+
+```json
+{
+  "task": {},
+  "claim": null,
+  "attempt": null,
+  "events": [{}]
+}
+```
+
+Human release returns null Attempt. Agent release returns the terminal
+`released` Attempt. Explicit release appends exactly one `claim_released`.
+Submission and cancellation end a Claim through their existing events and do
+not also append `claim_released`.
 
 ### Human Claim commands
 
@@ -1292,8 +1367,8 @@ Human claiming is optional and targets one ready Task. It returns a Claim with
 null Attempt attribution. Human renewal and release derive ownership from the
 active Session Subject and never accept or display an Attempt ID. Repeating
 `task claim TASK` for an already owned current Claim returns it without
-extending the Lease. Only `task renew` extends it; reads and other mutations do
-not renew implicitly.
+extending the Lease and returns no new events. Only `task renew` extends it;
+reads and other mutations do not renew implicitly.
 
 The Human owner may update, block, unblock, change dependencies, release,
 cancel, or submit. Update, block/unblock, and dependency changes retain the
@@ -1324,6 +1399,74 @@ the current Attempt. It cannot update, block, cancel, or change dependencies on
 the claimed Task. Agent submission requires both the current Attempt and the
 expected Task version returned by claim.
 
+Agent pull is scoped to one selected Project. It does not search all Projects
+and does not accept capabilities. Ready selection remains priority descending,
+availability ascending with absent availability first, then Task number
+ascending. No eligible Task returns `NO_TASK_AVAILABLE`.
+
+### Structured progress input and success
+
+`task progress --input-file` accepts this closed object:
+
+```json
+{
+  "message": "Implemented persistence; running integration tests.",
+  "percent_complete": 70,
+  "observations": [
+    {
+      "kind": "risk",
+      "text": "The upstream schema may change."
+    }
+  ]
+}
+```
+
+At least one field must be present. `message` is optional and contains 1
+through 4,000 printable Unicode characters after trimming.
+`percent_complete` is an optional real JSON integer from 0 through 100.
+`observations` is optional and contains at most 50 ordered closed objects.
+Every observation has `kind` exactly `note`, `risk`, `blocker`, or `question`
+and `text` of 1 through 4,000 printable characters after trimming.
+
+Observations are inert audit data. A `blocker` observation does not block or
+otherwise mutate the Task. Clients cannot provide Task, Subject, actor,
+Attempt, Result, request, event, cursor, or timestamp identity in this input.
+
+Progress success data is:
+
+```json
+{
+  "task": {},
+  "claim": {},
+  "attempt": {},
+  "events": [{}, {}]
+}
+```
+
+The request appends `progress_reported` first, even when only observations are
+provided, then one `observation_added` per observation in input order. It does
+not create a progress table or change Task state, version, or `updated_at`.
+
+### Agent submission success
+
+Agent submission uses the Phase 3 Result input and returns:
+
+```json
+{
+  "task": {},
+  "result": {},
+  "claim": null,
+  "attempt": {},
+  "events": [{}]
+}
+```
+
+The Result has the submitted Attempt ID. The returned Attempt is `submitted`
+with non-null `ended_at`, including when the Task enters `review`. Successful
+submission increments Task version exactly once, stores one Result, ends the
+Claim, and appends the existing submission events. Review never changes the
+terminal Attempt; rejection requires a new Claim and Attempt.
+
 ### Lock, renewal, version, and terminal rules
 
 An unexpired Claim is an exclusive mutation lock. A non-owner mutation fails
@@ -1334,6 +1477,18 @@ an external Agent process.
 Human `task renew` and Agent heartbeat share one semantic renewal operation.
 Lease validity uses authoritative transaction time and
 `now < lease_expires_at`; expiry requires no daemon.
+
+Pure reads never materialize Lease expiry or append events. An expired stored
+Claim is projected as stale and non-owning, does not block readiness, and may
+make the Task both `ready` and `stale`. The next successful write that needs
+that Task first
+materializes expiry in its transaction. It removes the Claim, changes an Agent
+Attempt to `expired` with `ended_at = lease_expires_at`, and appends
+`claim_expired` using the expired Attempt where present. The event occurs at
+the authoritative transaction time and carries `lease_expires_at` in its
+payload. An expired Agent request returns `LEASE_LOST` without committing its
+requested operation; a later successful claim or Human mutation may
+materialize the expiry.
 
 Claim, renew, heartbeat, progress, release, and expiry do not change the Task
 version. Existing Human Task mutations retain the expected-version convenience
@@ -1352,6 +1507,41 @@ Phase 4 embedded Human and Agent commands reuse the sole bootstrap Subject.
 Human command shape and null Attempt attribution distinguish the Human path;
 Attempt identity distinguishes Agent processes. Phase 5 introduces additional
 Human and Agent Subjects, Tokens, ProjectGrants, and authenticated ownership.
+
+### Phase 4 events and idempotency
+
+Phase 4 adds `task_claimed`, `claim_renewed`, `claim_released`,
+`claim_expired`, `progress_reported`, and `observation_added` to the exact
+TaskEvent type set. Claim-related payloads contain the resulting
+`lease_expires_at`; `claim_expired` contains the expired
+`lease_expires_at`; `progress_reported` contains only supplied progress fields;
+and `observation_added` contains one observation. Payloads never contain
+credentials or artifact contents.
+
+Claim and execution idempotency fingerprints include Project, Task selector
+when present, nullable Attempt, resolved Lease duration, expected version when
+present, and the complete structured payload. Equivalent replay returns the
+original outcome. Reuse with any different semantic value returns the existing
+`IDEMPOTENCY_CONFLICT`. Failed validation, `TASK_LOCKED`, `LEASE_LOST`, and
+`NO_TASK_AVAILABLE` do not consume an idempotency key.
+
+### Phase 4 errors and persistence boundary
+
+Phase 4 adds these exact safe errors:
+
+| Error code | Exit | Retryable | Exact message |
+| --- | ---: | :---: | --- |
+| `NO_TASK_AVAILABLE` | 3 | true | `No ready Task is available to claim.` |
+| `TASK_LOCKED` | 4 | true | `The Task has a current Claim owned by another execution.` |
+| `LEASE_LOST` | 4 | false | `The Claim is no longer current.` |
+
+Missing Attempt flags, malformed durations, invalid structured progress, and
+mutually inconsistent operands return `INVALID_INPUT`. An unknown, foreign,
+expired, released, submitted, or superseded Attempt returns `LEASE_LOST`
+without exposing execution history. Phase 4 embedded commands require exact
+SQLite schema version `4`. Version `3` and every other version return
+`SCHEMA_UNSUPPORTED` unchanged. Phase 4 provides no migration, conversion,
+import, export, or silent reset.
 
 ## Conformance requirements
 

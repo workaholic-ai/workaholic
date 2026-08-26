@@ -214,3 +214,137 @@ def test_claim_versions_expiry_and_attempt_terminal_states_are_fixed() -> None:
     ):
         assert event_type in _read_normalized(_PERSISTENCE_CONTRACT)
     assert "does not depend on a background scheduler" in roadmap
+
+
+def test_phase_four_lease_duration_contract_is_exact_everywhere() -> None:
+    """Prevent adapters from inventing incompatible Lease windows."""
+    for path in (
+        _ADR,
+        _ARCHITECTURE,
+        _CLI_CONTRACT,
+        _GLOSSARY,
+        _PERSISTENCE_CONTRACT,
+        _ROADMAP,
+    ):
+        document = _read_normalized(path)
+        for phrase in ("`8h`", "`1m`", "`30d`", "`15m`", "`1s`", "`24h`"):
+            assert phrase in document, path
+
+    cli_contract = _read_normalized(_CLI_CONTRACT)
+    assert "`^[1-9][0-9]*(s|m|h|d)$`" in cli_contract
+    assert "authoritative_now + resolved_duration" in cli_contract
+    assert "never adds to the previous expiry" in cli_contract
+    assert "closed duration grammar" in _read_normalized(_THREAT_MODEL)
+
+
+def test_phase_four_success_objects_and_progress_are_closed() -> None:
+    """Fix the JSON shapes and bounded progress behavior before coding."""
+    cli_contract = _read_normalized(_CLI_CONTRACT)
+    for phrase in (
+        "exact `TaskClaim` object",
+        "exact `TaskAttempt` object",
+        '"claim": null',
+        '"attempt": null',
+        '"percent_complete": 70',
+        '"kind": "risk"',
+        "At least one field must be present",
+        "at most 50 ordered closed objects",
+        "`note`, `risk`, `blocker`, or `question`",
+        "`progress_reported` first",
+        "does not create a progress table",
+    ):
+        assert phrase in cli_contract
+
+    for path in (_ADR, _ARCHITECTURE, _PERSISTENCE_CONTRACT, _ROADMAP):
+        document = _read_normalized(path)
+        for phrase in ("4,000", "50", "`note`", "`risk`", "`blocker`"):
+            assert phrase in document, path
+
+    persistence = _read_normalized(_PERSISTENCE_CONTRACT)
+    assert "`progress_reported` first" in persistence
+    assert "one `observation_added` event per observation" in persistence
+    assert "A blocker observation is inert" in persistence
+
+
+def test_phase_four_errors_and_schema_boundary_are_exact() -> None:
+    """Protect stable automation errors and disposable schema behavior."""
+    cli_contract = _read_normalized(_CLI_CONTRACT)
+    expected_errors = (
+        (
+            "`NO_TASK_AVAILABLE`",
+            "3",
+            "true",
+            "`No ready Task is available to claim.`",
+        ),
+        (
+            "`TASK_LOCKED`",
+            "4",
+            "true",
+            "`The Task has a current Claim owned by another execution.`",
+        ),
+        (
+            "`LEASE_LOST`",
+            "4",
+            "false",
+            "`The Claim is no longer current.`",
+        ),
+    )
+    for code, exit_code, retryable, message in expected_errors:
+        row = f"| {code} | {exit_code} | {retryable} | {message} |"
+        assert row in cli_contract
+
+    for path in (_ADR, _CLI_CONTRACT, _PERSISTENCE_CONTRACT, _ROADMAP):
+        document = _read_normalized(path)
+        assert "schema version `4`" in document, path
+        assert "Version `3`" in document, path
+        assert "no migration" in document.casefold(), path
+
+
+def test_phase_four_expiry_reads_events_and_attribution_are_unambiguous() -> None:
+    """Keep stale projections read-only and Agent attribution honest."""
+    for path in (_ADR, _ARCHITECTURE, _CLI_CONTRACT, _PERSISTENCE_CONTRACT):
+        document = _read_normalized(path)
+        assert "Pure reads" in document, path
+        assert "stale" in document, path
+        assert "non-owning" in document, path
+        assert "ended_at = lease_expires_at" in document, path
+
+    cli_contract = _read_normalized(_CLI_CONTRACT)
+    assert "both `ready` and `stale`" in cli_contract
+    assert "Explicit release appends exactly one `claim_released`" in cli_contract
+    assert "do not also append `claim_released`" in cli_contract
+
+    for path in (_CLI_CONTRACT, _PERSISTENCE_CONTRACT, _THREAT_MODEL):
+        document = _read_normalized(path)
+        assert "actor kind" in document, path
+        assert "`human`" in document, path
+        assert "non-null Attempt" in document, path
+
+
+def test_phase_four_idempotency_and_deferred_scope_are_explicit() -> None:
+    """Bind retries while keeping Phase 5 and post-v1 work out of Phase 4."""
+    for path in (_ADR, _CLI_CONTRACT, _PERSISTENCE_CONTRACT, _ROADMAP):
+        document = _read_normalized(path)
+        for phrase in (
+            "Task selector",
+            "nullable Attempt",
+            "resolved Lease duration",
+            "expected version",
+            "complete structured payload",
+        ):
+            assert phrase in document, path
+
+    phase_four = _section(
+        _ROADMAP,
+        "# Phase 4 — Local Claims, Agent execution, and extended JSON CLI contract",
+        "# Phase 5 — Identity, authentication, and authorization",
+    )
+    for forbidden in (
+        "--capability",
+        "workaholic task parent",
+        "workaholic token",
+        "RemoteSession",
+        "PostgreSQL adapter",
+        "HTTP endpoint",
+    ):
+        assert forbidden not in phase_four

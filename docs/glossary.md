@@ -70,7 +70,8 @@ same-Project blocking dependencies.
 The current exclusive, expiring ownership record for one Task. A Claim records
 its Task, owning Subject, Lease, and nullable Attempt identity. A Human Claim
 has a null Attempt; an Agent Claim has the current non-null Attempt. No current
-Claim means the Task is unclaimed. Capability filtering is not part of v1.
+Claim means the Task is unclaimed. Phase 4 ownership is the pair of Subject and
+nullable Attempt; capability filtering is not part of v1.
 
 ## Attempt
 
@@ -87,7 +88,8 @@ an Agent heartbeats its current Attempt. Renewal succeeds only for the owner
 while the Claim remains current and unexpired. Lease validity is decided
 transactionally using the authoritative runtime clock, not by a background
 scheduler or client clock. Human Claims use longer Lease windows than Agent
-Claims.
+Claims. Phase 4 Human Leases default to `8h` and accept `1m` through `30d`;
+Agent Leases default to `15m` and accept `1s` through `24h`.
 
 ## Result
 
