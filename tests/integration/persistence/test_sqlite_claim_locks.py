@@ -280,9 +280,7 @@ def _mutation(  # noqa: PLR0911, PLR0913 - closed cross-operation fixture.
                 "event_id": event_id,
                 "patch": TaskUpdatePatch(
                     title=(
-                        f"Updated by {suffix}"
-                        if update_title is None
-                        else update_title
+                        f"Updated by {suffix}" if update_title is None else update_title
                     )
                 ),
             }

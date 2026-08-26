@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
-from typing import cast
+from typing import TYPE_CHECKING, cast
 
 import pytest
 
@@ -54,6 +54,8 @@ from workaholic.persistence.sqlite._claim_records import (
 from workaholic.persistence.sqlite._event_records import (
     TASK_EVENT_FIELDS,
     TaskEventRecord,
+    load_task_event_record,
+    require_persisted_task_event_record,
     task_event_record_from_mapping,
     task_event_record_from_row,
     task_event_record_mapping,
@@ -94,7 +96,46 @@ from workaholic.persistence.sqlite._task_records import (
 )
 from workaholic.persistence.sqlite.errors import StorageUnavailableError
 
+if TYPE_CHECKING:
+    import sqlite3
+
 _NOW = datetime(2026, 8, 1, 12, 15, 30, 654321, tzinfo=UTC)
+
+
+class _EmptyCursor:
+    """Return no row for one controlled event lookup."""
+
+    def fetchone(self) -> None:
+        """Return an absent event record.
+
+        Returns:
+            Always ``None``.
+
+        """
+        return
+
+
+class _EmptyConnection:
+    """Expose the minimal empty event lookup connection contract."""
+
+    def execute(
+        self,
+        statement: str,
+        parameters: tuple[object, ...],
+    ) -> _EmptyCursor:
+        """Validate query inputs and return an empty cursor.
+
+        Args:
+            statement: Closed lookup SQL.
+            parameters: Exact event identity parameter.
+
+        Returns:
+            Cursor containing no row.
+
+        """
+        assert statement
+        assert parameters
+        return _EmptyCursor()
 
 
 def _project() -> Project:
@@ -184,6 +225,29 @@ def _event_record() -> TaskEventRecord:
         actor_kind=SubjectKind.HUMAN,
         attempt_id=None,
     )
+
+
+def test_event_record_lookup_helpers_fail_closed_on_invalid_or_missing_data() -> None:
+    """Replay lookup helpers reject bad inputs and absent immutable events."""
+    connection = cast("sqlite3.Connection", _EmptyConnection())
+    with pytest.raises(StorageUnavailableError):
+        load_task_event_record(
+            connection,
+            event_id="evt_invalid",  # type: ignore[arg-type]
+        )
+    assert (
+        load_task_event_record(connection, event_id=TaskEventId("evt_missing")) is None
+    )
+    with pytest.raises(StorageUnavailableError):
+        require_persisted_task_event_record(
+            connection,
+            expected=object(),  # type: ignore[arg-type]
+        )
+    with pytest.raises(StorageUnavailableError):
+        require_persisted_task_event_record(
+            connection,
+            expected=_event_record(),
+        )
 
 
 def _attempt_record() -> TaskAttemptRecord:

@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from datetime import datetime, timedelta
 from pathlib import Path  # noqa: TC003
-from typing import Literal, Self
+from typing import Literal, Self, cast
 
 from pydantic import (
     BaseModel,
@@ -24,6 +24,8 @@ from workaholic.domain import (
     DomainValidationError,
     Instance,
     JsonValue,
+    ObservationKind,
+    ProgressObservation,
     Project,
     ProjectGrant,
     ProjectId,
@@ -40,6 +42,7 @@ from workaholic.domain import (
     TaskEventId,
     TaskEventType,
     TaskId,
+    TaskProgress,
     TaskReadiness,
     TaskResult,
     TaskState,
@@ -420,9 +423,6 @@ class TaskProgressResult(_ResultModel):
         """
         _validate_claim_task_identity(self.task, self.claim)
         validate_claim_attempt_consistency(claim=self.claim, attempt=self.attempt)
-        if self.claim.attempt_id is None:
-            message = "Task progress requires an Agent Claim."
-            raise ValueError(message)
         _validate_event_batch(self.task, self.events)
         event_types = tuple(event.event_type for event in self.events)
         if not event_types or event_types[0] is not TaskEventType.PROGRESS_REPORTED:
@@ -443,6 +443,7 @@ class TaskProgressResult(_ResultModel):
         ):
             message = "Task progress event count and Attempt attribution are invalid."
             raise ValueError(message)
+        _validate_progress_event_payloads(self.events)
         return self
 
 
@@ -842,6 +843,73 @@ def _validate_claim_expiry_event(event: TaskEvent) -> None:
     ):
         message = "Claim expiry event Lease timestamp is invalid."
         raise ValueError(message)
+
+
+def _validate_progress_event_payloads(events: tuple[TaskEvent, ...]) -> None:
+    """Reconstruct bounded structured progress from its closed event payloads.
+
+    Args:
+        events: Ordered progress header and observation event batch.
+
+    Raises:
+        ValueError: If any payload is open, malformed, or outside its bounds.
+
+    """
+    header = events[0].payload
+    if (
+        not set(header) <= {"message", "percent_complete"}
+        or ("message" in header and not isinstance(header["message"], str))
+        or (
+            "percent_complete" in header and type(header["percent_complete"]) is not int
+        )
+    ):
+        message = "Task progress event payload is invalid."
+        raise ValueError(message)
+    try:
+        progress = TaskProgress(
+            message=cast("str | None", header.get("message")),
+            percent_complete=cast("int | None", header.get("percent_complete")),
+            observations=tuple(
+                _progress_observation_from_event(event) for event in events[1:]
+            ),
+        )
+    except (DomainValidationError, TypeError, ValueError) as error:
+        message = "Task progress event payload is invalid."
+        raise ValueError(message) from error
+    if progress.message != header.get("message"):
+        message = "Task progress event payload is not canonical."
+        raise ValueError(message)
+
+
+def _progress_observation_from_event(event: TaskEvent) -> ProgressObservation:
+    """Hydrate one exact observation payload for result validation.
+
+    Args:
+        event: Candidate ``observation_added`` event.
+
+    Returns:
+        Validated immutable observation.
+
+    Raises:
+        ValueError: If the payload shape or values are invalid.
+
+    """
+    payload = event.payload
+    if (
+        set(payload) != {"kind", "text"}
+        or not isinstance(payload["kind"], str)
+        or not isinstance(payload["text"], str)
+    ):
+        message = "Task observation event payload is invalid."
+        raise ValueError(message)
+    observation = ProgressObservation(
+        kind=ObservationKind(payload["kind"]),
+        text=payload["text"],
+    )
+    if observation.text != payload["text"]:
+        message = "Task observation event payload is not canonical."
+        raise ValueError(message)
+    return observation
 
 
 def _validate_event_batch(task: Task, events: tuple[TaskEvent, ...]) -> None:

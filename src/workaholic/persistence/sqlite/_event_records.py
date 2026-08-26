@@ -171,6 +171,63 @@ def insert_task_event(  # noqa: PLR0913 - exact durable event boundary.
     )
 
 
+def load_task_event_record(
+    connection: sqlite3.Connection,
+    *,
+    event_id: TaskEventId,
+) -> TaskEventRecord | None:
+    """Load one exact event record by its globally unique identity.
+
+    Args:
+        connection: Active schema-validated SQLite transaction.
+        event_id: Exact TaskEvent identity to load.
+
+    Returns:
+        The hydrated event record, or ``None`` when it does not exist.
+
+    Raises:
+        StorageUnavailableError: If the identity or stored row is malformed.
+
+    """
+    candidate: object = event_id
+    if not isinstance(candidate, TaskEventId):
+        raise StorageUnavailableError
+    row = connection.execute(
+        f"""
+        SELECT {", ".join(TASK_EVENT_FIELDS)}
+        FROM task_events
+        WHERE id = ?
+        """,  # noqa: S608 - fields are a closed module constant.
+        (str(candidate),),
+    ).fetchone()
+    if row is None:
+        return None
+    return task_event_record_from_row(row)
+
+
+def require_persisted_task_event_record(
+    connection: sqlite3.Connection,
+    *,
+    expected: TaskEventRecord,
+) -> None:
+    """Require storage to retain an exact immutable event replay record.
+
+    Args:
+        connection: Active schema-validated SQLite transaction.
+        expected: Event record decoded from a durable logical outcome.
+
+    Raises:
+        StorageUnavailableError: If the input is invalid or storage differs.
+
+    """
+    candidate: object = expected
+    if not isinstance(candidate, TaskEventRecord):
+        raise StorageUnavailableError
+    actual = load_task_event_record(connection, event_id=candidate.event.id)
+    if actual != candidate:
+        raise StorageUnavailableError
+
+
 def task_event_record_mapping(record: TaskEventRecord) -> dict[str, object]:
     """Serialize one hydrated event into its durable replay mapping.
 

@@ -24,6 +24,9 @@ from workaholic.persistence.sqlite._task_dependencies import (
 from workaholic.persistence.sqlite._task_dependencies import (
     remove_task_dependency as _remove_task_dependency,
 )
+from workaholic.persistence.sqlite._task_execution import (
+    report_task_progress as _report_task_progress,
+)
 from workaholic.persistence.sqlite._task_lifecycle import (
     block_task as _block_task,
 )
@@ -70,6 +73,7 @@ if TYPE_CHECKING:
         ReleaseClaimMutation,
         RemoveTaskDependencyMutation,
         RenewClaimMutation,
+        ReportTaskProgressMutation,
         StatusResult,
         SubmitHumanResultMutation,
         TaskBlockMutation,
@@ -80,6 +84,7 @@ if TYPE_CHECKING:
         TaskEventPage,
         TaskMutationResult,
         TaskPage,
+        TaskProgressResult,
         TaskSubmissionResult,
         TaskUnblockMutation,
         TaskUpdateMutation,
@@ -259,6 +264,21 @@ class SQLiteRepository:
 
         """
         return _release_claim(self._database_path, mutation)
+
+    def report_task_progress(
+        self,
+        mutation: ReportTaskProgressMutation,
+    ) -> TaskProgressResult:
+        """Atomically append structured progress for a current Agent Attempt.
+
+        Args:
+            mutation: Validated progress and exact current owner token.
+
+        Returns:
+            Unchanged Task and ownership with ordered progress events.
+
+        """
+        return _report_task_progress(self._database_path, mutation)
 
     def add_task_dependency(
         self,

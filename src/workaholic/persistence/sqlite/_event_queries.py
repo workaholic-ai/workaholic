@@ -179,11 +179,7 @@ def _event_result(
 
     """
     event = record.event
-    if (
-        event.task_uid != task_uid
-        or event.project_id != project_id
-        or record.attempt_id is not None
-    ):
+    if event.task_uid != task_uid or event.project_id != project_id:
         raise StorageUnavailableError
     return TaskEventResult(
         id=event.id,
@@ -192,7 +188,7 @@ def _event_result(
         project_id=event.project_id,
         actor_subject_id=event.actor_subject_id,
         actor_kind=record.actor_kind,
-        attempt_id=None,
+        attempt_id=record.attempt_id,
         request_id=event.request_id,
         event_type=event.event_type,
         occurred_at=event.occurred_at,

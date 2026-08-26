@@ -471,8 +471,14 @@ def test_progress_result_requires_active_agent_and_ordered_event_batch() -> None
         claim=_claim(),
         attempt=_attempt(),
         events=(
-            _event(TaskEventType.PROGRESS_REPORTED, cursor=1),
-            _event(TaskEventType.OBSERVATION_ADDED, cursor=2),
+            replace(
+                _event(TaskEventType.PROGRESS_REPORTED, cursor=1),
+                payload={"message": "Working", "percent_complete": 50},
+            ),
+            replace(
+                _event(TaskEventType.OBSERVATION_ADDED, cursor=2),
+                payload={"kind": "note", "text": "Tests added"},
+            ),
         ),
     )
 
@@ -503,6 +509,60 @@ def test_progress_result_requires_active_agent_and_ordered_event_batch() -> None
                 ),
             ),
         )
+
+
+def test_progress_result_rejects_open_or_noncanonical_event_payloads() -> None:
+    """Progress results enforce exact bounded payloads before serialization."""
+    invalid_batches = (
+        (
+            replace(
+                _event(TaskEventType.PROGRESS_REPORTED),
+                payload={"unknown": "value"},
+            ),
+        ),
+        (
+            replace(
+                _event(TaskEventType.PROGRESS_REPORTED),
+                payload={"percent_complete": True},
+            ),
+        ),
+        (
+            replace(
+                _event(TaskEventType.PROGRESS_REPORTED),
+                payload={"message": "  padded  "},
+            ),
+        ),
+        (
+            _event(TaskEventType.PROGRESS_REPORTED, cursor=1),
+            replace(
+                _event(TaskEventType.OBSERVATION_ADDED, cursor=2),
+                payload={"kind": "unknown", "text": "Observed"},
+            ),
+        ),
+        (
+            _event(TaskEventType.PROGRESS_REPORTED, cursor=1),
+            replace(
+                _event(TaskEventType.OBSERVATION_ADDED, cursor=2),
+                payload={"kind": "note"},
+            ),
+        ),
+        (
+            _event(TaskEventType.PROGRESS_REPORTED, cursor=1),
+            replace(
+                _event(TaskEventType.OBSERVATION_ADDED, cursor=2),
+                payload={"kind": "note", "text": "  padded  "},
+            ),
+        ),
+    )
+
+    for events in invalid_batches:
+        with pytest.raises(ValidationError, match=r"payload|canonical"):
+            TaskProgressResult(
+                task=_task(),
+                claim=_claim(),
+                attempt=_attempt(),
+                events=events,
+            )
 
 
 def test_agent_submission_result_requires_matching_terminal_attempt() -> None:
