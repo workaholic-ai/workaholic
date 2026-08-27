@@ -67,8 +67,8 @@ jobs:
       - name: Install the locked development environment
         run: uv sync --frozen
 
-      - name: Run unit and specification tests
-        run: uv run --frozen pytest
+      - name: Run source and specification tests
+        run: uv run --frozen pytest -m "not distribution"
 
   build:
     name: build
@@ -131,5 +131,8 @@ jobs:
           name: python-distributions
           path: dist
 
-      - name: Test the wheel outside the checkout
+      - name: Test base wheel installation outside the checkout
         run: scripts/smoke-install.sh dist/workaholic_ai-*.whl
+
+      - name: Test installed Phase 4 Human and Agent execution
+        run: scripts/smoke-phase-4-wheel.sh dist/workaholic_ai-*.whl

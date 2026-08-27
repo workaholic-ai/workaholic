@@ -18,6 +18,7 @@ _PHASE_REASON_PATTERN = re.compile(r"^Phase (?P<phase>[1-9][0-9]*): missing .+\.
 _REQUIRED_MARKERS = frozenset(
     {
         "contract",
+        "distribution",
         "e2e",
         "golden",
         "integration",

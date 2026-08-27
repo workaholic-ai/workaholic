@@ -206,7 +206,7 @@ def test_quality_tests_and_build_use_the_frozen_dependency_graph() -> None:
         ),
         "tests": (
             "uv sync --frozen",
-            "uv run --frozen pytest",
+            'uv run --frozen pytest -m "not distribution"',
         ),
         "build": (
             "uv sync --frozen",
@@ -221,6 +221,18 @@ def test_quality_tests_and_build_use_the_frozen_dependency_graph() -> None:
         for job in jobs.values()
         for command in _run_commands(job)
     )
+
+
+def test_source_job_excludes_only_explicit_distribution_acceptance() -> None:
+    """Recursive clean-checkout suites stay outside the bounded source job."""
+    distribution_specs = sorted(
+        (_PROJECT_ROOT / "tests" / "e2e").glob("test_phase_*_distribution.py")
+    )
+
+    assert len(distribution_specs) >= 5
+    for specification in distribution_specs:
+        source = specification.read_text(encoding="utf-8")
+        assert "\n    pytest.mark.distribution,\n" in source, specification.name
 
 
 def test_build_artifact_is_inspectable_but_never_published() -> None:
@@ -249,7 +261,10 @@ def test_wheel_smoke_job_cannot_fall_back_to_an_editable_install() -> None:
     """The final job tests only the downloaded wheel outside the checkout."""
     commands = _run_commands(_workflow()["jobs"]["wheel-smoke"])
 
-    assert commands == ("scripts/smoke-install.sh dist/workaholic_ai-*.whl",)
+    assert commands == (
+        "scripts/smoke-install.sh dist/workaholic_ai-*.whl",
+        "scripts/smoke-phase-4-wheel.sh dist/workaholic_ai-*.whl",
+    )
     assert all("uv sync" not in command for command in commands)
     assert all("uv run" not in command for command in commands)
 

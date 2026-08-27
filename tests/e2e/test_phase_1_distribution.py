@@ -33,6 +33,7 @@ _QUICK_START_PATTERN = re.compile(
 )
 
 pytestmark = [
+    pytest.mark.distribution,
     pytest.mark.e2e,
     pytest.mark.requires_network,
     pytest.mark.requires_uv,

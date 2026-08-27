@@ -58,6 +58,7 @@ The permanent pytest markers are:
 | Marker | Meaning |
 | --- | --- |
 | `contract` | Observable behavior shared across implementations or boundaries |
+| `distribution` | Clean-checkout or installed-artifact acceptance behavior |
 | `integration` | Behavior spanning multiple real components |
 | `e2e` | Behavior through supported user-facing interfaces |
 | `golden` | One of the six canonical product journeys |
@@ -78,8 +79,11 @@ uv run pytest -m golden
 ```
 
 This targeted command reports journey outcomes independently of the
-whole-suite coverage threshold. Unfiltered CI and pre-push runs continue to
-enforce at least 95 percent coverage.
+whole-suite coverage threshold. The CI source-test job excludes
+`distribution` tests because those tests recursively create clean checkouts;
+the dedicated wheel job verifies base installation and the current Phase 4
+installed workflow instead. The complete Phase 4 gate runs both the source
+suite and distribution checks while enforcing at least 95 percent coverage.
 
 Unknown marker names are errors because pytest runs with `--strict-markers`.
 

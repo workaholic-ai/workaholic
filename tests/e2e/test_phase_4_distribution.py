@@ -57,6 +57,7 @@ _FUTURE_GOLDEN_REASONS = (
 )
 
 pytestmark = [
+    pytest.mark.distribution,
     pytest.mark.e2e,
     pytest.mark.requires_network,
     pytest.mark.requires_uv,

@@ -22,6 +22,7 @@ _GATE_ENVIRONMENT_KEYS = (
 _COMMAND_TIMEOUT_SECONDS = 600
 
 pytestmark = [
+    pytest.mark.distribution,
     pytest.mark.e2e,
     pytest.mark.requires_network,
     pytest.mark.requires_uv,

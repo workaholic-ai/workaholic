@@ -28,6 +28,7 @@ _GATE_ENVIRONMENT_KEYS = (
 )
 
 pytestmark = [
+    pytest.mark.distribution,
     pytest.mark.e2e,
     pytest.mark.requires_network,
     pytest.mark.requires_uv,

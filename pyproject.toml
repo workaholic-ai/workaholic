@@ -171,6 +171,7 @@ addopts = [
 filterwarnings = ["error"]
 markers = [
   "contract: observable behavior shared across implementations or boundaries",
+  "distribution: clean-checkout or installed-artifact acceptance behavior",
   "e2e: end-to-end behavior through supported user-facing interfaces",
   "golden: canonical product-journey acceptance specification",
   "integration: behavior spanning multiple real components",
