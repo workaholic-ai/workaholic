@@ -14,6 +14,7 @@ _PERSISTENCE_CONTRACT = _DOCS / "persistence-contract.md"
 _PRODUCT_SCOPE = _DOCS / "product-scope.md"
 _ROADMAP = _DOCS / "roadmap.md"
 _THREAT_MODEL = _DOCS / "threat-model.md"
+_README = _PROJECT_ROOT / "README.md"
 
 
 def _read_normalized(path: Path) -> str:
@@ -45,6 +46,52 @@ def _section(path: Path, start: str, end: str) -> str:
     start_index = document.index(start)
     end_index = document.index(end, start_index + len(start))
     return " ".join(document[start_index:end_index].split())
+
+
+def test_phase_four_is_the_current_public_alpha() -> None:
+    """Publish only verified Phase 4 behavior and its honest limitations."""
+    readme = _read_normalized(_README)
+
+    for path in (
+        _README,
+        _ARCHITECTURE,
+        _CLI_CONTRACT,
+        _PERSISTENCE_CONTRACT,
+        _THREAT_MODEL,
+    ):
+        assert "`0.4.0a1`" in _read_normalized(path), path
+    for phrase in (
+        "24 Project, context, Task, Claim, and Agent execution operations",
+        "schema version `4`",
+        "Human Claims and Results record `attempt_id = null`",
+        "a non-null Attempt identifies local Agent execution",
+        "`NO_TASK_AVAILABLE`",
+        "`TASK_LOCKED`",
+        "`LEASE_LOST`",
+    ):
+        assert phrase in readme
+    for command in (
+        "workaholic task claim",
+        "workaholic task renew",
+        "workaholic task heartbeat",
+        "workaholic task progress",
+        "workaholic task release",
+        "workaholic task submit",
+    ):
+        assert command in readme
+    for limitation in (
+        "distinct Agent identities",
+        "Tokens",
+        "authentication",
+        "remote profiles",
+        "`RemoteSession`",
+        "JSON or PostgreSQL persistence adapters",
+        "schema migration",
+        "capability-based scheduling",
+        "parent/child Task hierarchies",
+        "force interruption",
+    ):
+        assert limitation in readme
 
 
 def test_phase_four_decision_is_accepted_and_linked() -> None:

@@ -281,8 +281,8 @@ def test_phase_three_json_input_objects_cursors_and_errors_are_exact() -> None:
     assert "Cross-view reuse returns `INVALID_INPUT`" in cli_contract
 
 
-def test_phase_three_schema_security_and_current_status_are_explicit() -> None:
-    """Keep implemented Human controls separate from deferred Agent claims."""
+def test_phase_three_schema_security_contract_remains_documented() -> None:
+    """Keep the Phase 3 contract while publishing Phase 4 as current."""
     architecture = _read_normalized(_ARCHITECTURE)
     cli_contract = _read_normalized(_CLI_CONTRACT)
     persistence = _read_normalized(_PERSISTENCE_CONTRACT)
@@ -302,15 +302,13 @@ def test_phase_three_schema_security_and_current_status_are_explicit() -> None:
         persistence
     )
     for document in (architecture, cli_contract, persistence, threat_model, readme):
-        assert "`0.3.0a1`" in document
+        assert "`0.4.0a1`" in document
     assert "implemented normative contract for `0.3.0a1`" in cli_contract
-    assert "Human Workflow Alpha implements" in architecture
-    assert "does not implement Agents" in architecture
+    assert "Phase 4 Local Agent Alpha implements" in architecture
     assert "Task updates" in architecture
     assert "`workaholic task update`" in readme
-    assert "Attempts are Agent-only and unavailable" in readme
-    assert "Human Results always record `attempt_id = null`" in readme
-    assert "do not create Tasks, dependencies, or a hierarchy automatically" in readme
+    assert "Human Claims and Results record `attempt_id = null`" in readme
+    assert "do not create Tasks, dependencies, or a hierarchy automatically" in (readme)
     assert "schema version `2`" in readme
     assert "rejected unchanged" in readme
 
@@ -325,34 +323,30 @@ def test_phase_three_schema_security_and_current_status_are_explicit() -> None:
         assert threat in threat_model
 
 
-def test_readme_defers_every_post_phase_three_capability() -> None:
+def test_readme_defers_every_post_phase_four_capability() -> None:
     """Prevent the current public surface from claiming later roadmap slices."""
     current_cli = _section(
         _README,
         "## Current CLI",
-        "## Phase 3 boundaries",
+        "## Phase 4 boundaries",
     )
     boundaries = _section(
         _README,
-        "## Phase 3 boundaries",
+        "## Phase 4 boundaries",
         "## Planned for v1 (not implemented)",
     )
 
     for unavailable in (
-        "Agents, claims, Attempts, Leases, heartbeats, or progress reporting",
-        "Tokens, credentials, remote profiles, or general identity management",
+        "distinct Agent identities, Tokens, credentials, remote profiles",
         "`RemoteSession`, a server, authentication, or team coordination",
         "JSON or PostgreSQL persistence adapters",
         "schema migration or compatibility across alpha versions",
-        "Project archival or parent/child Task hierarchies",
+        "capability-based scheduling, Project archival, force interruption",
+        "parent/child Task hierarchies",
         "automatic Task creation from proposed follow-ups",
     ):
         assert unavailable in boundaries
     for future_command in (
-        "workaholic task claim",
-        "workaholic task heartbeat",
-        "workaholic task progress",
-        "workaholic task release",
         "workaholic login",
         "workaholic server",
     ):

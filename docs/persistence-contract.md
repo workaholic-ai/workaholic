@@ -1,6 +1,6 @@
 # Workaholic AI Persistence Contract
 
-- Status: Accepted v1 contract through Phase 4 with Phase 3 SQLite implementation
+- Status: Accepted v1 contract through Phase 4 with Phase 4 SQLite implementation
 - Decision date: 2026-07-29
 - Contract scope: Observable semantics shared by JSON, SQLite, and PostgreSQL
 - Public API status: Internal architecture contract, not a third-party API
@@ -8,19 +8,20 @@
 ## Current implementation notice
 
 This document specifies persistence semantics implemented incrementally across
-v1. The current `0.3.0a1` development package implements the Phase 3 SQLite
-adapter and disposable schema version `3`, including multiple Projects,
+v1. The current `0.4.0a1` development package implements the Phase 4 SQLite
+adapter and disposable schema version `4`, including multiple Projects,
 optimistic Task mutations, dependencies, readiness, structured Human Results,
-review, attributable TaskEvents, idempotency, deterministic ordering, and
+review, exclusive Claims, Attempts, bounded Leases, Agent progress and
+submission, attributable TaskEvents, idempotency, deterministic ordering, and
 selection-bound cursors. JSON and PostgreSQL adapters and schema migration
 remain unavailable.
 
-An unsupported alpha store, including Phase 2 schema version `2`, is rejected
+An unsupported alpha store, including Phase 3 schema version `3`, is rejected
 unchanged. Preserve any needed information outside Workaholic, verify the exact
 disposable profile data and Workspace contexts, remove only those verified
 alpha artifacts, and run `workaholic up` again. There is no in-place reset,
-automatic migration, backend conversion, import, or export command in Phase 3.
-Phase 3 never migrates, converts, or reinterprets version `2`.
+automatic migration, backend conversion, import, or export command in Phase 4.
+Phase 4 never migrates, converts, or reinterprets version `3`.
 
 ## Normative language
 

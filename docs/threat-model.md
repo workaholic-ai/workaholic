@@ -1,6 +1,6 @@
 # Workaholic AI Threat Model
 
-- Status: Accepted v1 model through Phase 4 with Phase 3 implementation
+- Status: Accepted v1 model through Phase 4 with Phase 4 implementation
 - Decision date: 2026-07-29
 - Scope: Embedded and shared-server behavior required for v1
 - Security contact: [pg@ithesion.com](mailto:pg@ithesion.com)
@@ -9,13 +9,14 @@
 
 This threat model turns the accepted v1 security boundary into explicit
 engineering constraints and verification targets. It covers planned behavior;
-the current `0.3.0a1` development package implements trusted embedded profiles,
+the current `0.4.0a1` development package implements trusted embedded profiles,
 canonical upward Workspace discovery, safe binding, multi-project
-authorization checks, local SQLite schema version `3`, optimistic Task
-mutations, bounded structured input, Human Result and review attribution, and
-append-only TaskEvents. It rejects schema version `2` unchanged. It does not
-implement bearer authentication, Agent execution, remote profiles,
-credentials, `RemoteSession`, or network services.
+authorization checks, local SQLite schema version `4`, optimistic Task
+mutations, exclusive Human and Agent Claims, bounded Leases, Agent progress and
+submission, Human Result and review attribution, and append-only TaskEvents. It
+rejects schema version `3` unchanged. It reuses the bootstrap Subject and does
+not implement distinct Agent identities, bearer authentication, remote
+profiles, credentials, `RemoteSession`, or network services.
 
 Terms such as Subject, ProjectGrant, Claim, Attempt, Lease, and TaskEvent use their
 canonical definitions in the [glossary](glossary.md).

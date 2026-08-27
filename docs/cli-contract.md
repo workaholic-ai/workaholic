@@ -1,6 +1,6 @@
 # Workaholic AI CLI Automation Contract
 
-- Status: Accepted v1 contract through Phase 4 with Phase 3 implementation
+- Status: Accepted v1 contract through Phase 4 with Phase 4 implementation
 - Decision date: 2026-07-29
 - Contract family: `workaholic.cli/v1`
 - Public surface: Documented JSON output of the `workaholic` executable
@@ -8,20 +8,22 @@
 ## Current implementation notice
 
 This document specifies the accepted v1 automation contract through its Phase 8
-freeze. The current `0.3.0a1` development package implements the versioned
-envelopes and all 19 Phase 3 operations through an injected Session boundary.
+freeze. The current `0.4.0a1` development package implements the versioned
+envelopes and all 24 Phase 4 operations through an injected Session boundary.
 Its default executable composes the embedded `LocalSession`, trusted local
-profiles, canonical upward Workspace discovery, and SQLite schema version `3`.
+profiles, canonical upward Workspace discovery, and SQLite schema version `4`.
 It includes existing-Task mutations, dependencies, readiness views, Human
-Results and review, and TaskEvent history. No compatibility guarantee applies
-before `1.0.0`.
+Results and review, exclusive Human and Agent Claims, bounded Leases, Agent
+Attempts, heartbeat, progress, release and submission, and TaskEvent history.
+No compatibility guarantee applies before `1.0.0`.
 
-The alpha does not create Claims, run Agents, create Attempts or Leases, issue Tokens, use
-remote profiles or credentials, use `RemoteSession`, start a server, archive
-Projects, migrate schemas, or select JSON or PostgreSQL adapters. Those later
-command contracts remain normative roadmap requirements, not current
-implementation claims. Phase 3 Human Results always carry a null Attempt
-identity, and proposed follow-ups never create Tasks automatically.
+The alpha reuses one bootstrap Subject for Human and Agent command paths. It
+does not issue Tokens, distinguish Agent identities, use remote profiles or
+credentials, use `RemoteSession`, start a server, schedule by capability,
+archive Projects, force-interrupt execution, migrate schemas, or select JSON or
+PostgreSQL adapters. Human Results always carry a null Attempt identity; a
+non-null Attempt identifies local Agent execution. Proposed follow-ups never
+create Tasks automatically.
 
 ## Normative language
 
@@ -1250,12 +1252,12 @@ Phase 3 embedded commands require exact SQLite schema version `3`. A version
 Leases, claims, heartbeat, progress, release, `--attempt`, Tokens, remote
 profiles, and servers are not Phase 3 command surfaces.
 
-## Accepted Phase 4 Claim and execution contract
+## Phase 4 Claim and execution contract
 
 This section is the normative implementation contract for the Phase 4 Local
-Agent Alpha. It extends the Phase 3 embedded command contract; `0.3.0a1` does
-not implement it. README continues to describe Phase 3 behavior until the
-Phase 4 golden journey passes.
+Agent Alpha implemented by `0.4.0a1`. It extends the Phase 3 embedded command
+contract and is exercised by the public quick start, cumulative conformance
+suites, and enabled Phase 4 golden journey.
 
 Phase 4 commands retain the `workaholic.cli/v1` envelope, JSON-only stdout,
 diagnostics-only stderr, non-interactive behavior, Project selection, bounded
