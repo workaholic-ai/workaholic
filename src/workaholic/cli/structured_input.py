@@ -21,6 +21,24 @@ class StructuredInputError(ValueError):
     """Signal that structured CLI input is unsafe or contract-invalid."""
 
 
+def load_required_structured_object(source: str | None) -> dict[str, object]:
+    """Load structured input while requiring an explicit file or stdin source.
+
+    Args:
+        source: Filesystem path, explicit ``-`` stdin marker, or ``None``.
+
+    Returns:
+        Detached validated JSON object.
+
+    Raises:
+        StructuredInputError: If no source was supplied or it is invalid.
+
+    """
+    if source is None:
+        raise StructuredInputError
+    return load_structured_object(source)
+
+
 def load_structured_object(source: str) -> dict[str, object]:
     """Load one bounded closed-candidate JSON object from a file or stdin.
 

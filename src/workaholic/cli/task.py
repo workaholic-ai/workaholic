@@ -40,6 +40,7 @@ from workaholic.cli.structured_input import (
 )
 from workaholic.cli.task_claims import register_task_claim_commands
 from workaholic.cli.task_events import register_task_event_commands
+from workaholic.cli.task_execution import register_task_execution_commands
 from workaholic.cli.task_mutations import register_task_mutation_commands
 from workaholic.cli.task_results import register_task_result_commands
 from workaholic.session import (
@@ -251,6 +252,10 @@ def register_task_commands(  # noqa: PLR0915 - cumulative CLI registration
         session_provider=session_provider,
     )
     register_task_claim_commands(
+        application,
+        session_provider=session_provider,
+    )
+    register_task_execution_commands(
         application,
         session_provider=session_provider,
     )

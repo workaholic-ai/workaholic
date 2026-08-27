@@ -33,6 +33,7 @@ if TYPE_CHECKING:
         TaskEventResult,
         TaskMutationResult,
         TaskPage,
+        TaskProgressResult,
         TaskSubmissionResult,
     )
 
@@ -367,6 +368,43 @@ def task_claim_summary(result: TaskClaimResult) -> str:
     return "\n".join(lines)
 
 
+def task_progress_data(result: TaskProgressResult) -> dict[str, JsonValue]:
+    """Serialize one current Agent progress operation result.
+
+    Args:
+        result: Validated Task, ownership, and ordered progress events.
+
+    Returns:
+        Closed Task, Claim, Attempt, and events result shape.
+
+    """
+    return {
+        "task": task_data(result.task),
+        "claim": task_claim_data(result.claim),
+        "attempt": task_attempt_data(result.attempt),
+        "events": [task_event_data(event) for event in result.events],
+    }
+
+
+def task_progress_summary(result: TaskProgressResult) -> str:
+    """Render one concise Agent progress outcome.
+
+    Args:
+        result: Validated Task progress result.
+
+    Returns:
+        Stable Human-readable ownership and event summary.
+
+    """
+    return "\n".join(
+        (
+            task_summary(result.task),
+            f"Attempt: {result.attempt.id}\tstatus={result.attempt.status.value}",
+            f"Progress events: {len(result.events)}",
+        )
+    )
+
+
 def task_result_data(result: TaskResult) -> dict[str, JsonValue]:
     """Serialize one structured Task Result and its review disposition.
 
@@ -454,6 +492,55 @@ def task_submission_data(result: TaskSubmissionResult) -> dict[str, JsonValue]:
         "result": task_result_data(result.result),
         "events": [task_event_data(event) for event in result.events],
     }
+
+
+def agent_submission_data(result: TaskSubmissionResult) -> dict[str, JsonValue]:
+    """Serialize one Attempt-backed Agent Result submission.
+
+    Args:
+        result: Validated Agent submission with a terminal Attempt.
+
+    Returns:
+        Closed Task, Result, released Claim, Attempt, and event shape.
+
+    Raises:
+        ValueError: If the result does not contain an Agent Attempt.
+
+    """
+    if result.attempt is None or result.result.attempt_id is None:
+        message = "Agent submission requires terminal Attempt data."
+        raise ValueError(message)
+    return {
+        "task": task_data(result.task),
+        "result": task_result_data(result.result),
+        "claim": None,
+        "attempt": task_attempt_data(result.attempt),
+        "events": [task_event_data(event) for event in result.events],
+    }
+
+
+def agent_submission_summary(result: TaskSubmissionResult) -> str:
+    """Render one concise Attempt-backed Agent submission outcome.
+
+    Args:
+        result: Validated Agent submission with a terminal Attempt.
+
+    Returns:
+        Stable Human-readable Task, Result, and Attempt disposition.
+
+    Raises:
+        ValueError: If the result does not contain an Agent Attempt.
+
+    """
+    if result.attempt is None:
+        message = "Agent submission requires terminal Attempt data."
+        raise ValueError(message)
+    return "\n".join(
+        (
+            task_submission_summary(result),
+            f"Attempt: {result.attempt.id}\tstatus={result.attempt.status.value}",
+        )
+    )
 
 
 def task_submission_summary(result: TaskSubmissionResult) -> str:

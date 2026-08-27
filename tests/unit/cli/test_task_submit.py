@@ -1,4 +1,4 @@
-"""Unit tests for direct Human Task Result submission."""
+"""Unit tests for Human and Agent Task Result submission."""
 
 from __future__ import annotations
 
@@ -8,22 +8,31 @@ from typing import TYPE_CHECKING, cast
 
 import pytest
 from tests.golden import require_error, require_object, require_success
-from tests.unit.cli.fakes import RecordingSession, SessionProviderSpy
+from tests.unit.cli.fakes import (
+    RecordingSession,
+    SessionProviderSpy,
+    task_submission_result,
+)
 from typer.testing import CliRunner, Result
 
 from workaholic.application import (
     ApplicationError,
     ApplicationErrorCode,
+    LeaseLostError,
     TaskResultInput,
+    VersionConflictError,
 )
 from workaholic.cli.main import create_app
 from workaholic.domain import (
     ArtifactReference,
+    AttemptId,
     CriterionOutcome,
     CriterionStatus,
     ProposedFollowUp,
+    ResultReviewStatus,
 )
 from workaholic.session import (
+    AgentSubmitRequest,
     TaskDetailsRequest,
     TaskSubmissionResult,
     TaskSubmitRequest,
@@ -358,27 +367,281 @@ def test_task_submit_redacts_invalid_session_result_contract() -> None:
     assert len(session.task_submit_requests) == 1
 
 
-def test_task_submit_has_no_attempt_option() -> None:
-    """The Human command does not expose the deferred Agent Attempt concept."""
-    provider = SessionProviderSpy(RecordingSession())
-    help_result = _RUNNER.invoke(
-        create_app(provider),
-        ["task", "submit", "--help"],
+def test_task_submit_attempt_dispatches_closed_agent_result(tmp_path: Path) -> None:
+    """An Attempt selects explicit Agent submission and returns terminal ownership."""
+    source = tmp_path / "agent-result.json"
+    source.write_text(
+        json.dumps({"summary": "Implemented and verified."}),
+        encoding="utf-8",
     )
-    invalid_result = _RUNNER.invoke(
+    session = RecordingSession()
+
+    result = _RUNNER.invoke(
+        create_app(SessionProviderSpy(session)),
+        [
+            "task",
+            "submit",
+            "ACME-1",
+            "--attempt",
+            "atm_cli",
+            "--expected-version",
+            "1",
+            "--result-file",
+            str(source),
+            "--project",
+            "ACME",
+            "--idempotency-key",
+            "agent-submit-1",
+            "--json",
+            "--non-interactive",
+        ],
+    )
+
+    data = require_object(require_success(_completed(result)), context="submission")
+    assert set(data) == {"task", "result", "claim", "attempt", "events"}
+    assert data["claim"] is None
+    submitted = require_object(data["result"], context="Result")
+    assert submitted["attempt_id"] == "atm_cli"
+    attempt = require_object(data["attempt"], context="Attempt")
+    assert attempt["id"] == "atm_cli"
+    assert attempt["status"] == "submitted"
+    assert attempt["ended_at"] is not None
+    events = data["events"]
+    assert isinstance(events, list)
+    assert [require_object(event, context="event")["type"] for event in events] == [
+        "result_submitted",
+        "task_completed",
+    ]
+    assert all(
+        require_object(event, context="event")["attempt_id"] == "atm_cli"
+        for event in events
+    )
+    assert session.agent_submit_requests == [
+        AgentSubmitRequest(
+            task="ACME-1",
+            attempt=AttemptId("atm_cli"),
+            expected_version=1,
+            result=TaskResultInput(summary="Implemented and verified."),
+            project="ACME",
+            idempotency_key="agent-submit-1",
+        )
+    ]
+    assert session.task_submit_requests == []
+    assert session.task_details_requests == []
+
+
+def test_task_submit_agent_stdin_can_enter_review_with_terminal_attempt() -> None:
+    """Review-required Agent work still ends its Attempt on successful submission."""
+    session = RecordingSession()
+    session.agent_submit_result = task_submission_result(
+        ResultReviewStatus.PENDING,
+        agent=True,
+    )
+
+    result = _RUNNER.invoke(
+        create_app(SessionProviderSpy(session)),
+        [
+            "task",
+            "submit",
+            "ACME-1",
+            "--attempt",
+            "atm_cli",
+            "--expected-version",
+            "1",
+            "--result-file",
+            "-",
+            "--json",
+        ],
+        input='{"summary":"Ready for review."}\n',
+    )
+
+    data = require_object(require_success(_completed(result)), context="submission")
+    task = require_object(data["task"], context="Task")
+    result_data = require_object(data["result"], context="Result")
+    review = require_object(result_data["review"], context="review")
+    attempt = require_object(data["attempt"], context="Attempt")
+    assert task["state"] == "review"
+    assert review["status"] == "pending"
+    assert attempt["status"] == "submitted"
+    assert session.agent_submit_requests[0].result == TaskResultInput(
+        summary="Ready for review."
+    )
+
+
+def test_task_submit_agent_replay_forwards_identical_fingerprint(
+    tmp_path: Path,
+) -> None:
+    """Equivalent Agent retries preserve Attempt, version, Result, and replay key."""
+    source = tmp_path / "replay-result.json"
+    source.write_text('{"summary":"Done."}', encoding="utf-8")
+    session = RecordingSession()
+    application = create_app(SessionProviderSpy(session))
+    arguments = [
+        "task",
+        "submit",
+        "ACME-1",
+        "--attempt",
+        "atm_cli",
+        "--expected-version",
+        "1",
+        "--result-file",
+        str(source),
+        "--idempotency-key",
+        "submit-replay",
+        "--json",
+    ]
+
+    first = _RUNNER.invoke(application, arguments)
+    second = _RUNNER.invoke(application, arguments)
+
+    assert first.exit_code == second.exit_code == 0
+    assert first.stdout == second.stdout
+    assert len(session.agent_submit_requests) == 2
+    assert session.agent_submit_requests[0] == session.agent_submit_requests[1]
+
+
+@pytest.mark.parametrize(
+    ("arguments", "expected_message"),
+    [
+        (
+            ["--attempt", "atm_cli", "--result-file", "-"],
+            "Agent submission requires --expected-version.",
+        ),
+        (
+            ["--attempt", "atm_cli", "--expected-version", "1"],
+            "Task-submission input is invalid.",
+        ),
+        (
+            [
+                "--attempt",
+                "atm_cli",
+                "--expected-version",
+                "1",
+                "--result-file",
+                "-",
+                "--comment",
+                "Human-only",
+            ],
+            "Task-submission input is invalid.",
+        ),
+        (
+            [
+                "--attempt",
+                "invalid",
+                "--expected-version",
+                "1",
+                "--result-file",
+                "-",
+            ],
+            "Task-submission input is invalid.",
+        ),
+    ],
+)
+def test_task_submit_agent_requires_result_version_and_consistent_operands(
+    arguments: list[str],
+    expected_message: str,
+) -> None:
+    """Agent submission never falls back to prompting or Human-only operands."""
+    provider = SessionProviderSpy(RecordingSession())
+
+    result = _RUNNER.invoke(
+        create_app(provider),
+        ["task", "submit", "ACME-1", *arguments, "--json"],
+        input='{"summary":"Done."}\n',
+    )
+
+    error = require_error(_completed(result), expected_code="INVALID_INPUT")
+    assert error["message"] == expected_message
+    assert provider.call_count == 0
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"attempt_id": "atm_forged"},
+        {"submitted_by": "sub_forged"},
+        {"summary": "Done.", "unknown": {}},
+        {"artifacts": [{"uri": "file:///tmp/private", "nested": {}}]},
+    ],
+)
+def test_task_submit_agent_rejects_unknown_identity_or_nested_result(
+    tmp_path: Path,
+    payload: dict[str, object],
+) -> None:
+    """Agent Result input uses the same closed, identity-free Result schema."""
+    source = tmp_path / "invalid-agent-result.json"
+    source.write_text(json.dumps(payload), encoding="utf-8")
+    provider = SessionProviderSpy(RecordingSession())
+
+    result = _RUNNER.invoke(
         create_app(provider),
         [
             "task",
             "submit",
             "ACME-1",
             "--attempt",
-            "atm_forbidden",
+            "atm_cli",
             "--expected-version",
             "1",
+            "--result-file",
+            str(source),
+            "--json",
         ],
     )
 
+    require_error(_completed(result), expected_code="INVALID_INPUT")
+    assert provider.call_count == 0
+
+
+@pytest.mark.parametrize(
+    ("failure", "code", "retryable"),
+    [
+        (LeaseLostError(), "LEASE_LOST", False),
+        (VersionConflictError(), "VERSION_CONFLICT", False),
+    ],
+)
+def test_task_submit_agent_preserves_lease_and_version_failures(
+    failure: Exception,
+    code: str,
+    retryable: bool,  # noqa: FBT001 - parameterized public contract
+) -> None:
+    """Agent ownership and optimistic races retain their distinct errors."""
+    session = RecordingSession()
+    session.failures["submit_agent_result"] = failure
+
+    result = _RUNNER.invoke(
+        create_app(SessionProviderSpy(session)),
+        [
+            "task",
+            "submit",
+            "ACME-1",
+            "--attempt",
+            "atm_cli",
+            "--expected-version",
+            "1",
+            "--result-file",
+            "-",
+            "--json",
+        ],
+        input='{"summary":"Done."}\n',
+    )
+
+    error = require_error(_completed(result), expected_code=code)
+    assert error["retryable"] is retryable
+    assert len(session.agent_submit_requests) == 1
+
+
+def test_task_submit_help_exposes_both_human_and_agent_paths() -> None:
+    """Submission help documents Attempt and structured Result controls."""
+    provider = SessionProviderSpy(RecordingSession())
+    help_result = _RUNNER.invoke(
+        create_app(provider),
+        ["task", "submit", "--help"],
+    )
+
     assert help_result.exit_code == 0
-    assert "--attempt" not in help_result.stdout
-    assert invalid_result.exit_code == 2
+    assert "--attempt" in help_result.stdout
+    assert "--result-file" in help_result.stdout
+    assert "--comment" in help_result.stdout
+    assert "--expected-version" in help_result.stdout
     assert provider.call_count == 0

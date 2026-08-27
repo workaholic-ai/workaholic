@@ -21,6 +21,7 @@ from workaholic.application import (
     TaskListView,
     TaskMutationResult,
     TaskPage,
+    TaskProgressResult,
     TaskSubmissionResult,
 )
 from workaholic.domain import (
@@ -56,7 +57,9 @@ from workaholic.domain import (
 if TYPE_CHECKING:
     from workaholic.session import (
         AgentHeartbeatRequest,
+        AgentProgressRequest,
         AgentReleaseRequest,
+        AgentSubmitRequest,
         AgentTaskClaimRequest,
         ContextRequest,
         HumanClaimReleaseRequest,
@@ -273,18 +276,28 @@ def task() -> Task:
 
 def task_submission_result(
     status: ResultReviewStatus = ResultReviewStatus.NOT_REQUIRED,
+    *,
+    agent: bool = False,
 ) -> TaskSubmissionResult:
-    """Build one internally consistent manual Result transition.
+    """Build one internally consistent Human or Agent Result transition.
 
     Args:
         status: Review disposition represented by the returned transition.
+        agent: Whether the result is submitted through an Agent Attempt.
 
     Returns:
         Validated deterministic submission or review result.
 
     """
+    if agent and status not in (
+        ResultReviewStatus.NOT_REQUIRED,
+        ResultReviewStatus.PENDING,
+    ):
+        message = "The CLI fake creates Agent submission outcomes only."
+        raise ValueError(message)
     first_task = task()
-    result_id = ResultId("res_manual")
+    attempt_id = AttemptId("atm_cli") if agent else None
+    result_id = ResultId("res_agent" if agent else "res_manual")
     event_types: tuple[TaskEventType, ...]
     if status is ResultReviewStatus.NOT_REQUIRED:
         state = TaskState.DONE
@@ -346,7 +359,7 @@ def task_submission_result(
         id=result_id,
         task_uid=first_task.uid,
         submitted_by=subject().id,
-        attempt_id=None,
+        attempt_id=attempt_id,
         submitted_at=_NOW,
         comment=None,
         summary=None,
@@ -363,6 +376,7 @@ def task_submission_result(
             task_uid=first_task.uid,
             project_id=first_task.project_id,
             actor_subject_id=subject().id,
+            attempt_id=attempt_id,
             request_id=request_id,
             event_type=event_type,
             occurred_at=_NOW,
@@ -374,6 +388,19 @@ def task_submission_result(
         task=transitioned_task,
         result=result,
         events=events,
+        attempt=(
+            None
+            if attempt_id is None
+            else TaskAttempt(
+                id=attempt_id,
+                task_uid=first_task.uid,
+                subject_id=subject().id,
+                status=AttemptStatus.SUBMITTED,
+                lease_expires_at=_NOW + timedelta(minutes=15),
+                started_at=_NOW - timedelta(minutes=1),
+                ended_at=_NOW,
+            )
+        ),
     )
 
 
@@ -490,6 +517,68 @@ def task_claim_result(
     )
 
 
+def task_progress_result() -> TaskProgressResult:
+    """Build one ordered structured Agent progress result.
+
+    Returns:
+        Validated deterministic active ownership and progress events.
+
+    """
+    first_task = task()
+    attempt_id = AttemptId("atm_cli")
+    lease_expires_at = _NOW + timedelta(minutes=15)
+    claim = TaskClaim(
+        task_uid=first_task.uid,
+        task_key=first_task.key,
+        subject_id=subject().id,
+        attempt_id=attempt_id,
+        claimed_at=_NOW - timedelta(minutes=1),
+        lease_expires_at=lease_expires_at,
+    )
+    attempt = TaskAttempt(
+        id=attempt_id,
+        task_uid=first_task.uid,
+        subject_id=subject().id,
+        status=AttemptStatus.ACTIVE,
+        lease_expires_at=lease_expires_at,
+        started_at=_NOW - timedelta(minutes=1),
+        ended_at=None,
+    )
+    request_id = RequestId("req_progress")
+    events = (
+        TaskEvent(
+            id=TaskEventId("evt_progress"),
+            cursor=2,
+            task_uid=first_task.uid,
+            project_id=first_task.project_id,
+            actor_subject_id=subject().id,
+            attempt_id=attempt_id,
+            request_id=request_id,
+            event_type=TaskEventType.PROGRESS_REPORTED,
+            occurred_at=_NOW,
+            payload={"message": "Running tests.", "percent_complete": 70},
+        ),
+        TaskEvent(
+            id=TaskEventId("evt_observation"),
+            cursor=3,
+            task_uid=first_task.uid,
+            project_id=first_task.project_id,
+            actor_subject_id=subject().id,
+            attempt_id=attempt_id,
+            request_id=request_id,
+            event_type=TaskEventType.OBSERVATION_ADDED,
+            occurred_at=_NOW,
+            payload={"kind": "risk", "text": "A retry may be needed."},
+        ),
+    )
+    return TaskProgressResult(
+        task=first_task,
+        claim=claim,
+        attempt=attempt,
+        events=events,
+    )
+
+
 class RecordingSession(UnavailablePhaseFourSession):
     """Configurable explicit fake for the cumulative Session boundary."""
 
@@ -579,6 +668,8 @@ class RecordingSession(UnavailablePhaseFourSession):
             event_type=TaskEventType.CLAIM_RELEASED,
             released=True,
         )
+        self.task_progress_result = task_progress_result()
+        self.agent_submit_result = task_submission_result(agent=True)
         self.failures: dict[str, Exception] = {}
         self.up_requests: list[UpRequest] = []
         self.status_requests: list[StatusRequest] = []
@@ -607,6 +698,8 @@ class RecordingSession(UnavailablePhaseFourSession):
         self.agent_heartbeat_requests: list[AgentHeartbeatRequest] = []
         self.human_release_requests: list[HumanClaimReleaseRequest] = []
         self.agent_release_requests: list[AgentReleaseRequest] = []
+        self.agent_progress_requests: list[AgentProgressRequest] = []
+        self.agent_submit_requests: list[AgentSubmitRequest] = []
 
     def up(self, request: UpRequest) -> BootstrapResult:
         """Record and answer one bootstrap request."""
@@ -792,6 +885,21 @@ class RecordingSession(UnavailablePhaseFourSession):
         self.agent_release_requests.append(request)
         self._raise_failure("release_attempt")
         return self.agent_release_result
+
+    def report_progress(self, request: AgentProgressRequest) -> TaskProgressResult:
+        """Record and answer one Agent progress report."""
+        self.agent_progress_requests.append(request)
+        self._raise_failure("report_progress")
+        return self.task_progress_result
+
+    def submit_agent_result(
+        self,
+        request: AgentSubmitRequest,
+    ) -> TaskSubmissionResult:
+        """Record and answer one Attempt-backed Agent submission."""
+        self.agent_submit_requests.append(request)
+        self._raise_failure("submit_agent_result")
+        return self.agent_submit_result
 
     def _raise_failure(self, operation: str) -> None:
         """Raise the configured failure for one operation, if present.
