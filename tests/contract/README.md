@@ -20,11 +20,16 @@ factory protocols. [`phase_two.py`](phase_two.py) extends those protocols with
 deterministic clocks and identifiers plus isolated trusted profile registries.
 [`phase_three.py`](phase_three.py) completes the identity surface and adds
 exact-version repository connections, deterministic lifecycle composition,
-and semantic transaction-failure hooks. Each persistence and Session contract
-inherits every earlier assertion. Phase 3 adds lifecycle, optimistic race,
-dependency graph, readiness, Result review, TaskEvent pagination, attribution,
-authorization, restart, idempotency, and rollback behavior without
-adapter-specific expected outcomes.
+and semantic transaction-failure hooks. [`phase_four.py`](phase_four.py) adds
+the Claim, Attempt, Lease, progress, and Agent Result builders and failure
+points required to exercise execution backends. Each persistence and Session
+contract inherits every earlier assertion. Phase 3 adds lifecycle, optimistic
+race, dependency graph, readiness, Result review, TaskEvent pagination,
+attribution, authorization, restart, idempotency, and rollback behavior.
+Phase 4 adds Human-versus-Agent ownership, exact Lease expiry and reclaim,
+exclusive mutation locks, structured progress, terminal Attempt behavior,
+Agent submission and review races, and independent-connection restart
+continuity without adapter-specific expected outcomes.
 
 Concrete adapters subclass the relevant contract and provide one factory
 fixture. Expected outcomes contain no adapter-specific branches. Factories
@@ -33,6 +38,11 @@ pytest-owned paths and must never read an operator's real configuration.
 Failure injection is adapter-owned factory plumbing: shared assertions name a
 semantic boundary and verify observable rollback, never a table, query, or
 private storage function.
+
+SQLite additionally runs contention tests with independently spawned Python
+processes against one database file. The process tests are intentionally not
+replaced by threads: they prove double-claim prevention and stale Agent-writer
+rejection across real process and connection boundaries.
 
 Intentional negative samples live under [fixtures](fixtures/README.md). They
 prove each dependency rule and the CLI startup detector fail with actionable
