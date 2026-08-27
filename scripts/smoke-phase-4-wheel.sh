@@ -7,19 +7,19 @@ readonly_exit_data=65
 readonly_exit_missing=66
 readonly_python_version=3.14
 
-phase_three_script_directory=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
-phase_three_project_root=$(CDPATH='' cd -- "$phase_three_script_directory/.." && pwd)
-phase_three_directory=
+phase_four_script_directory=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
+phase_four_project_root=$(CDPATH='' cd -- "$phase_four_script_directory/.." && pwd)
+phase_four_directory=
 
 # Remove only the unique directory created by mktemp in this process.
 cleanup() {
-  if [ -n "$phase_three_directory" ] && [ -d "$phase_three_directory" ]; then
-    rm -rf -- "$phase_three_directory"
+  if [ -n "$phase_four_directory" ] && [ -d "$phase_four_directory" ]; then
+    rm -rf -- "$phase_four_directory"
   fi
 }
 
 fail_data() {
-  printf '%s\n' "smoke-phase-3-wheel: $1" >&2
+  printf '%s\n' "smoke-phase-4-wheel: $1" >&2
   exit "$readonly_exit_data"
 }
 
@@ -29,53 +29,53 @@ trap 'exit 130' INT
 trap 'exit 143' TERM
 
 if [ "$#" -ne 1 ]; then
-  printf '%s\n' "usage: scripts/smoke-phase-3-wheel.sh <wheel-path>" >&2
+  printf '%s\n' "usage: scripts/smoke-phase-4-wheel.sh <wheel-path>" >&2
   exit "$readonly_exit_usage"
 fi
 
-phase_three_wheel_argument=$1
-if [ ! -f "$phase_three_wheel_argument" ]; then
+phase_four_wheel_argument=$1
+if [ ! -f "$phase_four_wheel_argument" ]; then
   printf '%s\n' \
-    "smoke-phase-3-wheel: wheel file does not exist: $phase_three_wheel_argument" \
+    "smoke-phase-4-wheel: wheel file does not exist: $phase_four_wheel_argument" \
     >&2
   exit "$readonly_exit_missing"
 fi
 
-phase_three_wheel_name=$(basename -- "$phase_three_wheel_argument")
-case "$phase_three_wheel_name" in
+phase_four_wheel_name=$(basename -- "$phase_four_wheel_argument")
+case "$phase_four_wheel_name" in
   *.whl) ;;
-  *) fail_data "expected a .whl file: $phase_three_wheel_argument" ;;
+  *) fail_data "expected a .whl file: $phase_four_wheel_argument" ;;
 esac
 
-phase_three_wheel_directory=$(
-  CDPATH='' cd -- "$(dirname -- "$phase_three_wheel_argument")" && pwd -P
+phase_four_wheel_directory=$(
+  CDPATH='' cd -- "$(dirname -- "$phase_four_wheel_argument")" && pwd -P
 )
-phase_three_wheel_path=$phase_three_wheel_directory/$phase_three_wheel_name
-phase_three_expected_version=$(
-  CDPATH='' cd -- "$phase_three_project_root" && uv version --short
+phase_four_wheel_path=$phase_four_wheel_directory/$phase_four_wheel_name
+phase_four_expected_version=$(
+  CDPATH='' cd -- "$phase_four_project_root" && uv version --short
 )
 
-phase_three_directory=$(
-  mktemp -d "${TMPDIR:-/tmp}/workaholic-phase-three-wheel.XXXXXX"
+phase_four_directory=$(
+  mktemp -d "${TMPDIR:-/tmp}/workaholic-phase-four-wheel.XXXXXX"
 )
-phase_three_directory=$(CDPATH='' cd -- "$phase_three_directory" && pwd -P)
-phase_three_environment=$phase_three_directory/venv
-phase_three_config_directory=$phase_three_directory/config
-phase_three_data_directory=$phase_three_directory/data
-phase_three_schema_two_directory=$phase_three_directory/schema-two-data
-phase_three_workspace=$phase_three_directory/workspace
-phase_three_schema_two_workspace=$phase_three_directory/schema-two-workspace
+phase_four_directory=$(CDPATH='' cd -- "$phase_four_directory" && pwd -P)
+phase_four_environment=$phase_four_directory/venv
+phase_four_config_directory=$phase_four_directory/config
+phase_four_data_directory=$phase_four_directory/data
+phase_four_schema_three_directory=$phase_four_directory/schema-three-data
+phase_four_workspace=$phase_four_directory/workspace
+phase_four_schema_three_workspace=$phase_four_directory/schema-three-workspace
 
 mkdir -p \
-  "$phase_three_config_directory" \
-  "$phase_three_workspace" \
-  "$phase_three_schema_two_workspace"
+  "$phase_four_config_directory" \
+  "$phase_four_workspace" \
+  "$phase_four_schema_three_workspace"
 
-for phase_three_data_path in \
-  "$phase_three_data_directory" \
-  "$phase_three_schema_two_directory"
+for phase_four_data_path in \
+  "$phase_four_data_directory" \
+  "$phase_four_schema_three_directory"
 do
-  if [ -e "$phase_three_data_path" ]; then
+  if [ -e "$phase_four_data_path" ]; then
     fail_data "temporary data directories must start absent"
   fi
 done
@@ -83,39 +83,39 @@ done
 uv venv \
   --no-project \
   --python "$readonly_python_version" \
-  "$phase_three_environment"
+  "$phase_four_environment"
 
-phase_three_python=$phase_three_environment/bin/python
-phase_three_command=$phase_three_environment/bin/workaholic
+phase_four_python=$phase_four_environment/bin/python
+phase_four_command=$phase_four_environment/bin/workaholic
 
 uv pip install \
-  --python "$phase_three_python" \
+  --python "$phase_four_python" \
   --strict \
-  "$phase_three_wheel_path"
+  "$phase_four_wheel_path"
 
 unset PYTHONHOME PYTHONPATH VIRTUAL_ENV WORKAHOLIC_PROFILE
 export NO_COLOR=1
 export PYTHONNOUSERSITE=1
-export WORKAHOLIC_CONFIG_DIR="$phase_three_config_directory"
-export WORKAHOLIC_DATA_DIR="$phase_three_data_directory"
+export WORKAHOLIC_CONFIG_DIR="$phase_four_config_directory"
+export WORKAHOLIC_DATA_DIR="$phase_four_data_directory"
 
-phase_three_installed_version=$(
-  "$phase_three_python" -c \
+phase_four_installed_version=$(
+  "$phase_four_python" -c \
     'from importlib.metadata import version; print(version("workaholic-ai"))'
 )
-if [ "$phase_three_installed_version" != "$phase_three_expected_version" ]; then
+if [ "$phase_four_installed_version" != "$phase_four_expected_version" ]; then
   fail_data \
-    "expected version $phase_three_expected_version, installed $phase_three_installed_version"
+    "expected version $phase_four_expected_version, installed $phase_four_installed_version"
 fi
 
-phase_three_summary=$(
-  "$phase_three_python" - \
-    "$phase_three_command" \
-    "$phase_three_workspace" \
-    "$phase_three_config_directory" \
-    "$phase_three_data_directory" \
-    "$phase_three_schema_two_workspace" \
-    "$phase_three_schema_two_directory" <<'PY'
+phase_four_summary=$(
+  "$phase_four_python" - \
+    "$phase_four_command" \
+    "$phase_four_workspace" \
+    "$phase_four_config_directory" \
+    "$phase_four_data_directory" \
+    "$phase_four_schema_three_workspace" \
+    "$phase_four_schema_three_directory" <<'PY'
 from __future__ import annotations
 
 import json
@@ -123,6 +123,7 @@ import os
 import sqlite3
 import subprocess
 import sys
+import time
 from pathlib import Path
 from typing import Any
 
@@ -131,8 +132,8 @@ command = Path(sys.argv[1])
 workspace = Path(sys.argv[2])
 config_directory = Path(sys.argv[3])
 data_directory = Path(sys.argv[4])
-schema_two_workspace = Path(sys.argv[5])
-schema_two_directory = Path(sys.argv[6])
+schema_three_workspace = Path(sys.argv[5])
+schema_three_directory = Path(sys.argv[6])
 
 safe_environment = {
     key: value
@@ -263,6 +264,7 @@ def failure(
     status: int,
     code: str,
     message: str,
+    retryable: bool = False,
     input_value: dict[str, Any] | None = None,
     cwd: Path = workspace,
     environment: dict[str, str] | None = None,
@@ -274,6 +276,7 @@ def failure(
         status: Required process exit status.
         code: Required stable error code.
         message: Required safe error message.
+        retryable: Required retry guidance.
         input_value: Optional JSON object sent to standard input.
         cwd: Working directory for Workspace discovery.
         environment: Optional complete environment for boundary testing.
@@ -302,7 +305,7 @@ def failure(
     detail = value["error"]
     if not isinstance(detail, dict):
         raise SystemExit(f"invalid {code} detail")
-    expected = {"code": code, "message": message, "retryable": False}
+    expected = {"code": code, "message": message, "retryable": retryable}
     if value["schema"] != "workaholic.cli/v1" or value["ok"] is not False:
         raise SystemExit(f"invalid {code} envelope identity")
     if detail != expected:
@@ -355,7 +358,7 @@ bootstrap = success(
         "--project-name",
         "Acme delivery",
         "--idempotency-key",
-        "phase-three-up",
+        "phase-four-up",
     ]
 )
 if bootstrap["project"]["key"] != "ACME" or bootstrap["subject"]["kind"] != "human":
@@ -370,7 +373,7 @@ prerequisite = task(
             "--priority",
             "80",
             "--idempotency-key",
-            "phase-three-prerequisite",
+            "phase-four-prerequisite",
         ]
     )
 )
@@ -397,7 +400,7 @@ reviewed = task(
             "--input-file",
             "-",
             "--idempotency-key",
-            "phase-three-reviewed",
+            "phase-four-reviewed",
         ],
         input_value=definition,
     )
@@ -421,7 +424,7 @@ dependency = task(
             "--expected-version",
             "1",
             "--idempotency-key",
-            "phase-three-dependency",
+            "phase-four-dependency",
         ]
     )
 )
@@ -453,7 +456,7 @@ updated = task(
             "--expected-version",
             "2",
             "--idempotency-key",
-            "phase-three-update",
+            "phase-four-update",
         ]
     )
 )
@@ -486,7 +489,7 @@ block_arguments = [
     "--expected-version",
     "1",
     "--idempotency-key",
-    "phase-three-block",
+    "phase-four-block",
 ]
 blocked = success(block_arguments)
 if task(blocked)["version"] != 2:
@@ -503,7 +506,7 @@ failure(
         "--expected-version",
         "1",
         "--idempotency-key",
-        "phase-three-block",
+        "phase-four-block",
     ],
     status=4,
     code="IDEMPOTENCY_CONFLICT",
@@ -521,7 +524,7 @@ unblocked = task(
             "--expected-version",
             "2",
             "--idempotency-key",
-            "phase-three-unblock",
+            "phase-four-unblock",
         ]
     )
 )
@@ -537,7 +540,7 @@ submitted_prerequisite = success(
         "--expected-version",
         "3",
         "--idempotency-key",
-        "phase-three-prerequisite-submit",
+        "phase-four-prerequisite-submit",
     ]
 )
 completed_prerequisite = task(submitted_prerequisite)
@@ -580,7 +583,7 @@ submitted_review = success(
         "--expected-version",
         "3",
         "--idempotency-key",
-        "phase-three-reviewed-submit",
+        "phase-four-reviewed-submit",
     ],
     input_value=result_content,
 )
@@ -622,7 +625,7 @@ approval = success(
         "--expected-version",
         "4",
         "--idempotency-key",
-        "phase-three-approve",
+        "phase-four-approve",
     ]
 )
 approved_task = task(approval)
@@ -667,7 +670,7 @@ cancelled_prerequisite = task(
             "add",
             "Cancelled prerequisite",
             "--idempotency-key",
-            "phase-three-cancelled-prerequisite",
+            "phase-four-cancelled-prerequisite",
         ]
     )
 )
@@ -678,7 +681,7 @@ affected = task(
             "add",
             "Affected work",
             "--idempotency-key",
-            "phase-three-affected",
+            "phase-four-affected",
         ]
     )
 )
@@ -692,7 +695,7 @@ affected = task(
             "--expected-version",
             "1",
             "--idempotency-key",
-            "phase-three-cancelled-dependency",
+            "phase-four-cancelled-dependency",
         ]
     )
 )
@@ -706,7 +709,7 @@ success(
         "--expected-version",
         "1",
         "--idempotency-key",
-        "phase-three-cancel",
+        "phase-four-cancel",
     ]
 )
 failure(
@@ -731,7 +734,7 @@ affected = task(
             "--expected-version",
             "2",
             "--idempotency-key",
-            "phase-three-remove-cancelled-dependency",
+            "phase-four-remove-cancelled-dependency",
         ]
     )
 )
@@ -762,33 +765,514 @@ unchanged = success(["task", "show", str(affected["key"])])
 if unchanged["task"]["version"] != 3 or unchanged["current_result"] is not None:
     raise SystemExit("invalid Result partially mutated the Task")
 
-schema_two_directory.mkdir()
-schema_two_database = schema_two_directory / "local.db"
-connection = sqlite3.connect(schema_two_database)
+# Remove the intentionally incomplete Phase 3 boundary Task from readiness so
+# every untargeted Agent Claim below has one deterministic candidate.
+success(
+    [
+        "task",
+        "cancel",
+        str(affected["key"]),
+        "--reason",
+        "Boundary test complete.",
+        "--expected-version",
+        "3",
+        "--idempotency-key",
+        "phase-four-affected-cancel",
+    ]
+)
+
+human_owned = task(
+    success(
+        [
+            "task",
+            "add",
+            "Human Claim lifecycle",
+            "--idempotency-key",
+            "phase-four-human-task",
+        ]
+    )
+)
+failure(
+    ["task", "claim", str(human_owned["key"]), "--lease", "0s"],
+    status=2,
+    code="INVALID_INPUT",
+    message="Task-claim input is invalid.",
+)
+human_claim = success(
+    [
+        "task",
+        "claim",
+        str(human_owned["key"]),
+        "--lease",
+        "8h",
+        "--idempotency-key",
+        "phase-four-human-claim",
+    ]
+)
+if human_claim["attempt"] is not None:
+    raise SystemExit("Human Claim acquired an Attempt")
+if human_claim["claim"]["attempt_id"] is not None:
+    raise SystemExit("Human Claim stored an Attempt identity")
+renewed_human = success(
+    [
+        "task",
+        "renew",
+        str(human_owned["key"]),
+        "--lease",
+        "12h",
+        "--idempotency-key",
+        "phase-four-human-renew",
+    ]
+)
+if renewed_human["task"]["version"] != 1:
+    raise SystemExit("Human renewal changed the Task version")
+if renewed_human["claim"]["lease_expires_at"] <= human_claim["claim"][
+    "lease_expires_at"
+]:
+    raise SystemExit("Human renewal did not extend from authoritative now")
+released_human = success(
+    [
+        "task",
+        "release",
+        str(human_owned["key"]),
+        "--idempotency-key",
+        "phase-four-human-release",
+    ]
+)
+if released_human["claim"] is not None or released_human["attempt"] is not None:
+    raise SystemExit("Human release retained ownership")
+success(
+    [
+        "task",
+        "claim",
+        str(human_owned["key"]),
+        "--idempotency-key",
+        "phase-four-human-reclaim",
+    ]
+)
+human_submission = success(
+    [
+        "task",
+        "submit",
+        str(human_owned["key"]),
+        "--comment",
+        "Completed manually.",
+        "--expected-version",
+        "1",
+        "--idempotency-key",
+        "phase-four-human-submit",
+    ]
+)
+if human_submission["result"]["attempt_id"] is not None:
+    raise SystemExit("Human Claim submission acquired an Attempt")
+
+agent_released_task = task(
+    success(
+        [
+            "task",
+            "add",
+            "Released Agent execution",
+            "--idempotency-key",
+            "phase-four-agent-release-task",
+        ]
+    )
+)
+agent_claim = success(
+    [
+        "task",
+        "claim",
+        "--lease",
+        "15m",
+        "--idempotency-key",
+        "phase-four-agent-claim",
+    ]
+)
+if agent_claim["task"]["uid"] != agent_released_task["uid"]:
+    raise SystemExit("Agent Claim did not atomically select the ready Task")
+agent_attempt_id = agent_claim["attempt"]["id"]
+if agent_claim["claim"]["attempt_id"] != agent_attempt_id:
+    raise SystemExit("Agent Claim and Attempt identities differ")
+failure(
+    [
+        "task",
+        "update",
+        str(agent_released_task["key"]),
+        "--priority",
+        "90",
+        "--expected-version",
+        "1",
+    ],
+    status=4,
+    code="TASK_LOCKED",
+    message="The Task has a current Claim owned by another execution.",
+    retryable=True,
+)
+foreign_attempt_id = agent_attempt_id[:-1] + (
+    "0" if agent_attempt_id[-1] != "0" else "1"
+)
+failure(
+    [
+        "task",
+        "heartbeat",
+        str(agent_released_task["key"]),
+        "--attempt",
+        foreign_attempt_id,
+    ],
+    status=4,
+    code="LEASE_LOST",
+    message="The Claim is no longer current.",
+)
+heartbeat_arguments = [
+    "task",
+    "heartbeat",
+    str(agent_released_task["key"]),
+    "--attempt",
+    agent_attempt_id,
+    "--lease",
+    "30m",
+    "--idempotency-key",
+    "phase-four-agent-heartbeat",
+]
+heartbeat = success(heartbeat_arguments)
+if heartbeat["task"]["version"] != 1:
+    raise SystemExit("Agent heartbeat changed the Task version")
+if success(heartbeat_arguments) != heartbeat:
+    raise SystemExit("Agent heartbeat replay changed its committed outcome")
+failure(
+    [
+        "task",
+        "heartbeat",
+        str(agent_released_task["key"]),
+        "--attempt",
+        agent_attempt_id,
+        "--lease",
+        "1h",
+        "--idempotency-key",
+        "phase-four-agent-heartbeat",
+    ],
+    status=4,
+    code="IDEMPOTENCY_CONFLICT",
+    message="The idempotency key was already used for a different request.",
+)
+failure(
+    [
+        "task",
+        "progress",
+        str(agent_released_task["key"]),
+        "--attempt",
+        agent_attempt_id,
+        "--input-file",
+        "-",
+    ],
+    status=2,
+    code="INVALID_INPUT",
+    message="Task-progress input is invalid.",
+    input_value={"message": "Forged progress.", "actor_subject_id": "sub_forged"},
+)
+progress = success(
+    [
+        "task",
+        "progress",
+        str(agent_released_task["key"]),
+        "--attempt",
+        agent_attempt_id,
+        "--input-file",
+        "-",
+        "--idempotency-key",
+        "phase-four-agent-progress",
+    ],
+    input_value={
+        "message": "Implementing and verifying the installed wheel.",
+        "percent_complete": 70,
+        "observations": [
+            {"kind": "risk", "text": "Release behavior still needs proof."}
+        ],
+    },
+)
+if [event["type"] for event in progress["events"]] != [
+    "progress_reported",
+    "observation_added",
+]:
+    raise SystemExit("Agent progress event order changed")
+released_agent = success(
+    [
+        "task",
+        "release",
+        str(agent_released_task["key"]),
+        "--attempt",
+        agent_attempt_id,
+        "--idempotency-key",
+        "phase-four-agent-release",
+    ]
+)
+if released_agent["claim"] is not None:
+    raise SystemExit("Agent release retained the Claim")
+if released_agent["attempt"]["status"] != "released":
+    raise SystemExit("Agent release did not terminalize its Attempt")
+failure(
+    [
+        "task",
+        "progress",
+        str(agent_released_task["key"]),
+        "--attempt",
+        agent_attempt_id,
+        "--input-file",
+        "-",
+    ],
+    status=4,
+    code="LEASE_LOST",
+    message="The Claim is no longer current.",
+    input_value={"message": "Stale released writer."},
+)
+success(
+    [
+        "task",
+        "cancel",
+        str(agent_released_task["key"]),
+        "--reason",
+        "Release path verified.",
+        "--expected-version",
+        "1",
+        "--idempotency-key",
+        "phase-four-agent-release-cancel",
+    ]
+)
+
+review_task = task(
+    success(
+        [
+            "task",
+            "add",
+            "Reviewed Agent execution",
+            "--approval",
+            "human",
+            "--idempotency-key",
+            "phase-four-agent-review-task",
+        ]
+    )
+)
+review_claim = success(
+    [
+        "task",
+        "claim",
+        "--idempotency-key",
+        "phase-four-agent-review-claim",
+    ]
+)
+review_attempt_id = review_claim["attempt"]["id"]
+failure(
+    ["task", "claim", "--idempotency-key", "phase-four-double-claim"],
+    status=3,
+    code="NO_TASK_AVAILABLE",
+    message="No ready Task is available to claim.",
+    retryable=True,
+)
+review_progress = success(
+    [
+        "task",
+        "progress",
+        str(review_task["key"]),
+        "--attempt",
+        review_attempt_id,
+        "--input-file",
+        "-",
+        "--idempotency-key",
+        "phase-four-review-progress",
+    ],
+    input_value={"message": "Review evidence prepared.", "percent_complete": 100},
+)
+failure(
+    [
+        "task",
+        "submit",
+        str(review_task["key"]),
+        "--attempt",
+        review_attempt_id,
+        "--expected-version",
+        "2",
+        "--result-file",
+        "-",
+    ],
+    status=4,
+    code="VERSION_CONFLICT",
+    message="The Task changed after the expected version.",
+    input_value={
+        "summary": "Wrong-version submission.",
+        "criteria": [],
+        "artifacts": [],
+        "proposed_follow_ups": [],
+    },
+)
+review_result_input = {
+    "summary": "Installed Agent execution verified.",
+    "criteria": [],
+    "artifacts": [],
+    "proposed_follow_ups": [],
+}
+review_submission = success(
+    [
+        "task",
+        "submit",
+        str(review_task["key"]),
+        "--attempt",
+        review_attempt_id,
+        "--expected-version",
+        "1",
+        "--result-file",
+        "-",
+        "--idempotency-key",
+        "phase-four-agent-review-submit",
+    ],
+    input_value=review_result_input,
+)
+if review_submission["task"]["state"] != "review":
+    raise SystemExit("Agent review submission did not enter review")
+if review_submission["claim"] is not None:
+    raise SystemExit("Agent review submission retained its Claim")
+if review_submission["attempt"]["status"] != "submitted":
+    raise SystemExit("Agent review submission did not terminalize its Attempt")
+if review_submission["result"]["attempt_id"] != review_attempt_id:
+    raise SystemExit("Agent Result lost Attempt attribution")
+restarted_review = success(["task", "show", str(review_task["key"])])
+if restarted_review["current_result"] != review_submission["result"]:
+    raise SystemExit("process restart changed the Agent Result")
+review_history = success(
+    ["task", "events", str(review_task["key"]), "--after", "0", "--limit", "100"]
+)
+review_event_types = [event["type"] for event in review_history["events"]]
+expected_review_event_types = [
+    "task_created",
+    "task_claimed",
+    "progress_reported",
+    "result_submitted",
+]
+if review_event_types != expected_review_event_types:
+    raise SystemExit(f"Agent review event order changed: {review_event_types!r}")
+if review_history["events"][0]["attempt_id"] is not None:
+    raise SystemExit("Task creation unexpectedly acquired an Attempt")
+if any(
+    event["attempt_id"] != review_attempt_id
+    for event in review_history["events"][1:]
+):
+    raise SystemExit("Agent event history lost Attempt attribution")
+review_approval = success(
+    [
+        "task",
+        "approve",
+        str(review_task["key"]),
+        "--comment",
+        "Installed evidence accepted.",
+        "--expected-version",
+        "2",
+        "--idempotency-key",
+        "phase-four-agent-review-approve",
+    ]
+)
+if review_approval["task"]["version"] != 3:
+    raise SystemExit("Agent review approval version changed")
+
+expiry_task = task(
+    success(
+        [
+            "task",
+            "add",
+            "Expiring Agent execution",
+            "--idempotency-key",
+            "phase-four-expiry-task",
+        ]
+    )
+)
+expiring_claim = success(
+    [
+        "task",
+        "claim",
+        "--lease",
+        "1s",
+        "--idempotency-key",
+        "phase-four-expiring-claim",
+    ]
+)
+expired_attempt_id = expiring_claim["attempt"]["id"]
+time.sleep(1.1)
+failure(
+    [
+        "task",
+        "heartbeat",
+        str(expiry_task["key"]),
+        "--attempt",
+        expired_attempt_id,
+    ],
+    status=4,
+    code="LEASE_LOST",
+    message="The Claim is no longer current.",
+)
+reclaimed = success(
+    [
+        "task",
+        "claim",
+        "--idempotency-key",
+        "phase-four-reclaimed-claim",
+    ]
+)
+reclaimed_attempt_id = reclaimed["attempt"]["id"]
+if reclaimed_attempt_id == expired_attempt_id:
+    raise SystemExit("reclaim revived the expired Attempt")
+if [event["type"] for event in reclaimed["events"]] != [
+    "claim_expired",
+    "task_claimed",
+]:
+    raise SystemExit("reclaim event order changed")
+expiry_submission = success(
+    [
+        "task",
+        "submit",
+        str(expiry_task["key"]),
+        "--attempt",
+        reclaimed_attempt_id,
+        "--expected-version",
+        "1",
+        "--result-file",
+        "-",
+        "--idempotency-key",
+        "phase-four-reclaimed-submit",
+    ],
+    input_value={
+        "summary": "Expiry and reclaim verified.",
+        "criteria": [],
+        "artifacts": [],
+        "proposed_follow_ups": [],
+    },
+)
+if expiry_submission["attempt"]["status"] != "submitted":
+    raise SystemExit("reclaimed Attempt was not submitted")
+
+schema_three_directory.mkdir()
+schema_three_database = schema_three_directory / "local.db"
+connection = sqlite3.connect(schema_three_database)
 try:
     connection.execute(
         "CREATE TABLE store_metadata (singleton INTEGER, schema_version INTEGER)"
     )
-    connection.execute("INSERT INTO store_metadata VALUES (1, 2)")
+    connection.execute("INSERT INTO store_metadata VALUES (1, 3)")
     connection.commit()
 finally:
     connection.close()
-schema_two_bytes = schema_two_database.read_bytes()
-schema_two_environment = dict(safe_environment)
-schema_two_environment["WORKAHOLIC_DATA_DIR"] = str(schema_two_directory)
+schema_three_bytes = schema_three_database.read_bytes()
+schema_three_environment = dict(safe_environment)
+schema_three_environment["WORKAHOLIC_DATA_DIR"] = str(schema_three_directory)
 failure(
     ["up", "--project-key", "LEGACY"],
     status=10,
     code="SCHEMA_UNSUPPORTED",
     message="Store schema is missing or unsupported.",
-    cwd=schema_two_workspace,
-    environment=schema_two_environment,
+    cwd=schema_three_workspace,
+    environment=schema_three_environment,
 )
-if schema_two_database.read_bytes() != schema_two_bytes:
-    raise SystemExit("schema version 2 store changed after rejection")
+if schema_three_database.read_bytes() != schema_three_bytes:
+    raise SystemExit("schema version 3 store changed after rejection")
 
 summary = {
-    "approved_version": approved_task["version"],
+    "agent_review_version": review_approval["task"]["version"],
     "errors": [
         "VERSION_CONFLICT",
         "DEPENDENCY_CYCLE",
@@ -796,28 +1280,34 @@ summary = {
         "INVALID_TRANSITION",
         "UNSATISFIABLE_DEPENDENCY",
         "RESULT_INVALID",
+        "NO_TASK_AVAILABLE",
+        "TASK_LOCKED",
+        "LEASE_LOST",
         "SCHEMA_UNSUPPORTED",
     ],
-    "human_attempt_id": approved_result["attempt_id"],
-    "prerequisite_version": completed_prerequisite["version"],
-    "ready_after_prerequisite": [value["key"] for value in ready_after],
-    "reviewed_events": event_types,
+    "expired_attempt_changed": expired_attempt_id != reclaimed_attempt_id,
+    "human_attempt_id": human_submission["result"]["attempt_id"],
+    "progress_events": [event["type"] for event in progress["events"]],
+    "review_attempt_attributed": (
+        review_submission["result"]["attempt_id"] == review_attempt_id
+    ),
+    "reviewed_events": review_event_types,
     "schema_version": 4,
 }
 print(json.dumps(summary, separators=(",", ":"), sort_keys=True))
 PY
 )
 
-if [ ! -f "$phase_three_data_directory/local.db" ]; then
+if [ ! -f "$phase_four_data_directory/local.db" ]; then
   fail_data "installed journey did not create the owned SQLite store"
 fi
-if [ ! -f "$phase_three_workspace/.workaholic.env" ]; then
+if [ ! -f "$phase_four_workspace/.workaholic.env" ]; then
   fail_data "installed journey did not create the owned Workspace context"
 fi
-if [ -n "$(find "$phase_three_config_directory" -mindepth 1 -maxdepth 1 -print)" ]; then
+if [ -n "$(find "$phase_four_config_directory" -mindepth 1 -maxdepth 1 -print)" ]; then
   fail_data "installed journey unexpectedly wrote trusted configuration"
 fi
 
-printf '%s\n' "$phase_three_summary"
+printf '%s\n' "$phase_four_summary"
 printf '%s\n' \
-  "Verified Phase 3 Human lifecycle from workaholic $phase_three_installed_version."
+  "Verified Phase 4 Human and Agent execution from workaholic $phase_four_installed_version."

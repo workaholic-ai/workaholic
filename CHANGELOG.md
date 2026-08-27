@@ -21,6 +21,9 @@ public versioning begins.
 - Cumulative Phase 4 repository and `LocalSession` conformance suites plus a
   fresh-process golden journey covering Human ownership, Agent execution,
   expiry and reclaim, lock enforcement, and simultaneous Claim races.
+- A fail-fast Phase 4 clean-state gate and isolated installed-wheel journey
+  covering Claim, Attempt, Lease, lock, progress, Result, review, restart,
+  idempotency, and disposable-schema boundaries.
 
 ### Changed
 

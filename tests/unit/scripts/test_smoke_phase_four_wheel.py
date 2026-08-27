@@ -1,4 +1,4 @@
-"""Tests for the installed-wheel Phase 2 multi-Project smoke boundary."""
+"""Tests for the installed-wheel Phase 4 Human/Agent smoke boundary."""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ from pathlib import Path
 import pytest
 
 _PROJECT_ROOT = Path(__file__).parents[3]
-_SMOKE_SCRIPT = _PROJECT_ROOT / "scripts" / "smoke-phase-2-wheel.sh"
+_SMOKE_SCRIPT = _PROJECT_ROOT / "scripts" / "smoke-phase-4-wheel.sh"
 
 
 def _run_smoke(
@@ -67,12 +67,12 @@ def test_smoke_requires_exactly_one_wheel(
     result = _run_smoke(tmp_path, arguments)
 
     assert result.returncode == 64
-    assert "usage: scripts/smoke-phase-2-wheel.sh <wheel-path>" in result.stderr
+    assert "usage: scripts/smoke-phase-4-wheel.sh <wheel-path>" in result.stderr
     assert tuple((tmp_path / "temporary").iterdir()) == ()
 
 
 def test_smoke_rejects_missing_and_nonwheel_artifacts(tmp_path: Path) -> None:
-    """Artifact path validation happens before uv or temporary-state creation."""
+    """Artifact validation happens before uv or temporary-state creation."""
     missing = _run_smoke(
         tmp_path / "missing",
         [str(tmp_path / "missing.whl")],
@@ -91,24 +91,54 @@ def test_smoke_rejects_missing_and_nonwheel_artifacts(tmp_path: Path) -> None:
     assert tuple((tmp_path / "malformed-run" / "temporary").iterdir()) == ()
 
 
-def test_smoke_declares_isolated_profile_and_workspace_boundaries() -> None:
-    """The public script owns every stateful installed-journey boundary."""
+def test_smoke_declares_complete_isolated_lifecycle_and_failure_contracts() -> None:
+    """The script owns state and proves every Phase 4 acceptance boundary."""
     source = _SMOKE_SCRIPT.read_text(encoding="utf-8")
 
     for required_contract in (
         "WORKAHOLIC_CONFIG_DIR",
         "WORKAHOLIC_DATA_DIR",
-        "profiles.toml",
-        "profiles.local",
-        "profiles.isolated",
-        "project create",
-        "project bind",
-        "task list --all-projects",
-        "ACME-1",
-        "DOCS-1",
         "unset PYTHONHOME PYTHONPATH VIRTUAL_ENV WORKAHOLIC_PROFILE",
+        "phase-four-human-claim",
+        "phase-four-human-renew",
+        "phase-four-human-release",
+        "phase-four-agent-claim",
+        "phase-four-agent-heartbeat",
+        "phase-four-agent-progress",
+        "phase-four-agent-release",
+        "phase-four-agent-review-submit",
+        "phase-four-expiring-claim",
+        "phase-four-reclaimed-claim",
+        "phase-four-reclaimed-submit",
+        '"--lease", "0s"',
+        '"actor_subject_id": "sub_forged"',
+        "phase-four-double-claim",
+        "foreign_attempt_id",
+        '"--expected-version",\n        "2"',
+        "VERSION_CONFLICT",
+        "IDEMPOTENCY_CONFLICT",
+        "NO_TASK_AVAILABLE",
+        "TASK_LOCKED",
+        "LEASE_LOST",
+        "SCHEMA_UNSUPPORTED",
+        "schema_three_database.read_bytes() != schema_three_bytes",
+        "process restart changed the Agent Result",
+        "time.sleep(1.1)",
+        '"claim_expired",\n    "task_claimed"',
     ):
         assert required_contract in source
+
+
+def test_smoke_uses_only_the_installed_cli_for_product_operations() -> None:
+    """The wheel gate never imports source or private Workaholic modules."""
+    source = _SMOKE_SCRIPT.read_text(encoding="utf-8")
+
+    assert "\nfrom workaholic" not in source
+    assert "\nimport workaholic" not in source
+    assert "phase_four_command=$phase_four_environment/bin/workaholic" in source
+    assert "subprocess.run(" in source
+    assert '"--json", "--non-interactive"' in source
+    assert '"PYTHONNOUSERSITE": "1"' in source
 
 
 def test_smoke_is_an_executable_posix_entry_point() -> None:

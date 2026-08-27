@@ -275,32 +275,33 @@ Before submitting a change, run:
 ```bash
 uv run pre-commit run --all-files
 uv run pytest
-uv build
+uv build --no-progress
 scripts/smoke-install.sh dist/*.whl
 ```
 
-## Phase 3 acceptance gate
+## Phase 4 acceptance gate
 
 From a clean checkout with no active virtual environment, pre-existing
 `.venv` or `dist`, or inherited Workaholic config/data/profile selectors, run:
 
 ```bash
-scripts/verify-phase-3.sh
+scripts/verify-phase-4.sh
 ```
 
 The gate synchronizes the locked environment, runs all pre-commit controls and
 tests, builds the distribution, verifies isolated wheel installation, and
-executes the installed-wheel Human lifecycle through
-`scripts/smoke-phase-3-wheel.sh dist/*.whl`. It owns and removes temporary
+executes installed-wheel Human and Agent execution through
+`scripts/smoke-phase-4-wheel.sh dist/*.whl`. It owns and removes temporary
 config, data, and Workspace roots, and refuses a dirty checkout or any caller
 state that could redirect persistence. The source suite and wheel journey
-jointly pin Task versions, readiness, structured Human Results, state changes,
-documented error codes, and ordered TaskEvents.
+jointly pin Claims, Attempts, Lease expiry and reclaim, Task versions, Results,
+lock failures, idempotency, review, restart behavior, and attributable ordered
+TaskEvents.
 
 Earlier milestone gates remain available as
 `scripts/verify-phase-0.sh`, `scripts/verify-phase-1.sh`, and
-`scripts/verify-phase-2.sh`. Each uses temporary state and validates its own
-milestone from a clean checkout.
+`scripts/verify-phase-2.sh`, and `scripts/verify-phase-3.sh`. Each uses temporary
+state and validates its own milestone from a clean checkout.
 
 ## Project documents
 

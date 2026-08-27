@@ -1,4 +1,4 @@
-"""End-to-end acceptance for the Phase 3 source and wheel distribution."""
+"""End-to-end acceptance for the Phase 4 source and wheel distribution."""
 
 from __future__ import annotations
 
@@ -25,7 +25,7 @@ _GATE_ENVIRONMENT_KEYS = (
     "WORKAHOLIC_PHASE_4_GATE_RUNNING",
 )
 _EXPECTED_WHEEL_SUMMARY = {
-    "approved_version": 5,
+    "agent_review_version": 3,
     "errors": [
         "VERSION_CONFLICT",
         "DEPENDENCY_CYCLE",
@@ -33,23 +33,24 @@ _EXPECTED_WHEEL_SUMMARY = {
         "INVALID_TRANSITION",
         "UNSATISFIABLE_DEPENDENCY",
         "RESULT_INVALID",
+        "NO_TASK_AVAILABLE",
+        "TASK_LOCKED",
+        "LEASE_LOST",
         "SCHEMA_UNSUPPORTED",
     ],
+    "expired_attempt_changed": True,
     "human_attempt_id": None,
-    "prerequisite_version": 4,
-    "ready_after_prerequisite": ["ACME-2"],
+    "progress_events": ["progress_reported", "observation_added"],
+    "review_attempt_attributed": True,
     "reviewed_events": [
         "task_created",
-        "task_updated",
-        "task_updated",
+        "task_claimed",
+        "progress_reported",
         "result_submitted",
-        "review_approved",
-        "task_completed",
     ],
     "schema_version": 4,
 }
 _FUTURE_GOLDEN_REASONS = (
-    "Phase 4: missing agent claims, leases, heartbeats, and result submission.",
     "Phase 6: missing authenticated server, RemoteSession, and shared-team workflow.",
     "Phase 7: missing JSON, SQLite, and PostgreSQL adapter conformance.",
     "Phase 9: missing release-candidate publication and clean uvx acceptance.",
@@ -61,7 +62,7 @@ pytestmark = [
     pytest.mark.requires_uv,
     pytest.mark.skipif(
         any(os.environ.get(key) == "1" for key in _GATE_ENVIRONMENT_KEYS),
-        reason="The outer clean-state test owns Phase 3 gate recursion.",
+        reason="The outer clean-state test owns Phase 4 gate recursion.",
     ),
 ]
 
@@ -139,8 +140,8 @@ def _clean_environment(tmp_path: Path) -> dict[str, str]:
     environment.update(
         {
             "NO_COLOR": "1",
-            "PRE_COMMIT_HOME": str(tmp_path.parent / "phase-three-pre-commit"),
-            "UV_CACHE_DIR": str(tmp_path.parent / "phase-three-uv"),
+            "PRE_COMMIT_HOME": str(tmp_path.parent / "phase-four-pre-commit"),
+            "UV_CACHE_DIR": str(tmp_path.parent / "phase-four-uv"),
             "UV_LINK_MODE": "copy",
         }
     )
@@ -185,8 +186,8 @@ def _clone_current_revision(tmp_path: Path) -> Path:
 
 
 @pytest.fixture
-def phase_three_clone(tmp_path: Path) -> Iterator[Path]:
-    """Yield and eagerly remove one Phase 3 clean clone.
+def phase_four_clone(tmp_path: Path) -> Iterator[Path]:
+    """Yield and eagerly remove one Phase 4 clean clone.
 
     Args:
         tmp_path: Pytest-owned temporary directory.
@@ -207,7 +208,7 @@ def _run_gate(
     clone: Path,
     environment: Mapping[str, str],
 ) -> subprocess.CompletedProcess[str]:
-    """Run the public Phase 3 acceptance command.
+    """Run the public Phase 4 acceptance command.
 
     Args:
         clone: Temporary repository root.
@@ -218,7 +219,7 @@ def _run_gate(
 
     """
     return _run(
-        [str(clone / "scripts" / "verify-phase-3.sh")],
+        [str(clone / "scripts" / "verify-phase-4.sh")],
         cwd=clone,
         environment=environment,
     )
@@ -248,28 +249,28 @@ def _wheel_summary(output: str) -> dict[str, object]:
     return value
 
 
-def test_phase_three_gate_passes_from_a_clean_committed_clone(
-    phase_three_clone: Path,
+def test_phase_four_gate_passes_from_a_clean_committed_clone(
+    phase_four_clone: Path,
     tmp_path: Path,
 ) -> None:
     """The aggregate source and installed-wheel exit gate is reproducible."""
     environment = _clean_environment(tmp_path)
-    result = _run_gate(phase_three_clone, environment)
+    result = _run_gate(phase_four_clone, environment)
 
-    _require_success(result, context="Phase 3 clean-state gate")
+    _require_success(result, context="Phase 4 clean-state gate")
     for step in range(1, 7):
         assert f"[{step}/6]" in result.stdout
     assert _wheel_summary(result.stdout) == _EXPECTED_WHEEL_SUMMARY
-    assert "Verified Phase 3 Human lifecycle from workaholic 0.4.0a1." in (
+    assert "Verified Phase 4 Human and Agent execution from workaholic 0.4.0a1." in (
         result.stdout
     )
     for reason in _FUTURE_GOLDEN_REASONS:
         assert reason in result.stdout
-    assert result.stdout.endswith("Phase 3 clean-state acceptance gate passed.\n")
+    assert result.stdout.endswith("Phase 4 clean-state acceptance gate passed.\n")
 
 
-def test_phase_three_gate_rejects_external_state_before_execution(
-    phase_three_clone: Path,
+def test_phase_four_gate_rejects_external_state_before_execution(
+    phase_four_clone: Path,
     tmp_path: Path,
 ) -> None:
     """Caller-owned state cannot redirect or contaminate the acceptance run."""
@@ -291,22 +292,22 @@ def test_phase_three_gate_rejects_external_state_before_execution(
     ):
         contaminated = dict(environment)
         contaminated[selector] = value
-        result = _run_gate(phase_three_clone, contaminated)
+        result = _run_gate(phase_four_clone, contaminated)
         assert result.returncode == 69
-        assert "phase-three:" in result.stderr
-        assert not (phase_three_clone / ".venv").exists()
-        assert not (phase_three_clone / "dist").exists()
+        assert "phase-four:" in result.stderr
+        assert not (phase_four_clone / ".venv").exists()
+        assert not (phase_four_clone / "dist").exists()
 
-    (phase_three_clone / "dist").mkdir()
-    prebuilt = _run_gate(phase_three_clone, environment)
+    (phase_four_clone / "dist").mkdir()
+    prebuilt = _run_gate(phase_four_clone, environment)
     assert prebuilt.returncode == 69
     assert "remove pre-existing dist" in prebuilt.stderr
-    shutil.rmtree(phase_three_clone / "dist")
+    shutil.rmtree(phase_four_clone / "dist")
 
-    readme = phase_three_clone / "README.md"
+    readme = phase_four_clone / "README.md"
     original_readme = readme.read_bytes()
     readme.write_bytes(original_readme + b"\n")
-    dirty = _run_gate(phase_three_clone, environment)
+    dirty = _run_gate(phase_four_clone, environment)
     assert dirty.returncode == 69
     assert "verification requires a clean Git worktree" in dirty.stderr
     assert "README.md" in dirty.stderr
@@ -315,7 +316,7 @@ def test_phase_three_gate_rejects_external_state_before_execution(
     assert data_sentinel.read_bytes() == b"operator data"
 
 
-def test_phase_three_wheel_smoke_rejects_a_malformed_wheel(tmp_path: Path) -> None:
+def test_phase_four_wheel_smoke_rejects_a_malformed_wheel(tmp_path: Path) -> None:
     """A file with a wheel suffix cannot cross the installation boundary."""
     malformed_wheel = tmp_path / "workaholic_ai-0.4.0a1-py3-none-any.whl"
     malformed_wheel.write_bytes(b"not a wheel archive")
@@ -323,7 +324,7 @@ def test_phase_three_wheel_smoke_rejects_a_malformed_wheel(tmp_path: Path) -> No
 
     result = _run(
         [
-            str(_PROJECT_ROOT / "scripts" / "smoke-phase-3-wheel.sh"),
+            str(_PROJECT_ROOT / "scripts" / "smoke-phase-4-wheel.sh"),
             str(malformed_wheel),
         ],
         cwd=_PROJECT_ROOT,
@@ -331,4 +332,4 @@ def test_phase_three_wheel_smoke_rejects_a_malformed_wheel(tmp_path: Path) -> No
     )
 
     assert result.returncode != 0
-    assert "Verified Phase 3 Human lifecycle" not in result.stdout
+    assert "Verified Phase 4 Human and Agent execution" not in result.stdout
