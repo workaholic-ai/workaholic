@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime  # noqa: TC003
@@ -12,13 +11,16 @@ from typing import cast
 
 from workaholic.domain.enums import (
     ApprovalRequirement,
+    AttemptStatus,
     CriterionStatus,
+    ObservationKind,
     ResultReviewStatus,
     TaskEventType,
     TaskState,
 )
 from workaholic.domain.errors import DomainValidationError
 from workaholic.domain.identifiers import (
+    AttemptId,
     InstanceId,
     ProjectId,
     RequestId,
@@ -31,6 +33,10 @@ from workaholic.domain.rules import (
     ACCEPTANCE_CRITERIA_MAX_ITEMS,
     ACCEPTANCE_CRITERION_TEXT_MAX_LENGTH,
     CONTEXT_REFERENCES_MAX_ITEMS,
+    PROGRESS_OBSERVATIONS_MAX_ITEMS,
+    PROGRESS_PERCENT_MAXIMUM,
+    PROGRESS_PERCENT_MINIMUM,
+    PROGRESS_TEXT_MAX_LENGTH,
     REFERENCE_VERSION_MAX_LENGTH,
     RESULT_COLLECTION_MAX_ITEMS,
     RESULT_TEXT_MAX_LENGTH,
@@ -58,7 +64,6 @@ type JsonValue = JsonScalar | tuple[JsonValue, ...] | Mapping[str, JsonValue]
 
 _SUBJECT_DISPLAY_NAME_MIN_LENGTH = 1
 _SUBJECT_DISPLAY_NAME_MAX_LENGTH = 200
-_ATTEMPT_ID_PATTERN = re.compile(r"^atm_[A-Za-z0-9][A-Za-z0-9_-]{0,127}$")
 
 
 class SubjectKind(StrEnum):
@@ -371,7 +376,7 @@ class TaskResult:
     id: ResultId
     task_uid: TaskId
     submitted_by: SubjectId
-    attempt_id: str | None
+    attempt_id: AttemptId | None
     submitted_at: datetime
     comment: str | None
     summary: str | None
@@ -389,13 +394,12 @@ class TaskResult:
             SubjectId,
             label="Result submitted_by",
         )
-        attempt_id: object = self.attempt_id
-        if attempt_id is not None and (
-            not isinstance(attempt_id, str)
-            or _ATTEMPT_ID_PATTERN.fullmatch(attempt_id) is None
-        ):
-            message = "Result attempt_id must be null or an opaque atm_ identifier."
-            raise DomainValidationError(message)
+        if self.attempt_id is not None:
+            _require_instance(
+                self.attempt_id,
+                AttemptId,
+                label="Result attempt_id",
+            )
         validate_utc_timestamp(self.submitted_at, label="Result submitted_at")
         if self.comment is not None:
             object.__setattr__(
@@ -557,6 +561,151 @@ class Task:
 
 
 @dataclass(frozen=True, slots=True)
+class ProgressObservation:
+    """One inert structured observation reported by an Agent."""
+
+    kind: ObservationKind
+    text: str
+
+    def __post_init__(self) -> None:
+        """Validate and normalize the observation contract."""
+        _require_instance(self.kind, ObservationKind, label="Observation kind")
+        object.__setattr__(
+            self,
+            "text",
+            normalize_bounded_printable_text(
+                self.text,
+                label="Observation text",
+                maximum=PROGRESS_TEXT_MAX_LENGTH,
+            ),
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class TaskProgress:
+    """One bounded immutable Agent progress report."""
+
+    message: str | None = None
+    percent_complete: int | None = None
+    observations: tuple[ProgressObservation, ...] | None = None
+
+    def __post_init__(self) -> None:
+        """Validate fields, presence, bounds, and immutable observation order."""
+        if (
+            self.message is None
+            and self.percent_complete is None
+            and self.observations is None
+        ):
+            message = "Task progress must contain at least one field."
+            raise DomainValidationError(message)
+        if self.message is not None:
+            object.__setattr__(
+                self,
+                "message",
+                normalize_bounded_printable_text(
+                    self.message,
+                    label="Progress message",
+                    maximum=PROGRESS_TEXT_MAX_LENGTH,
+                ),
+            )
+        if self.percent_complete is not None and (
+            type(self.percent_complete) is not int
+            or not PROGRESS_PERCENT_MINIMUM
+            <= self.percent_complete
+            <= PROGRESS_PERCENT_MAXIMUM
+        ):
+            message = "Progress percent_complete must be an integer from 0 to 100."
+            raise DomainValidationError(message)
+        if self.observations is not None:
+            object.__setattr__(
+                self,
+                "observations",
+                _validated_tuple(
+                    self.observations,
+                    ProgressObservation,
+                    label="Progress observations",
+                    maximum=PROGRESS_OBSERVATIONS_MAX_ITEMS,
+                ),
+            )
+
+
+@dataclass(frozen=True, slots=True)
+class TaskClaim:
+    """Current exclusive and expiring ownership record for one Task."""
+
+    task_uid: TaskId
+    task_key: str
+    subject_id: SubjectId
+    attempt_id: AttemptId | None
+    claimed_at: datetime
+    lease_expires_at: datetime
+
+    def __post_init__(self) -> None:
+        """Validate Claim identities and its positive UTC Lease window."""
+        _require_instance(self.task_uid, TaskId, label="Claim task_uid")
+        _validate_embedded_task_key(self.task_key, label="Claim task_key")
+        _require_instance(self.subject_id, SubjectId, label="Claim subject_id")
+        if self.attempt_id is not None:
+            _require_instance(self.attempt_id, AttemptId, label="Claim attempt_id")
+        validate_utc_timestamp(self.claimed_at, label="Claim claimed_at")
+        validate_utc_timestamp(
+            self.lease_expires_at,
+            label="Claim lease_expires_at",
+        )
+        if self.lease_expires_at <= self.claimed_at:
+            message = "Claim lease_expires_at must follow claimed_at."
+            raise DomainValidationError(message)
+
+
+@dataclass(frozen=True, slots=True)
+class TaskAttempt:
+    """One immutable Agent execution record associated with a Claim."""
+
+    id: AttemptId
+    task_uid: TaskId
+    subject_id: SubjectId
+    status: AttemptStatus
+    lease_expires_at: datetime
+    started_at: datetime
+    ended_at: datetime | None
+
+    def __post_init__(self) -> None:
+        """Validate Attempt identity, status, and terminal timestamp rules."""
+        _require_instance(self.id, AttemptId, label="Attempt id")
+        _require_instance(self.task_uid, TaskId, label="Attempt task_uid")
+        _require_instance(self.subject_id, SubjectId, label="Attempt subject_id")
+        _require_instance(self.status, AttemptStatus, label="Attempt status")
+        validate_utc_timestamp(
+            self.lease_expires_at,
+            label="Attempt lease_expires_at",
+        )
+        validate_utc_timestamp(self.started_at, label="Attempt started_at")
+        if self.lease_expires_at <= self.started_at:
+            message = "Attempt lease_expires_at must follow started_at."
+            raise DomainValidationError(message)
+        if self.ended_at is not None:
+            validate_utc_timestamp(self.ended_at, label="Attempt ended_at")
+        if self.status is AttemptStatus.ACTIVE:
+            if self.ended_at is not None:
+                message = "An active Attempt must not have ended_at."
+                raise DomainValidationError(message)
+            return
+        if self.ended_at is None:
+            message = "A terminal Attempt requires ended_at."
+            raise DomainValidationError(message)
+        if self.ended_at < self.started_at:
+            message = "Attempt ended_at must not precede started_at."
+            raise DomainValidationError(message)
+        if self.status is AttemptStatus.EXPIRED:
+            if self.ended_at != self.lease_expires_at:
+                message = "An expired Attempt must end at lease_expires_at."
+                raise DomainValidationError(message)
+        elif self.ended_at >= self.lease_expires_at:
+            message = "A released or submitted Attempt must end before Lease expiry."
+            raise DomainValidationError(message)
+
+
+@dataclass(frozen=True, slots=True)
 class TaskEvent:
     """One append-only, attributable record of a Task mutation."""
 
@@ -569,6 +718,7 @@ class TaskEvent:
     event_type: TaskEventType
     occurred_at: datetime
     payload: Mapping[str, JsonValue] = field(hash=False)
+    attempt_id: AttemptId | None = None
 
     def __post_init__(self) -> None:
         """Validate the TaskEvent invariant set and freeze its payload copy."""
@@ -596,7 +746,42 @@ class TaskEvent:
             label="TaskEvent event_type",
         )
         validate_utc_timestamp(self.occurred_at, label="TaskEvent occurred_at")
+        if self.attempt_id is not None:
+            _require_instance(
+                self.attempt_id,
+                AttemptId,
+                label="TaskEvent attempt_id",
+            )
         object.__setattr__(self, "payload", _freeze_event_payload(self.payload))
+
+
+def _validate_embedded_task_key(value: object, *, label: str) -> str:
+    """Validate a standalone human Task key by deriving its number suffix.
+
+    Args:
+        value: Candidate stable Task key.
+        label: Human-readable field label.
+
+    Returns:
+        The validated Task key.
+
+    Raises:
+        DomainValidationError: If the value is not a canonical Task key.
+
+    """
+    if not isinstance(value, str):
+        message = f"{label} must be a string."
+        raise DomainValidationError(message)
+    _, separator, number_text = value.rpartition("-")
+    if separator != "-" or not number_text.isascii() or not number_text.isdecimal():
+        message = f"{label} must use the immutable PROJECT-NUMBER form."
+        raise DomainValidationError(message)
+    try:
+        task_number = int(number_text)
+        return validate_task_key(value, task_number=task_number)
+    except DomainValidationError as error:
+        message = f"{label} must use the immutable PROJECT-NUMBER form."
+        raise DomainValidationError(message) from error
 
 
 def _require_instance(value: object, expected: type[object], *, label: str) -> None:

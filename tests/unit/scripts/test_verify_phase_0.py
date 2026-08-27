@@ -86,7 +86,7 @@ if [ "${WORKAHOLIC_TEST_UV_FAIL_ON:-}" = "$*" ]; then
 fi
 if [ "$*" = "build" ]; then
   mkdir -p dist
-  printf '%s\n' "wheel fixture" > dist/workaholic_ai-0.3.0a1-py3-none-any.whl
+  printf '%s\n' "wheel fixture" > dist/workaholic_ai-0.4.0a1-py3-none-any.whl
 fi
 """,
     )
@@ -187,7 +187,7 @@ def test_gate_runs_the_exact_phase_zero_journey_from_the_project_root(
         f"{project_root}|build",
     ]
     assert smoke_calls == [
-        (f"{project_root}|dist/workaholic_ai-0.3.0a1-py3-none-any.whl")
+        (f"{project_root}|dist/workaholic_ai-0.4.0a1-py3-none-any.whl")
     ]
     assert git_calls[0] == f"{project_root}|rev-parse --show-toplevel"
     assert (

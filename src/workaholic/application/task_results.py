@@ -129,6 +129,7 @@ class TaskResultApplication:
                     if task.approval is ApprovalRequirement.NONE
                     else None
                 ),
+                claim_expired_event_id=self._identifiers.new_event_id(),
                 request_id=self._identifiers.new_request_id(),
                 occurred_at=self._clock.now(),
                 expected_version=candidate.expected_version,
@@ -282,15 +283,26 @@ def _matches_result(
     """
     task = result.task
     events = result.events
+    has_expiry_prefix = (
+        isinstance(mutation, SubmitHumanResultMutation)
+        and events[0].event_type is TaskEventType.CLAIM_EXPIRED
+    )
+    operation_events = events[1:] if has_expiry_prefix else events
     common = (
         task.uid == mutation.task_uid
         and task.project_id == mutation.project_id
         and task.version == mutation.expected_version + 1
         and all(event.actor_subject_id == mutation.actor_subject_id for event in events)
-        and tuple(event.event_type for event in events) == _expected_event_types(result)
+        and tuple(event.event_type for event in operation_events)
+        == _expected_event_types(result)
         and all(
             dict(event.payload) == _expected_event_payload(event, result=result)
-            for event in events
+            for event in operation_events
+        )
+        and _matches_expiry_prefix(
+            result,
+            mutation=mutation,
+            has_expiry_prefix=has_expiry_prefix,
         )
     )
     if not common:
@@ -306,10 +318,10 @@ def _matches_result(
         )
         fresh_ids = (
             result.result.id == mutation.result_id
-            and events[0].id == mutation.result_submitted_event_id
+            and operation_events[0].id == mutation.result_submitted_event_id
             and (
                 mutation.task_completed_event_id is None
-                or events[-1].id == mutation.task_completed_event_id
+                or operation_events[-1].id == mutation.task_completed_event_id
             )
         )
     elif isinstance(mutation, ApproveResultMutation):
@@ -340,8 +352,30 @@ def _matches_result(
         return True
     return (
         fresh_ids
-        and all(event.request_id == mutation.request_id for event in events)
-        and all(event.occurred_at == mutation.occurred_at for event in events)
+        and all(event.request_id == mutation.request_id for event in operation_events)
+        and all(event.occurred_at == mutation.occurred_at for event in operation_events)
+    )
+
+
+def _matches_expiry_prefix(
+    result: TaskSubmissionResult,
+    *,
+    mutation: _ResultMutation,
+    has_expiry_prefix: bool,
+) -> bool:
+    """Return whether Human submission has a valid nullable expiry prefix."""
+    if not has_expiry_prefix:
+        return True
+    if not isinstance(mutation, SubmitHumanResultMutation):
+        return False
+    expired = result.events[0]
+    return expired.actor_subject_id == mutation.actor_subject_id and (
+        mutation.idempotency_key is not None
+        or (
+            expired.id == mutation.claim_expired_event_id
+            and expired.request_id == mutation.request_id
+            and expired.occurred_at == mutation.occurred_at
+        )
     )
 
 

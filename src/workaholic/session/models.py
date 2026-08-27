@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from datetime import datetime  # noqa: TC003
+from datetime import datetime, timedelta
 from pathlib import Path  # noqa: TC003
 from typing import Annotated
 
@@ -21,11 +21,17 @@ from workaholic.domain import (
     ACCEPTANCE_CRITERIA_MAX_ITEMS,
     CONTEXT_REFERENCES_MAX_ITEMS,
     DEFAULT_TASK_PRIORITY,
+    PROGRESS_OBSERVATIONS_MAX_ITEMS,
     AcceptanceCriterion,
     ApprovalRequirement,
+    AttemptId,
     ContextReference,
+    ObservationKind,
+    ProgressObservation,
     TaskId,
+    TaskProgress,
     normalize_project_name,
+    resolve_lease_duration,
     validate_profile_name,
     validate_project_key,
     validate_utc_timestamp,
@@ -37,6 +43,7 @@ _ProfileName = Annotated[str, BeforeValidator(validate_profile_name)]
 _IdempotencyKey = Annotated[str, Field(min_length=1, max_length=128)]
 _Cursor = Annotated[str, Field(min_length=1, max_length=2_048)]
 _TaskSelector = TaskId | Annotated[str, Field(min_length=1, max_length=256)]
+_AGENT_LEASE_VALIDATION_ATTEMPT = AttemptId("atm_session_validation")
 
 
 class _SessionRequest(BaseModel):
@@ -425,6 +432,149 @@ class TaskEventsRequest(_SessionRequest):
     project: _ProjectKeyText | None = None
 
 
+class _ClaimRequest(_SessionRequest):
+    """Shared replay and Project selection for one Claim command path."""
+
+    lease: timedelta | None = None
+    idempotency_key: _IdempotencyKey | None = None
+    project: _ProjectKeyText | None = None
+
+
+class HumanTaskClaimRequest(_ClaimRequest):
+    """Request one targeted Human Claim without an Agent Attempt."""
+
+    task: _TaskSelector
+
+    @field_validator("lease", mode="before")
+    @classmethod
+    def _validate_human_lease(cls, value: object) -> timedelta | None:
+        """Validate an optional Human Lease duration without coercion.
+
+        Args:
+            value: Candidate duration or ``None`` for the Human default.
+
+        Returns:
+            Validated exact duration or ``None``.
+
+        """
+        return _validate_lease(value, attempt_id=None)
+
+
+class AgentTaskClaimRequest(_ClaimRequest):
+    """Request a Project-scoped Agent pull with a new Attempt."""
+
+    @field_validator("lease", mode="before")
+    @classmethod
+    def _validate_agent_lease(cls, value: object) -> timedelta | None:
+        """Validate an optional Agent Lease duration without coercion.
+
+        Args:
+            value: Candidate duration or ``None`` for the Agent default.
+
+        Returns:
+            Validated exact duration or ``None``.
+
+        """
+        return _validate_lease(
+            value,
+            attempt_id=_AGENT_LEASE_VALIDATION_ATTEMPT,
+        )
+
+
+class HumanClaimRenewRequest(HumanTaskClaimRequest):
+    """Request renewal of the bootstrap Human's targeted Claim."""
+
+
+class AgentHeartbeatRequest(AgentTaskClaimRequest):
+    """Request renewal of one exact active Agent Attempt."""
+
+    task: _TaskSelector
+    attempt: AttemptId
+
+
+class _ClaimReleaseRequest(_SessionRequest):
+    """Shared replay and selection fields for explicit Claim release paths."""
+
+    task: _TaskSelector
+    idempotency_key: _IdempotencyKey | None = None
+    project: _ProjectKeyText | None = None
+
+
+class HumanClaimReleaseRequest(_ClaimReleaseRequest):
+    """Request release of the bootstrap Human's targeted Claim."""
+
+
+class AgentReleaseRequest(_ClaimReleaseRequest):
+    """Request release of one exact active Agent Attempt."""
+
+    attempt: AttemptId
+
+
+class AgentProgressRequest(_SessionRequest):
+    """Request structured progress from one exact active Agent Attempt."""
+
+    task: _TaskSelector
+    attempt: AttemptId
+    progress: TaskProgress
+    idempotency_key: _IdempotencyKey | None = None
+    project: _ProjectKeyText | None = None
+
+    @field_validator("progress", mode="before")
+    @classmethod
+    def _validate_progress(cls, value: object) -> TaskProgress:
+        """Revalidate closed structured Agent progress.
+
+        Args:
+            value: Typed progress or its closed mapping form.
+
+        Returns:
+            Independently validated immutable progress.
+
+        """
+        if isinstance(value, TaskProgress):
+            return TaskProgress(
+                message=value.message,
+                percent_complete=value.percent_complete,
+                observations=value.observations,
+            )
+        if not isinstance(value, Mapping) or not set(value) <= {
+            "message",
+            "percent_complete",
+            "observations",
+        }:
+            message = "Agent progress must use the closed progress shape."
+            raise ValueError(message)
+        observations = _progress_observations(value.get("observations"))
+        return TaskProgress(
+            message=value.get("message"),
+            percent_complete=value.get("percent_complete"),
+            observations=observations,
+        )
+
+
+class AgentSubmitRequest(_ExistingTaskRequest):
+    """Request structured Result submission through one exact Agent Attempt."""
+
+    attempt: AttemptId
+    result: TaskResultInput
+
+    @field_validator("result", mode="before")
+    @classmethod
+    def _validate_result(cls, value: object) -> TaskResultInput:
+        """Revalidate caller-controlled Agent Result content.
+
+        Args:
+            value: Candidate Result input or its closed mapping form.
+
+        Returns:
+            Independently validated immutable Result content.
+
+        """
+        if isinstance(value, TaskResultInput):
+            value = value.model_dump()
+        return TaskResultInput.model_validate(value)
+
+
 def _structured_values(
     value: object,
     *,
@@ -453,3 +603,66 @@ def _structured_values(
         message = f"{label} must not contain more than {maximum} items."
         raise ValueError(message)
     return copied
+
+
+def _validate_lease(
+    value: object,
+    *,
+    attempt_id: AttemptId | None,
+) -> timedelta | None:
+    """Validate one optional owner-specific Lease duration.
+
+    Args:
+        value: Candidate exact ``timedelta`` or ``None`` for the default.
+        attempt_id: Null for Human bounds, typed sentinel for Agent bounds.
+
+    Returns:
+        The original validated duration or ``None``.
+
+    Raises:
+        ValueError: If the duration has subsecond precision or violates bounds.
+
+    """
+    if value is not None and not isinstance(value, timedelta):
+        message = "Lease must be an exact duration."
+        raise ValueError(message)
+    resolved = resolve_lease_duration(value, attempt_id=attempt_id)
+    if not resolved.total_seconds().is_integer():
+        message = "Lease must resolve to whole seconds."
+        raise ValueError(message)
+    return value
+
+
+def _progress_observations(value: object) -> tuple[ProgressObservation, ...] | None:
+    """Validate optional closed progress observations from a mapping.
+
+    Args:
+        value: Optional ordered observation collection.
+
+    Returns:
+        Immutable typed observations or ``None`` when omitted.
+
+    """
+    if value is None:
+        return None
+    observations: list[ProgressObservation] = []
+    for item in _structured_values(
+        value,
+        label="Progress observations",
+        maximum=PROGRESS_OBSERVATIONS_MAX_ITEMS,
+    ):
+        if isinstance(item, ProgressObservation):
+            observation = item
+        elif isinstance(item, Mapping) and set(item) == {"kind", "text"}:
+            kind = item["kind"]
+            observation = ProgressObservation(
+                kind=kind
+                if isinstance(kind, ObservationKind)
+                else ObservationKind(kind),
+                text=item["text"],
+            )
+        else:
+            message = "Progress observations must use the closed observation shape."
+            raise ValueError(message)
+        observations.append(observation)
+    return tuple(observations)

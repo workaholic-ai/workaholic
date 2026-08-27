@@ -15,7 +15,9 @@ from workaholic.application import (
     ApplicationErrorCode,
     BootstrapApplication,
     BootstrapRepository,
+    ClaimExecutionRepository,
     Clock,
+    ExecutionIdentifierFactory,
     IdentifierFactory,
     ProfileInvalidError,
     ProfileNotFoundError,
@@ -23,9 +25,10 @@ from workaholic.application import (
     ProjectRepository,
     QueryApplication,
     QueryRepository,
-    ResultIdentifierFactory,
     TaskApplication,
+    TaskClaimApplication,
     TaskDependencyApplication,
+    TaskExecutionApplication,
     TaskLifecycleApplication,
     TaskRepository,
     TaskResultApplication,
@@ -44,6 +47,7 @@ from workaholic.context import (
     write_current_workspace_context,
 )
 from workaholic.domain import (
+    AttemptId,
     InstanceId,
     ProjectId,
     RequestId,
@@ -69,7 +73,7 @@ from workaholic.session import (
 _PROGRAM_NAME = "workaholic"
 _UUID7_VERSION = 7
 _IDENTIFIER_PREFIXES: Final = frozenset(
-    ("ins_", "prj_", "sub_", "tsk_", "res_", "evt_", "req_")
+    ("ins_", "prj_", "sub_", "tsk_", "res_", "evt_", "req_", "atm_")
 )
 
 type ConfigPathResolver = Callable[[Mapping[str, str]], LocalConfigPaths]
@@ -80,15 +84,14 @@ class _ComposedRepository(
     ProjectRepository,
     TaskRepository,
     QueryRepository,
+    ClaimExecutionRepository,
     Protocol,
 ):
     """Expose only operations consumed by the current local composition."""
 
 
 class _ComposedIdentifierFactory(
-    IdentifierFactory,
-    ResultIdentifierFactory,
-    Protocol,
+    IdentifierFactory, ExecutionIdentifierFactory, Protocol
 ):
     """Generate every identity owned by the embedded application services."""
 
@@ -256,6 +259,10 @@ class _Uuid7IdentifierFactory:
         """Create a candidate request identifier."""
         return RequestId(_new_uuid7_text("req_"))
 
+    def new_attempt_id(self) -> AttemptId:
+        """Create a candidate Agent Attempt identifier."""
+        return AttemptId(_new_uuid7_text("atm_"))
+
 
 @dataclass(frozen=True, slots=True)
 class LocalCompositionFactories:
@@ -317,6 +324,8 @@ class _ProfileRuntimeOpener:
                     identifiers,
                 ),
                 results=TaskResultApplication(repository, clock, identifiers),
+                claims=TaskClaimApplication(repository, clock, identifiers),
+                execution=TaskExecutionApplication(repository, clock, identifiers),
             )
         except ApplicationError:
             raise

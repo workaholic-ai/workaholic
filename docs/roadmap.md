@@ -811,6 +811,11 @@ A Human Claim has a null Attempt and a longer Lease. An Agent Claim has a
 non-null current Attempt and a shorter Lease. Capability filtering is not part
 of v1; a claimant is assumed capable of its selected Task.
 
+Lease text matches `^[1-9][0-9]*(s|m|h|d)$`. Human claim and renewal default
+to `8h` and accept `1m` through `30d`; Agent claim and heartbeat default to
+`15m` and accept `1s` through `24h`. Renewal computes expiry from authoritative
+transaction time, not from the prior expiry.
+
 An Agent Attempt contains:
 
 ```text
@@ -890,6 +895,19 @@ The Human owner may perform normal Human mutations without an Attempt ID. The
 Agent owner may only heartbeat, report progress, release, or submit through its
 current Attempt. Workaholic AI does not force-interrupt an external Agent.
 
+Progress is a closed bounded object containing at least one message, integer
+percentage from 0 through 100, or at most 50 ordered observations. Messages and
+observation text are at most 4,000 characters. Observation kinds are exactly
+`note`, `risk`, `blocker`, and `question`; observations are inert audit data.
+One request appends `progress_reported` followed by its
+`observation_added` events without changing Task version or state.
+
+Pure reads never materialize expiry. They project an expired stored Claim as
+stale and non-owning, so a Task may be both `ready` and `stale`. The next
+successful write that needs the Task may append `claim_expired` and end an
+Agent Attempt at the old Lease expiry. Stale Agent operations return
+`LEASE_LOST` without committing their requested operation.
+
 ## CLI automation contract extension
 
 Phase 4 extends the JSON, non-interactive, idempotency, error, and exit-code
@@ -916,11 +934,21 @@ Example:
   "ok": false,
   "error": {
     "code": "LEASE_LOST",
-    "message": "The attempt for ACME-42 is no longer active.",
+    "message": "The Claim is no longer current.",
     "retryable": false
   }
 }
 ```
+
+The added errors are `NO_TASK_AVAILABLE` (exit `3`, retryable), `TASK_LOCKED`
+(exit `4`, retryable), and `LEASE_LOST` (exit `4`, not retryable), with exact
+messages fixed in the CLI contract. Claim and execution idempotency binds the
+Project, Task selector, nullable Attempt, resolved Lease duration, expected
+version, and complete structured payload wherever present.
+
+Phase 4 advances the disposable embedded SQLite store to exact schema version
+`4`. Version `3` is rejected unchanged; there is no migration, conversion,
+import, export, or silent reset.
 
 ## Concurrency invariants
 

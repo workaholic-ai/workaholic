@@ -49,13 +49,13 @@ def pytest_configure(config: pytest.Config) -> None:
 
 @pytest.fixture
 def golden_runner(tmp_path: Path) -> GoldenJourneyRunner:
-    """Provide the Phase 3 runner pinned to two isolated embedded profiles.
+    """Provide the Phase 4 runner pinned to two isolated embedded profiles.
 
     Args:
         tmp_path: Pytest-owned root unique to the current golden journey.
 
     Returns:
-        Phase 3 subprocess runner over isolated trusted configuration and data.
+        Phase 4 subprocess runner over isolated trusted configuration and data.
 
     """
     data_directory = tmp_path / "golden-data"

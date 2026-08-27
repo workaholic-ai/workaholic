@@ -1,4 +1,4 @@
-"""Canonical Phase 3 TaskResult serialization and strict row codecs."""
+"""Canonical Phase 4 TaskResult serialization and strict row codecs."""
 
 from __future__ import annotations
 
@@ -11,6 +11,7 @@ from workaholic.application import (
 )
 from workaholic.domain import (
     ArtifactReference,
+    AttemptId,
     CriterionOutcome,
     CriterionStatus,
     ProposedFollowUp,
@@ -21,11 +22,17 @@ from workaholic.domain import (
     TaskId,
     TaskResult,
 )
+from workaholic.persistence.sqlite._claim_records import (
+    TASK_ATTEMPT_FIELDS,
+    TaskAttemptRecord,
+    task_attempt_record_from_mapping,
+    task_attempt_record_from_row,
+    task_attempt_record_mapping,
+)
 from workaholic.persistence.sqlite._event_records import (
-    TASK_EVENT_FIELDS,
     TaskEventRecord,
+    require_persisted_task_event_record,
     task_event_record_from_mapping,
-    task_event_record_from_row,
     task_event_record_mapping,
 )
 from workaholic.persistence.sqlite._records import (
@@ -86,7 +93,7 @@ TASK_RESULT_MAPPING_FIELD_SET: Final = frozenset(TASK_RESULT_MAPPING_FIELDS)
 _REVIEW_MAPPING_FIELDS: Final = frozenset(
     ("status", "reviewed_by", "reviewed_at", "comment", "reason")
 )
-_RESULT_OUTCOME_KEYS: Final = frozenset(("events", "result", "task"))
+_RESULT_OUTCOME_KEYS: Final = frozenset(("attempt", "events", "result", "task"))
 
 
 def task_result_mapping(result: TaskResult) -> dict[str, object]:
@@ -99,11 +106,11 @@ def task_result_mapping(result: TaskResult) -> dict[str, object]:
         JSON-compatible stable Result mapping.
 
     Raises:
-        StorageUnavailableError: If the runtime value is not a Human Result.
+        StorageUnavailableError: If the runtime value is not a Task Result.
 
     """
     candidate: object = result
-    if not isinstance(candidate, TaskResult) or candidate.attempt_id is not None:
+    if not isinstance(candidate, TaskResult):
         raise StorageUnavailableError
     review = candidate.review
     return {
@@ -115,7 +122,9 @@ def task_result_mapping(result: TaskResult) -> dict[str, object]:
             }
             for item in candidate.artifacts
         ],
-        "attempt_id": None,
+        "attempt_id": (
+            None if candidate.attempt_id is None else str(candidate.attempt_id)
+        ),
         "comment": candidate.comment,
         "criteria": [
             {
@@ -153,7 +162,7 @@ def task_result_row(result: TaskResult) -> tuple[object, ...]:
     """Serialize one Result into exact ``TASK_RESULT_FIELDS`` order.
 
     Args:
-        result: Validated Human Result.
+        result: Validated Human or Agent Result.
 
     Returns:
         SQLite-compatible row values.
@@ -187,7 +196,7 @@ def task_result_from_mapping(value: Mapping[str, object]) -> TaskResult:
         value: Candidate Result mapping.
 
     Returns:
-        Validated Human Result.
+        Validated Human or Agent Result.
 
     Raises:
         StorageUnavailableError: If shape, values, or attribution are invalid.
@@ -229,7 +238,7 @@ def task_result_from_row(value: Sequence[object]) -> TaskResult:
         value: SQLite row values in canonical Result field order.
 
     Returns:
-        Validated Human Result.
+        Validated Human or Agent Result.
 
     Raises:
         StorageUnavailableError: If row shape or values are malformed.
@@ -255,15 +264,14 @@ def _build_result(
         collections_are_json: Whether collection values are serialized JSON.
 
     Returns:
-        Validated Human Result.
+        Validated Human or Agent Result.
 
     Raises:
         StorageUnavailableError: If any persisted value is invalid.
 
     """
     try:
-        if value[3] is not None:
-            raise StorageUnavailableError
+        attempt_text = require_optional_text(value[3])
         collections = tuple(
             parse_json_array(
                 value[index],
@@ -278,7 +286,7 @@ def _build_result(
             id=ResultId(require_text(value[0])),
             task_uid=TaskId(require_text(value[1])),
             submitted_by=SubjectId(require_text(value[2])),
-            attempt_id=None,
+            attempt_id=(None if attempt_text is None else AttemptId(attempt_text)),
             submitted_at=parse_timestamp(value[4]),
             comment=require_optional_text(value[5]),
             summary=require_optional_text(value[6]),
@@ -402,19 +410,25 @@ def read_idempotent_result_outcome(
         raise IdempotencyConflictError
     result, event_records = parse_result_outcome(require_text(row[1]))
     for event_record in event_records:
-        actual = connection.execute(
+        if str(event_record.event.actor_subject_id) != actor_subject_id:
+            raise StorageUnavailableError
+        require_persisted_task_event_record(connection, expected=event_record)
+    if result.attempt is not None:
+        actual_attempt = connection.execute(
             f"""
-            SELECT {", ".join(TASK_EVENT_FIELDS)}
-            FROM task_events
+            SELECT {", ".join(TASK_ATTEMPT_FIELDS)}
+            FROM task_attempts
             WHERE id = ?
             """,  # noqa: S608 - field names are a closed module constant.
-            (str(event_record.event.id),),
+            (str(result.attempt.id),),
         ).fetchone()
+        expected_attempt = TaskAttemptRecord(
+            project_id=result.task.project_id,
+            attempt=result.attempt,
+        )
         if (
-            actual is None
-            or task_event_record_from_row(actual) != event_record
-            or event_record.attempt_id is not None
-            or str(event_record.event.actor_subject_id) != actor_subject_id
+            actual_attempt is None
+            or task_attempt_record_from_row(actual_attempt) != expected_attempt
         ):
             raise StorageUnavailableError
     return result
@@ -460,6 +474,16 @@ def record_idempotent_result_outcome(  # noqa: PLR0913 - durable contract.
             request_fingerprint,
             canonical_json(
                 {
+                    "attempt": (
+                        None
+                        if result.attempt is None
+                        else task_attempt_record_mapping(
+                            TaskAttemptRecord(
+                                project_id=result.task.project_id,
+                                attempt=result.attempt,
+                            )
+                        )
+                    ),
                     "events": [
                         task_event_record_mapping(record) for record in event_records
                     ],
@@ -496,15 +520,25 @@ def parse_result_outcome(
     task_value = decoded["task"]
     result_value = decoded["result"]
     events_value = decoded["events"]
+    attempt_value = decoded["attempt"]
     if (
         not isinstance(task_value, dict)
         or set(task_value) != TASK_FIELD_SET
         or not isinstance(result_value, dict)
         or not isinstance(events_value, list)
+        or (attempt_value is not None and not isinstance(attempt_value, dict))
     ):
         raise StorageUnavailableError
     task = task_from_mapping(cast("Mapping[str, object]", task_value))
     task_result = task_result_from_mapping(cast("Mapping[str, object]", result_value))
+    attempt = None
+    if isinstance(attempt_value, dict):
+        attempt_record = task_attempt_record_from_mapping(
+            cast("Mapping[str, object]", attempt_value)
+        )
+        if attempt_record.project_id != task.project_id:
+            raise StorageUnavailableError
+        attempt = attempt_record.attempt
     records: list[TaskEventRecord] = []
     for event_value in events_value:
         if not isinstance(event_value, dict):
@@ -517,6 +551,7 @@ def parse_result_outcome(
             task=task,
             result=task_result,
             events=tuple(record.event for record in records),
+            attempt=attempt,
         )
     except ValueError as error:
         raise StorageUnavailableError from error

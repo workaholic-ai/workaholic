@@ -33,6 +33,9 @@ class ApplicationErrorCode(StrEnum):
     DEPENDENCY_CYCLE = "DEPENDENCY_CYCLE"
     UNSATISFIABLE_DEPENDENCY = "UNSATISFIABLE_DEPENDENCY"
     RESULT_INVALID = "RESULT_INVALID"
+    NO_TASK_AVAILABLE = "NO_TASK_AVAILABLE"
+    TASK_LOCKED = "TASK_LOCKED"
+    LEASE_LOST = "LEASE_LOST"
     PERMISSION_DENIED = "PERMISSION_DENIED"
     SCHEMA_UNSUPPORTED = "SCHEMA_UNSUPPORTED"
     STORAGE_BUSY = "STORAGE_BUSY"
@@ -130,6 +133,18 @@ _ERROR_SPECS: Final = MappingProxyType(
         ),
         ApplicationErrorCode.RESULT_INVALID: _ErrorSpec(
             ExitCategory.INPUT_USAGE,
+            retryable=False,
+        ),
+        ApplicationErrorCode.NO_TASK_AVAILABLE: _ErrorSpec(
+            ExitCategory.MISSING,
+            retryable=True,
+        ),
+        ApplicationErrorCode.TASK_LOCKED: _ErrorSpec(
+            ExitCategory.CONFLICT,
+            retryable=True,
+        ),
+        ApplicationErrorCode.LEASE_LOST: _ErrorSpec(
+            ExitCategory.CONFLICT,
             retryable=False,
         ),
         ApplicationErrorCode.PERMISSION_DENIED: _ErrorSpec(
@@ -416,6 +431,39 @@ class ResultInvalidError(ApplicationError):
         super().__init__(
             ApplicationErrorCode.RESULT_INVALID,
             "The submitted Result is invalid.",
+        )
+
+
+class NoTaskAvailableError(ApplicationError):
+    """Report that one Project currently has no ready Task to claim."""
+
+    def __init__(self) -> None:
+        """Initialize the fixed retryable no-Task failure."""
+        super().__init__(
+            ApplicationErrorCode.NO_TASK_AVAILABLE,
+            "No ready Task is available to claim.",
+        )
+
+
+class TaskLockedError(ApplicationError):
+    """Report a current Claim owned by another execution."""
+
+    def __init__(self) -> None:
+        """Initialize the fixed retryable Claim-lock failure."""
+        super().__init__(
+            ApplicationErrorCode.TASK_LOCKED,
+            "The Task has a current Claim owned by another execution.",
+        )
+
+
+class LeaseLostError(ApplicationError):
+    """Report a missing, expired, terminal, or superseded Claim owner token."""
+
+    def __init__(self) -> None:
+        """Initialize the fixed non-retryable Lease-lost failure."""
+        super().__init__(
+            ApplicationErrorCode.LEASE_LOST,
+            "The Claim is no longer current.",
         )
 
 

@@ -8,6 +8,56 @@ public versioning begins.
 
 ## Unreleased
 
+## [0.4.0a1] - 2026-08-27
+
+### Added
+
+- Exclusive local Human and Agent Claims with bounded Leases, explicit Human
+  renewal, Agent heartbeat, safe release, and atomic ready-Task acquisition.
+- Agent-only Attempts with active, released, expired, and submitted terminal
+  states plus exact stale-owner rejection.
+- Bounded structured Agent progress and observations retained as attributable
+  `progress_reported` and `observation_added` TaskEvents.
+- Cumulative Phase 4 repository and `LocalSession` conformance suites plus a
+  fresh-process golden journey covering Human ownership, Agent execution,
+  expiry and reclaim, lock enforcement, and simultaneous Claim races.
+- A fail-fast Phase 4 clean-state gate and isolated installed-wheel journey
+  covering Claim, Attempt, Lease, lock, progress, Result, review, restart,
+  idempotency, and disposable-schema boundaries.
+
+### Changed
+
+- Replaced the disposable Phase 3 store with clean-store SQLite schema version
+  `4`; schema version `3` is rejected unchanged and has no migration path.
+- Expanded the local CLI from 19 to 24 Project, context, Task, Claim, and Agent
+  execution operations.
+- Reused the single bootstrap Subject for both local command paths. Human
+  Claims keep a null Attempt; a non-null Attempt identifies Agent execution.
+- Made a current Claim an exclusive mutation lock: owning Humans retain the
+  normal Task workflow, while owning Agents may heartbeat, report progress,
+  release, or submit with an exact expected Task version.
+
+### Security
+
+- Claim acquisition and expiry are transactional and use the persistence
+  adapter's authoritative clock; pure reads never silently transfer ownership.
+- Current non-owners receive `TASK_LOCKED`, stale or foreign Agent owners
+  receive `LEASE_LOST`, and rejected operations preserve Task, Claim, Attempt,
+  Result, event, and idempotency state.
+- Lease durations use a closed grammar with separate Human and Agent defaults
+  and bounds. Progress payloads cannot forge identity, Attempt, request, event,
+  cursor, Result, or authoritative timestamp fields.
+
+### Known limitations
+
+- The alpha remains embedded-only with one bootstrap Human Subject reused by
+  Human and Agent command paths. It does not distinguish Agent identities or
+  different Human operators sharing the same operating-system account.
+- Tokens, authentication, remote profiles, `RemoteSession`, servers,
+  JSON/PostgreSQL adapters, schema migration, capability scheduling, Project
+  archival, force interruption, and parent/child hierarchy are unavailable.
+- Stores and pre-release automation remain disposable.
+
 ## [0.3.0a1] - 2026-08-01
 
 ### Added

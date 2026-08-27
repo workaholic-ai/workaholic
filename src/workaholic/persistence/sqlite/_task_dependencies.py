@@ -27,6 +27,7 @@ from workaholic.domain import (
     validate_dependency_addition,
     validate_dependency_removal,
 )
+from workaholic.persistence.sqlite._claim_state import guard_human_task_mutation
 from workaholic.persistence.sqlite._records import canonical_json, require_text
 from workaholic.persistence.sqlite._task_lifecycle import (
     _insert_task_event,
@@ -34,6 +35,7 @@ from workaholic.persistence.sqlite._task_lifecycle import (
     _load_dependencies,
     _read_idempotent_mutation,
     _record_idempotent_mutation,
+    _require_matching_expiry_prefix,
     _write_task_if_version,
 )
 from workaholic.persistence.sqlite.connection import open_write_transaction
@@ -139,8 +141,21 @@ def _execute_dependency_mutation(
                 request_fingerprint=fingerprint,
             )
             if replay is not None:
-                _require_matching_result(replay, mutation=mutation, add=add)
+                _require_matching_result(
+                    replay,
+                    mutation=mutation,
+                    add=add,
+                    fresh=False,
+                )
                 return replay
+            _owner_state, expiry_records = guard_human_task_mutation(
+                connection,
+                task=current,
+                actor_subject_id=mutation.actor_subject_id,
+                request_id=mutation.request_id,
+                occurred_at=mutation.occurred_at,
+                claim_expired_event_id=mutation.claim_expired_event_id,
+            )
             if current.version != mutation.expected_version:
                 raise VersionConflictError
             _require_editable_state(current, add=add)
@@ -178,8 +193,17 @@ def _execute_dependency_mutation(
                 event_type=TaskEventType.TASK_UPDATED,
                 payload=_event_payload(mutation, task=updated, add=add),
             )
-            result = TaskMutationResult(task=updated, events=(event.event,))
-            _require_matching_result(result, mutation=mutation, add=add)
+            event_records = (*expiry_records, event)
+            result = TaskMutationResult(
+                task=updated,
+                events=tuple(record.event for record in event_records),
+            )
+            _require_matching_result(
+                result,
+                mutation=mutation,
+                add=add,
+                fresh=True,
+            )
             _record_idempotent_mutation(
                 connection,
                 operation=operation,
@@ -188,7 +212,7 @@ def _execute_dependency_mutation(
                 request_fingerprint=fingerprint,
                 occurred_at=mutation.occurred_at,
                 result=result,
-                event_record=event,
+                event_records=event_records,
             )
             return result
     except ApplicationError:
@@ -508,6 +532,7 @@ def _require_matching_result(
     *,
     mutation: _DependencyMutation,
     add: bool,
+    fresh: bool,
 ) -> None:
     """Validate one fresh or replayed dependency result.
 
@@ -515,21 +540,31 @@ def _require_matching_result(
         result: Candidate semantic result.
         mutation: Owning dependency mutation.
         add: Whether the edge should be present afterward.
+        fresh: Whether generated event identities must match this invocation.
 
     Raises:
         StorageUnavailableError: If the result violates its durable contract.
 
     """
     task = result.task
-    event = result.events[0]
+    event = result.events[-1]
     if (
         task.uid != mutation.task_uid
         or task.project_id != mutation.project_id
         or task.version != mutation.expected_version + 1
         or (mutation.prerequisite_uid in task.depends_on) is not add
+        or (
+            fresh
+            and (
+                event.id != mutation.event_id
+                or event.request_id != mutation.request_id
+                or event.occurred_at != mutation.occurred_at
+            )
+        )
         or event.event_type is not TaskEventType.TASK_UPDATED
         or event.actor_subject_id != mutation.actor_subject_id
         or event.occurred_at != task.updated_at
         or dict(event.payload) != _event_payload(mutation, task=task, add=add)
     ):
         raise StorageUnavailableError
+    _require_matching_expiry_prefix(result, mutation=mutation, fresh=fresh)

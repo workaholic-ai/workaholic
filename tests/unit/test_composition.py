@@ -29,6 +29,7 @@ from workaholic.context import (
 )
 from workaholic.domain import (
     ApprovalRequirement,
+    AttemptId,
     InstanceId,
     ProjectId,
     RequestId,
@@ -38,6 +39,7 @@ from workaholic.domain import (
     TaskEventId,
     TaskEventType,
     TaskId,
+    TaskProgress,
     WorkspaceBinding,
 )
 from workaholic.persistence.sqlite import (
@@ -49,6 +51,10 @@ from workaholic.persistence.sqlite import (
     open_write_transaction,
 )
 from workaholic.session import (
+    AgentHeartbeatRequest,
+    AgentProgressRequest,
+    AgentSubmitRequest,
+    AgentTaskClaimRequest,
     ContextRequest,
     LocalSession,
     StatusRequest,
@@ -156,6 +162,10 @@ class _FixedIdentifiers:
     def new_request_id(self) -> RequestId:
         """Return the fixed request identity."""
         return RequestId("req_fixed")
+
+    def new_attempt_id(self) -> AttemptId:
+        """Return the fixed Agent Attempt identity."""
+        return AttemptId("atm_fixed")
 
 
 def _require_uuid7(identifier: object, *, prefix: str) -> None:
@@ -462,7 +472,7 @@ def test_injected_factories_are_lazy_and_deterministic(tmp_path: Path) -> None:
     ]
 
 
-def test_phase_three_composition_owns_clock_and_exact_identifier_allocation(
+def test_phase_three_composition_owns_clock_and_exact_identifier_allocation(  # noqa: PLR0915 - cumulative allocation contract.
     tmp_path: Path,
 ) -> None:
     """Each mutation obtains time and its exact identity set only once."""
@@ -492,6 +502,7 @@ def test_phase_three_composition_owns_clock_and_exact_identifier_allocation(
                 "result": 0,
                 "event": 0,
                 "request": 0,
+                "attempt": 0,
             }
             self._sequence = dict(self.counts)
 
@@ -529,9 +540,13 @@ def test_phase_three_composition_owns_clock_and_exact_identifier_allocation(
             """Generate one request identity."""
             return RequestId(self._next("request", "req_"))
 
+        def new_attempt_id(self) -> AttemptId:
+            """Generate one Agent Attempt identity."""
+            return AttemptId(self._next("attempt", "atm_"))
+
         def reset_operation_counts(self) -> None:
             """Reset only identity families allocated by Task mutations."""
-            for family in ("result", "event", "request"):
+            for family in ("result", "event", "request", "attempt"):
                 self.counts[family] = 0
 
     workspace = tmp_path / "workspace"
@@ -564,7 +579,7 @@ def test_phase_three_composition_owns_clock_and_exact_identifier_allocation(
     ).task
     assert clock.calls == 1
     assert identifiers.counts["result"] == 0
-    assert identifiers.counts["event"] == 1
+    assert identifiers.counts["event"] == 2
     assert identifiers.counts["request"] == 1
 
     clock.calls = 0
@@ -573,6 +588,48 @@ def test_phase_three_composition_owns_clock_and_exact_identifier_allocation(
         TaskSubmitRequest(task=task.uid, expected_version=task.version)
     )
     assert clock.calls == 1
+    assert identifiers.counts["result"] == 1
+    assert identifiers.counts["event"] == 3
+    assert identifiers.counts["request"] == 1
+
+    session.create_task(TaskCreateRequest(title="Count Agent execution"))
+    clock.calls = 0
+    identifiers.reset_operation_counts()
+    claimed = session.claim_next_task(AgentTaskClaimRequest())
+    assert clock.calls == 1
+    assert identifiers.counts["attempt"] == 1
+    assert identifiers.counts["result"] == 0
+    assert identifiers.counts["event"] == 2
+    assert identifiers.counts["request"] == 1
+
+    assert claimed.attempt is not None
+    clock.calls = 0
+    identifiers.reset_operation_counts()
+    session.report_progress(
+        AgentProgressRequest(
+            task=claimed.task.uid,
+            attempt=claimed.attempt.id,
+            progress=TaskProgress(message="Implementing."),
+        )
+    )
+    assert clock.calls == 1
+    assert identifiers.counts["attempt"] == 0
+    assert identifiers.counts["result"] == 0
+    assert identifiers.counts["event"] == 1
+    assert identifiers.counts["request"] == 1
+
+    clock.calls = 0
+    identifiers.reset_operation_counts()
+    session.submit_agent_result(
+        AgentSubmitRequest(
+            task=claimed.task.uid,
+            attempt=claimed.attempt.id,
+            expected_version=claimed.task.version,
+            result=TaskResultInput(summary="Implemented."),
+        )
+    )
+    assert clock.calls == 1
+    assert identifiers.counts["attempt"] == 0
     assert identifiers.counts["result"] == 1
     assert identifiers.counts["event"] == 2
     assert identifiers.counts["request"] == 1
@@ -593,7 +650,7 @@ def test_phase_three_composition_owns_clock_and_exact_identifier_allocation(
     )
     assert clock.calls == 1
     assert identifiers.counts["result"] == 1
-    assert identifiers.counts["event"] == 1
+    assert identifiers.counts["event"] == 2
     assert identifiers.counts["request"] == 1
 
     clock.calls = 0
@@ -658,6 +715,58 @@ def test_two_embedded_profiles_are_isolated_across_process_restarts(
     assert reopened_team.status(StatusRequest()).instance == team_bootstrap.instance
     assert (local_directory / "local.db").is_file()
     assert (team_directory / "local.db").is_file()
+
+
+def test_phase_four_execution_survives_session_restart_with_bootstrap_attribution(
+    tmp_path: Path,
+) -> None:
+    """A restarted local process keeps Claim ownership and bootstrap identity."""
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    environment = _environment(tmp_path / "data")
+    first = composition.create_local_session(
+        cwd=workspace,
+        environment=environment,
+    )
+    bootstrapped = first.up(UpRequest(project_key="ACME"))
+    first.create_task(TaskCreateRequest(title="Resume Agent execution"))
+    claimed = first.claim_next_task(AgentTaskClaimRequest())
+
+    assert claimed.attempt is not None
+    restarted = composition.create_local_session(
+        cwd=workspace,
+        environment=environment,
+    )
+    heartbeat = restarted.heartbeat_attempt(
+        AgentHeartbeatRequest(
+            task=claimed.task.uid,
+            attempt=claimed.attempt.id,
+        )
+    )
+    progress = restarted.report_progress(
+        AgentProgressRequest(
+            task=claimed.task.uid,
+            attempt=claimed.attempt.id,
+            progress=TaskProgress(message="Resumed after restart."),
+        )
+    )
+    submitted = restarted.submit_agent_result(
+        AgentSubmitRequest(
+            task=claimed.task.uid,
+            attempt=claimed.attempt.id,
+            expected_version=claimed.task.version,
+            result=TaskResultInput(summary="Restart-safe."),
+        )
+    )
+
+    assert claimed.claim is not None
+    assert heartbeat.claim is not None
+    assert claimed.claim.subject_id == bootstrapped.subject.id
+    assert heartbeat.claim.subject_id == bootstrapped.subject.id
+    assert progress.claim.subject_id == bootstrapped.subject.id
+    assert submitted.result.submitted_by == bootstrapped.subject.id
+    assert submitted.attempt is not None
+    assert submitted.attempt.id == claimed.attempt.id
 
 
 def test_environment_profile_precedes_context_and_explicit_profile_wins(
@@ -960,6 +1069,7 @@ def test_identifier_factory_uses_unique_typed_uuid7_values() -> None:
         factory.new_result_id(),
         factory.new_event_id(),
         factory.new_request_id(),
+        factory.new_attempt_id(),
     )
     expectations = (
         (InstanceId, "ins_"),
@@ -969,6 +1079,7 @@ def test_identifier_factory_uses_unique_typed_uuid7_values() -> None:
         (ResultId, "res_"),
         (TaskEventId, "evt_"),
         (RequestId, "req_"),
+        (AttemptId, "atm_"),
     )
 
     assert len({str(identifier) for identifier in identifiers}) == len(identifiers)

@@ -546,7 +546,7 @@ def test_status_and_project_listing_are_stable_after_reopen(tmp_path: Path) -> N
 
     assert status.mode == "embedded"
     assert status.profile == "local"
-    assert status.schema_version == 3
+    assert status.schema_version == 4
     assert status.instance == bootstrap.instance
     assert status.project == bootstrap.project
     assert status.subject == bootstrap.subject
@@ -1295,6 +1295,7 @@ def test_task_details_derive_dependency_readiness_without_rewriting_dependant(
             project_id=dependant.project_id,
             actor_subject_id=bootstrap.subject.id,
             event_id=TaskEventId("evt_dependency"),
+            claim_expired_event_id=TaskEventId("evt_dependency_expired"),
             request_id=RequestId("req_dependency"),
             occurred_at=_NOW + timedelta(seconds=3),
             expected_version=1,

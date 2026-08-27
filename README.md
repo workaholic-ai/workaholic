@@ -6,14 +6,15 @@ embedded local work and single-organization team coordination, with a stable
 machine-readable CLI as the agent interface.
 
 > [!WARNING]
-> Workaholic AI `0.3.0a1` is alpha development software. It implements a
-> complete local Human task workflow with trusted embedded profiles, multiple
-> Projects, Workspace discovery, and SQLite. Pre-release storage and automation
-> remain disposable. Agent execution, Tokens, remote operation, servers, and
-> distributed teams are not implemented.
+> Workaholic AI `0.4.0a1` is alpha development software. It implements local
+> Human and Agent Claims, exclusive leased ownership, Agent progress and
+> submission, trusted embedded profiles, multiple Projects, Workspace
+> discovery, and SQLite. Pre-release storage and automation remain disposable.
+> Tokens, authentication, remote operation, servers, and distributed teams are
+> not implemented.
 
 > [!IMPORTANT]
-> Python 3.14 is the only tested development runtime in Phase 3. There is no
+> Python 3.14 is the only tested development runtime in Phase 4. There is no
 > public operating-system support matrix yet, and compatibility is not promised
 > before `1.0.0`. Pre-release users should pin the package version and treat
 > data and automation as disposable.
@@ -24,13 +25,13 @@ machine-readable CLI as the agent interface.
 - [uv](https://docs.astral.sh/uv/getting-started/installation/)
 - CPython 3.14, which uv can install when needed
 
-Source development is public under Apache-2.0, but `0.3.0a1` is not a published
+Source development is public under Apache-2.0, but `0.4.0a1` is not a published
 or supported release. Use a source checkout for this alpha.
 
 ## Quick start
 
 Clone the repository with your preferred Git transport, change into the
-checkout, and run this complete disposable Human workflow:
+checkout, and run these complete disposable Human and Agent paths:
 
 ```bash
 uv sync --frozen
@@ -41,35 +42,40 @@ workaholic_workspace_directory="$(mktemp -d "${TMPDIR:-/tmp}/workaholic-quicksta
 (
   cd "$workaholic_workspace_directory"
   uv run --project "$workaholic_source_directory" workaholic up --project-key ACME --project-name "Acme delivery"
-  uv run --project "$workaholic_source_directory" workaholic task add "Prepare foundation" --priority 80
-  uv run --project "$workaholic_source_directory" workaholic task add "Deliver reviewed change" --priority 90 --approval human --input-file - <<'JSON'
-{"acceptance":[{"id":"ac_verified","text":"The reviewed change is verified.","required":true}],"context":[{"uri":"workspace://repo/specification.md","version":"v1"}]}
+  uv run --project "$workaholic_source_directory" workaholic task add "Human-owned delivery"
+  uv run --project "$workaholic_source_directory" workaholic task claim ACME-1 --lease 8h
+  uv run --project "$workaholic_source_directory" workaholic task renew ACME-1 --lease 12h
+  uv run --project "$workaholic_source_directory" workaholic task update ACME-1 --priority 80 --expected-version 1
+  uv run --project "$workaholic_source_directory" workaholic task submit ACME-1 --comment "Implemented manually." --expected-version 2
+  uv run --project "$workaholic_source_directory" workaholic task add "Agent-owned delivery"
+  agent_claim_json="$(uv run --project "$workaholic_source_directory" workaholic task claim --lease 15m --json --non-interactive)"
+  printf '%s\n' "$agent_claim_json"
+  agent_attempt_id="$(printf '%s\n' "$agent_claim_json" | uv run --project "$workaholic_source_directory" python -c 'import json, sys; print(json.load(sys.stdin)["data"]["attempt"]["id"])')"
+  uv run --project "$workaholic_source_directory" workaholic task heartbeat ACME-2 --attempt "$agent_attempt_id" --lease 30m
+  uv run --project "$workaholic_source_directory" workaholic task progress ACME-2 --attempt "$agent_attempt_id" --input-file - <<'JSON'
+{"message":"Implementing and verifying the change.","percent_complete":70,"observations":[{"kind":"risk","text":"The final integration check is still running."}]}
 JSON
-  uv run --project "$workaholic_source_directory" workaholic task add-dependency ACME-2 ACME-1 --expected-version 1
-  uv run --project "$workaholic_source_directory" workaholic task list --view ready
-  uv run --project "$workaholic_source_directory" workaholic task block ACME-1 --reason "Verify the foundation manually." --expected-version 1
-  uv run --project "$workaholic_source_directory" workaholic task unblock ACME-1 --expected-version 2
-  uv run --project "$workaholic_source_directory" workaholic task submit ACME-1 --comment "Foundation prepared manually." --expected-version 3
-  uv run --project "$workaholic_source_directory" workaholic task list --view ready
-  uv run --project "$workaholic_source_directory" workaholic task submit ACME-2 --comment "Ready for Human review." --result-file - --expected-version 2 <<'JSON'
-{"summary":"Implemented and verified the reviewed change.","criteria":[{"criterion_id":"ac_verified","status":"passed","evidence":"The local verification passed."}],"artifacts":[{"uri":"workspace://repo/report.md","media_type":"text/markdown","sha256":null}],"proposed_follow_ups":[{"title":"Document the reviewed workflow"}]}
+  uv run --project "$workaholic_source_directory" workaholic task submit ACME-2 --attempt "$agent_attempt_id" --expected-version 1 --result-file - <<'JSON'
+{"summary":"Agent implementation complete.","criteria":[],"artifacts":[],"proposed_follow_ups":[]}
 JSON
-  uv run --project "$workaholic_source_directory" workaholic task list --view review
-  uv run --project "$workaholic_source_directory" workaholic task approve ACME-2 --comment "Evidence accepted." --expected-version 3
   uv run --project "$workaholic_source_directory" workaholic task show ACME-2
   uv run --project "$workaholic_source_directory" workaholic task events ACME-2
 )
 ```
 
-`up` creates and binds the ACME Project. ACME-2 depends on ACME-1, so the first
-ready view contains only ACME-1. Blocking removes it from readiness; unblocking
-and submitting it as a Human completes the prerequisite and makes ACME-2 ready.
-The second submission persists structured evidence with a pending Human review.
-Approval completes ACME-2, and the final commands show the retained Result and
-ordered attributable event history.
+`up` creates and binds the ACME Project. The targeted Human Claim has a null
+Attempt and a long Lease. Its owner can renew the Claim, use the normal Human
+Task workflow, and submit with an optional comment. The untargeted Agent Claim
+atomically pulls the next ready Task and creates a non-null Attempt. That exact
+Attempt heartbeats, records bounded progress, and submits a structured Result;
+submission completes the Task, terminalizes the Attempt, and releases the
+Claim. The final commands show the retained Result and attributable event
+history, including `progress_reported` and `observation_added`.
 
-Every existing-Task mutation in the block uses the version produced by the
-previous operation. This is mandatory because a shell script is non-terminal.
+Every versioned existing-Task mutation in the block uses the version produced
+by the previous mutation. Claim acquisition, renewal, heartbeat, progress, and
+release do not change the Task version. An Agent submission always requires
+`--expected-version`. This is mandatory because a shell script is non-terminal.
 An interactive terminal Human may omit `--expected-version`; Workaholic shows
 the selected Task key, current state and version, describes the action, and asks
 once before submitting that exact version. It never refreshes and silently
@@ -96,7 +102,7 @@ uv run workaholic --version
 The version command prints:
 
 ```text
-workaholic 0.3.0a1
+workaholic 0.4.0a1
 ```
 
 ## Trusted local profiles
@@ -148,21 +154,22 @@ requires `--replace`; even then, Workaholic will not replace a malformed file,
 directory, symlink, or concurrently changed context. It may update the local
 `.git/info/exclude`, but it never changes a shared `.gitignore`.
 
-The `0.3.0a1` SQLite store uses disposable schema version `3`. Phase 2 schema
-version `2` and every other unsupported version are rejected unchanged with
-`SCHEMA_UNSUPPORTED`. There is no migration, conversion, import, export, or
-automatic reset. Before an alpha upgrade, preserve anything needed outside
-Workaholic. For an explicit disposable-development reset, first verify the
-exact selected profile data directory and Workspace contexts belong only to
-that alpha, then remove only those verified artifacts and run `up` again.
-Never delete a broad user-data or configuration directory without verifying
-its ownership and contents.
+The `0.4.0a1` SQLite store uses the disposable Phase 4 schema version `4`
+foundation. Phase 3 schema version `3`, Phase 2 schema version `2`, and every
+other unsupported version are rejected unchanged with `SCHEMA_UNSUPPORTED`.
+There is no migration, conversion, import, export, or automatic reset. Before
+an alpha upgrade, preserve anything needed outside Workaholic. For an explicit
+disposable-development reset, first verify the exact selected profile data
+directory and Workspace contexts belong only to that alpha, then remove only
+those verified artifacts and run `up` again. Never delete a broad user-data or
+configuration directory without verifying its ownership and contents.
 
 ## Current CLI
 
 The default executable composes a short-lived embedded `LocalSession`, trusted
-profile selection, upward Workspace discovery, and SQLite schema version `3`.
-It exposes 19 Project, context, and Task operations without starting a daemon.
+profile selection, upward Workspace discovery, and SQLite schema version `4`.
+It exposes 24 Project, context, Task, Claim, and Agent execution operations
+without starting a daemon.
 
 | Invocation | Current behavior |
 | --- | --- |
@@ -179,11 +186,16 @@ It exposes 19 Project, context, and Task operations without starting a daemon.
 | `workaholic task cancel` | Cancels one mutable Task |
 | `workaholic task add-dependency` | Adds one same-Project prerequisite |
 | `workaholic task remove-dependency` | Removes one same-Project prerequisite |
-| `workaholic task submit` | Persists a Human Result and completes or requests review |
+| `workaholic task claim [TASK]` | Claims one selected Task as a Human, or atomically pulls the next ready Task and creates an Agent Attempt when `TASK` is omitted |
+| `workaholic task renew` | Renews the current Human Claim without requiring an Attempt ID |
+| `workaholic task heartbeat` | Renews one exact active Agent Attempt's Claim |
+| `workaholic task progress` | Appends bounded structured progress for one exact active Agent Attempt |
+| `workaholic task release` | Releases a Human Claim or one exact Agent Attempt |
+| `workaholic task submit` | Persists a Human or Agent Result and completes or requests review |
 | `workaholic task approve` | Approves a pending Human review and completes its Task |
 | `workaholic task reject` | Rejects a pending Human review and reopens its Task |
 | `workaholic task events` | Reads or follows attributable ordered Task history |
-| `workaholic --version` | Prints `workaholic 0.3.0a1` |
+| `workaholic --version` | Prints `workaholic 0.4.0a1` |
 
 Every command accepts `--json` and `--non-interactive`. JSON mode emits one
 closed `workaholic.cli/v1` envelope on stdout. Existing-Task automation must
@@ -192,33 +204,56 @@ supply a positive `--expected-version`; stale input returns
 idempotency keys. Run `workaholic COMMAND --help` for complete input bounds and
 selection options.
 
-## Phase 3 boundaries
+## Phase 4 boundaries
 
-The Human Workflow Alpha supports:
+The Local Agent Alpha supports:
 
 - multiple trusted embedded profiles and multiple named Projects;
 - one bootstrapped Human local operator with Owner access;
 - canonical upward Workspace discovery and safe binding;
 - complete Task definitions, explicit same-Project dependencies, and
   deterministic readiness views;
+- exclusive Human and Agent Claims: targeted Human Claims have null Attempts,
+  untargeted ready-Task Agent Claims have non-null Attempts, and every claimed
+  Task has one exclusive mutation lock;
+- explicit Human renewal and Agent heartbeat, plus Agent progress and submission,
+  safe release, and exact expiry and reclaim;
 - `open`, `blocked`, `review`, `done`, and `cancelled` stored states;
 - optimistic versions, idempotent lifecycle mutations, structured Human
   Results, review, and append-only attributable TaskEvents;
-- SQLite schema version `3` through embedded `LocalSession`;
+- SQLite schema version `4` through embedded `LocalSession`;
 - Human-readable output and closed `workaholic.cli/v1` JSON envelopes.
 
-Attempts are Agent-only and unavailable in this alpha. Human Results always
-record `attempt_id = null`. Proposed follow-ups are inert provenance data: they
-do not create Tasks, dependencies, or a hierarchy automatically.
+Human claim and renewal default to `8h` with a `1m` minimum and `30d` maximum.
+Agent claim and heartbeat default to `15m` with a `1s` minimum and `24h`
+maximum. Lease text must match `^[1-9][0-9]*(s|m|h|d)$`. An owning Human can use
+the normal mutation workflow. An owning Agent can heartbeat, report progress,
+release, or submit; non-owning mutations return `TASK_LOCKED`, while stale or
+foreign Agent ownership returns `LEASE_LOST`. An empty ready queue returns
+`NO_TASK_AVAILABLE`.
+
+Phase 4 deliberately reuses the one bootstrapped Human Subject. Human Claims
+and Results record `attempt_id = null`; a non-null Attempt identifies local
+Agent execution while TaskEvent actor kind remains `human`. This protects
+process ownership and stale execution, but it does not distinguish different
+Human operators or distinct Agents sharing the embedded operating-system
+account. Proposed follow-ups remain inert provenance data and do not create
+Tasks, dependencies, or a hierarchy automatically.
+
+Phase 5 introduces distinct Subjects, Tokens, grants, and authenticated
+ownership. Remote operation and distributed coordination remain later roadmap
+work.
 
 It does not implement:
 
-- Agents, claims, Attempts, Leases, heartbeats, or progress reporting;
-- Tokens, credentials, remote profiles, or general identity management;
+- distinct Agent identities, Tokens, credentials, remote profiles, or general
+  identity management;
 - `RemoteSession`, a server, authentication, or team coordination;
 - JSON or PostgreSQL persistence adapters;
 - schema migration or compatibility across alpha versions;
-- Project archival or parent/child Task hierarchies;
+- capability-based scheduling, Project archival, force interruption, or
+  parent/child Task hierarchies;
+- automatic Task creation from proposed follow-ups.
 - automatic Task creation from proposed follow-ups.
 
 ## Planned for v1 (not implemented)
@@ -240,32 +275,33 @@ Before submitting a change, run:
 ```bash
 uv run pre-commit run --all-files
 uv run pytest
-uv build
+uv build --no-progress
 scripts/smoke-install.sh dist/*.whl
 ```
 
-## Phase 3 acceptance gate
+## Phase 4 acceptance gate
 
 From a clean checkout with no active virtual environment, pre-existing
 `.venv` or `dist`, or inherited Workaholic config/data/profile selectors, run:
 
 ```bash
-scripts/verify-phase-3.sh
+scripts/verify-phase-4.sh
 ```
 
 The gate synchronizes the locked environment, runs all pre-commit controls and
 tests, builds the distribution, verifies isolated wheel installation, and
-executes the installed-wheel Human lifecycle through
-`scripts/smoke-phase-3-wheel.sh dist/*.whl`. It owns and removes temporary
+executes installed-wheel Human and Agent execution through
+`scripts/smoke-phase-4-wheel.sh dist/*.whl`. It owns and removes temporary
 config, data, and Workspace roots, and refuses a dirty checkout or any caller
 state that could redirect persistence. The source suite and wheel journey
-jointly pin Task versions, readiness, structured Human Results, state changes,
-documented error codes, and ordered TaskEvents.
+jointly pin Claims, Attempts, Lease expiry and reclaim, Task versions, Results,
+lock failures, idempotency, review, restart behavior, and attributable ordered
+TaskEvents.
 
 Earlier milestone gates remain available as
 `scripts/verify-phase-0.sh`, `scripts/verify-phase-1.sh`, and
-`scripts/verify-phase-2.sh`. Each uses temporary state and validates its own
-milestone from a clean checkout.
+`scripts/verify-phase-2.sh`, and `scripts/verify-phase-3.sh`. Each uses temporary
+state and validates its own milestone from a clean checkout.
 
 ## Project documents
 

@@ -6,12 +6,14 @@ from workaholic.application import (
     ContextResult,
     ExitCategory,
     StatusResult,
+    TaskClaimResult,
     TaskDetails,
     TaskEventPage,
     TaskEventResult,
     TaskListView,
     TaskMutationResult,
     TaskPage,
+    TaskProgressResult,
     TaskSubmissionResult,
 )
 from workaholic.session.base import (
@@ -26,7 +28,15 @@ from workaholic.session.base import (
 )
 from workaholic.session.local import LocalRuntime, LocalSession
 from workaholic.session.models import (
+    AgentHeartbeatRequest,
+    AgentProgressRequest,
+    AgentReleaseRequest,
+    AgentSubmitRequest,
+    AgentTaskClaimRequest,
     ContextRequest,
+    HumanClaimReleaseRequest,
+    HumanClaimRenewRequest,
+    HumanTaskClaimRequest,
     ProjectBindRequest,
     ProjectCreateRequest,
     ProjectListRequest,
@@ -50,11 +60,19 @@ from workaholic.session.models import (
 )
 
 __all__ = [
+    "AgentHeartbeatRequest",
+    "AgentProgressRequest",
+    "AgentReleaseRequest",
+    "AgentSubmitRequest",
+    "AgentTaskClaimRequest",
     "ApplicationError",
     "ApplicationErrorCode",
     "ContextRequest",
     "ContextResult",
     "ExitCategory",
+    "HumanClaimReleaseRequest",
+    "HumanClaimRenewRequest",
+    "HumanTaskClaimRequest",
     "LocalActorSelector",
     "LocalIdentity",
     "LocalRuntime",
@@ -70,6 +88,7 @@ __all__ = [
     "TaskApproveRequest",
     "TaskBlockRequest",
     "TaskCancelRequest",
+    "TaskClaimResult",
     "TaskCreateRequest",
     "TaskDetails",
     "TaskDetailsRequest",
@@ -82,6 +101,7 @@ __all__ = [
     "TaskListView",
     "TaskMutationResult",
     "TaskPage",
+    "TaskProgressResult",
     "TaskRejectRequest",
     "TaskRemoveDependencyRequest",
     "TaskSession",

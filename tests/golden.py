@@ -7,8 +7,11 @@ import os
 import subprocess
 import sys
 from collections.abc import Mapping, Sequence
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
+from threading import Barrier
+from types import MappingProxyType
 from typing import TYPE_CHECKING, Literal, Never, Protocol, TypeGuard
 
 from workaholic.domain import validate_profile_name
@@ -26,6 +29,8 @@ type SubjectKind = Literal["human", "agent"]
 
 _CLI_SCHEMA = "workaholic.cli/v1"
 _CLI_TIMEOUT_SECONDS = 30
+_CLI_RACE_TIMEOUT_SECONDS = 10
+_MAX_CLI_RACE_PARTICIPANTS = 8
 _TRUSTED_CLI_ENVIRONMENT_KEYS = frozenset(
     {
         "WORKAHOLIC_CONFIG_DIR",
@@ -68,6 +73,42 @@ class GoldenInstance(Protocol):
         ...
 
 
+@dataclass(frozen=True, slots=True)
+class GoldenCliInvocation:
+    """One immutable fresh-process command participating in a CLI race."""
+
+    arguments: tuple[str, ...]
+    cwd: Path
+    input_text: str | None = None
+    environment: Mapping[str, str] | None = None
+
+    def __post_init__(self) -> None:
+        """Copy and validate transport-generic invocation fields.
+
+        Raises:
+            TypeError: If arguments, input, or environment have invalid types.
+            ValueError: If the working directory is unavailable.
+
+        """
+        object.__setattr__(self, "arguments", _validate_cli_arguments(self.arguments))
+        object.__setattr__(self, "cwd", _validate_cli_cwd(self.cwd))
+        object.__setattr__(self, "input_text", _validate_input_text(self.input_text))
+        environment: object = self.environment
+        if environment is None:
+            return
+        if not isinstance(environment, Mapping) or not all(
+            isinstance(key, str) and isinstance(value, str)
+            for key, value in environment.items()
+        ):
+            message = "Golden CLI environment overrides must map strings to strings."
+            raise TypeError(message)
+        object.__setattr__(
+            self,
+            "environment",
+            MappingProxyType(dict(environment)),
+        )
+
+
 class GoldenJourneyRunner(Protocol):
     """Real-process operations required by the canonical journey tests."""
 
@@ -89,6 +130,21 @@ class GoldenJourneyRunner(Protocol):
 
         Returns:
             The completed process with decoded text streams.
+
+        """
+        ...
+
+    def cli_race(
+        self,
+        invocations: Sequence[GoldenCliInvocation],
+    ) -> tuple[CompletedProcess[str], ...]:
+        """Run multiple fresh CLI processes from one synchronized boundary.
+
+        Args:
+            invocations: Ordered immutable commands participating in the race.
+
+        Returns:
+            Completed processes aligned with invocation order.
 
         """
         ...
@@ -224,6 +280,62 @@ class SubprocessGoldenJourneyRunner:
             timeout=_CLI_TIMEOUT_SECONDS,
         )
 
+    def cli_race(
+        self,
+        invocations: Sequence[GoldenCliInvocation],
+    ) -> tuple[subprocess.CompletedProcess[str], ...]:
+        """Run bounded fresh CLI processes from one synchronized boundary.
+
+        Args:
+            invocations: Ordered immutable commands participating in the race.
+
+        Returns:
+            Completed processes aligned with invocation order.
+
+        Raises:
+            TypeError: If the invocation collection or an item is invalid.
+            ValueError: If the participant count is outside the safe bound or
+                an invocation attempts an untrusted environment override.
+
+        """
+        candidates: object = invocations
+        if isinstance(candidates, str | bytes) or not isinstance(
+            candidates,
+            Sequence,
+        ):
+            message = "Golden CLI race invocations must be a sequence."
+            raise TypeError(message)
+        copied = tuple(candidates)
+        if not 2 <= len(copied) <= _MAX_CLI_RACE_PARTICIPANTS:
+            message = "Golden CLI races require between two and eight processes."
+            raise ValueError(message)
+        if any(type(invocation) is not GoldenCliInvocation for invocation in copied):
+            message = "Golden CLI races require exact invocation objects."
+            raise TypeError(message)
+
+        # Validate every environment before any process starts so a bad sibling
+        # cannot leave a valid command mutating state alone at the race boundary.
+        for invocation in copied:
+            _isolated_cli_environment(
+                self.data_directory,
+                self.config_directory,
+                invocation.environment,
+            )
+        barrier = Barrier(len(copied))
+
+        def run(invocation: GoldenCliInvocation) -> subprocess.CompletedProcess[str]:
+            """Release one validated invocation with all race participants."""
+            barrier.wait(timeout=_CLI_RACE_TIMEOUT_SECONDS)
+            return self.cli(
+                invocation.arguments,
+                cwd=invocation.cwd,
+                input_text=invocation.input_text,
+                environment=invocation.environment,
+            )
+
+        with ThreadPoolExecutor(max_workers=len(copied)) as executor:
+            return tuple(executor.map(run, copied))
+
     def instance(
         self,
         *,
@@ -243,21 +355,21 @@ class SubprocessGoldenJourneyRunner:
             subjects: Requested Subject inventory.
 
         Raises:
-            NotImplementedError: Always in the Phase 1 harness.
+            NotImplementedError: Always before Phase 5 identity orchestration.
 
         """
         del backend, project_key, remote, root, subjects
-        message = "Golden Instance orchestration is not implemented in Phase 1."
+        message = "Golden Instance orchestration is not implemented before Phase 5."
         raise NotImplementedError(message)
 
     def published_package_spec(self) -> str:
         """Reject registry selection before release-candidate acceptance.
 
         Raises:
-            NotImplementedError: Always in the Phase 1 harness.
+            NotImplementedError: Always before release-candidate acceptance.
 
         """
-        message = "Published-package selection is not implemented in Phase 1."
+        message = "Published-package selection is not implemented before Phase 9."
         raise NotImplementedError(message)
 
     def uvx(
@@ -277,11 +389,11 @@ class SubprocessGoldenJourneyRunner:
             input_text: Optional requested standard-input payload.
 
         Raises:
-            NotImplementedError: Always in the Phase 1 harness.
+            NotImplementedError: Always before release-candidate acceptance.
 
         """
         del package_spec, arguments, cwd, input_text
-        message = "Golden uvx execution is not implemented in Phase 1."
+        message = "Golden uvx execution is not implemented before Phase 9."
         raise NotImplementedError(message)
 
 

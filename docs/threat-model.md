@@ -1,6 +1,6 @@
 # Workaholic AI Threat Model
 
-- Status: Accepted v1 model through Phase 4 with Phase 3 implementation
+- Status: Accepted v1 model through Phase 4 with Phase 4 implementation
 - Decision date: 2026-07-29
 - Scope: Embedded and shared-server behavior required for v1
 - Security contact: [pg@ithesion.com](mailto:pg@ithesion.com)
@@ -9,13 +9,14 @@
 
 This threat model turns the accepted v1 security boundary into explicit
 engineering constraints and verification targets. It covers planned behavior;
-the current `0.3.0a1` development package implements trusted embedded profiles,
+the current `0.4.0a1` development package implements trusted embedded profiles,
 canonical upward Workspace discovery, safe binding, multi-project
-authorization checks, local SQLite schema version `3`, optimistic Task
-mutations, bounded structured input, Human Result and review attribution, and
-append-only TaskEvents. It rejects schema version `2` unchanged. It does not
-implement bearer authentication, Agent execution, remote profiles,
-credentials, `RemoteSession`, or network services.
+authorization checks, local SQLite schema version `4`, optimistic Task
+mutations, exclusive Human and Agent Claims, bounded Leases, Agent progress and
+submission, Human Result and review attribution, and append-only TaskEvents. It
+rejects schema version `3` unchanged. It reuses the bootstrap Subject and does
+not implement distinct Agent identities, bearer authentication, remote
+profiles, credentials, `RemoteSession`, or network services.
 
 Terms such as Subject, ProjectGrant, Claim, Attempt, Lease, and TaskEvent use their
 canonical definitions in the [glossary](glossary.md).
@@ -90,6 +91,11 @@ distinct Subjects, Tokens, ProjectGrants, and authenticated ownership. Phase 4
 therefore prevents stale-process and non-owner command-path mutations but does
 not claim to distinguish different Human operators sharing the embedded
 operating-system account.
+
+Persisted TaskEvent actor kind remains the bootstrap Subject kind `human` in
+Phase 4. A non-null Attempt ID, not a fabricated Agent Subject, attributes
+Agent execution. Structured progress cannot supply identity, Attempt, request,
+event, Result, cursor, or authoritative timestamp fields.
 
 ### Local filesystem and credential storage
 
@@ -233,8 +239,11 @@ capacity, and recovery remain required.
 
 Lease correctness must not depend on a scheduler continuing to run during
 overload. Claims, Human renewals, Agent heartbeats, submissions, mutations, and
-relevant reads evaluate expiry transactionally using the authoritative runtime
-clock and the half-open rule `now < lease_expires_at`.
+writes evaluate expiry transactionally using the authoritative runtime clock
+and the half-open rule `now < lease_expires_at`. Pure reads do not materialize
+expiry or append events; they project an expired Claim as stale and non-owning.
+Phase 4 Lease inputs use the closed duration grammar and bounded Human and Agent
+windows defined in the CLI contract.
 
 ## Verification by delivery phase
 
@@ -249,7 +258,8 @@ clock and the half-open rule `now < lease_expires_at`.
 - Phase 4 tests atomic Human and Agent Claims, exclusive mutation locks, Human
   renewal, current Attempt ownership, Lease expiry, version stability, stale
   submissions, terminal Attempt states, idempotent Results, and bounded Agent
-  payloads.
+  payloads. It uses exact SQLite schema version `4`, rejects version `3`
+  unchanged, and adds no migration or credential surface.
 - Phase 5 tests Token storage, expiry, revocation, redaction, ProjectGrant
   isolation, and compromised-Agent containment.
 - Phase 6 tests authenticated RemoteSession behavior, expected Instance

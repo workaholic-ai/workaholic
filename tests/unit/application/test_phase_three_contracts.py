@@ -53,6 +53,7 @@ from workaholic.domain import (
     CriterionOutcome,
     CriterionStatus,
     InstanceId,
+    JsonValue,
     ProjectId,
     ProposedFollowUp,
     ReadinessReason,
@@ -570,23 +571,46 @@ def test_task_queries_reject_non_string_non_identifier_selectors() -> None:
             TaskUpdateMutation,
             {
                 "event_id": TaskEventId("evt_update"),
+                "claim_expired_event_id": TaskEventId("evt_update_expired"),
                 "patch": TaskUpdatePatch(title="Changed"),
             },
         ),
         (
             TaskBlockMutation,
-            {"event_id": TaskEventId("evt_block"), "reason": "Waiting"},
+            {
+                "event_id": TaskEventId("evt_block"),
+                "claim_expired_event_id": TaskEventId("evt_block_expired"),
+                "reason": "Waiting",
+            },
         ),
-        (TaskUnblockMutation, {"event_id": TaskEventId("evt_unblock")}),
-        (TaskCancelMutation, {"event_id": TaskEventId("evt_cancel"), "reason": None}),
+        (
+            TaskUnblockMutation,
+            {
+                "event_id": TaskEventId("evt_unblock"),
+                "claim_expired_event_id": TaskEventId("evt_unblock_expired"),
+            },
+        ),
+        (
+            TaskCancelMutation,
+            {
+                "event_id": TaskEventId("evt_cancel"),
+                "claim_expired_event_id": TaskEventId("evt_cancel_expired"),
+                "reason": None,
+            },
+        ),
         (
             AddTaskDependencyMutation,
-            {"event_id": TaskEventId("evt_add"), "prerequisite_uid": TaskId("tsk_2")},
+            {
+                "event_id": TaskEventId("evt_add"),
+                "claim_expired_event_id": TaskEventId("evt_add_expired"),
+                "prerequisite_uid": TaskId("tsk_2"),
+            },
         ),
         (
             RemoveTaskDependencyMutation,
             {
                 "event_id": TaskEventId("evt_remove"),
+                "claim_expired_event_id": TaskEventId("evt_remove_expired"),
                 "prerequisite_uid": TaskId("tsk_2"),
             },
         ),
@@ -596,6 +620,7 @@ def test_task_queries_reject_non_string_non_identifier_selectors() -> None:
                 "result_id": ResultId("res_new"),
                 "result_submitted_event_id": TaskEventId("evt_submitted"),
                 "task_completed_event_id": TaskEventId("evt_completed"),
+                "claim_expired_event_id": TaskEventId("evt_submit_expired"),
             },
         ),
         (
@@ -643,6 +668,7 @@ def test_multi_event_mutations_require_distinct_exact_event_id_slots() -> None:
                 "result_id": ResultId("res_new"),
                 "result_submitted_event_id": TaskEventId("evt_same"),
                 "task_completed_event_id": TaskEventId("evt_same"),
+                "claim_expired_event_id": TaskEventId("evt_expired"),
             }
         )
     with pytest.raises(ValidationError, match="distinct"):
@@ -727,13 +753,37 @@ def test_task_mutation_result_requires_one_matching_event() -> None:
     event = _event(task, TaskEventType.TASK_UPDATED, cursor=1)
     assert TaskMutationResult(task=task, events=(event,)).events == (event,)
 
-    with pytest.raises(ValidationError, match="exactly one"):
+    with pytest.raises(ValidationError, match="invalid TaskEvent sequence"):
         TaskMutationResult(task=task, events=())
     with pytest.raises(ValidationError, match="identities"):
         TaskMutationResult(
             task=task,
             events=(replace(event, task_uid=TaskId("tsk_other")),),
         )
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"unexpected": True},
+        {"lease_expires_at": "not-a-time"},
+        {"lease_expires_at": "2026-08-01T13:00:00Z"},
+        {"lease_expires_at": "2026-08-01T11:00:00+00:00"},
+    ],
+)
+def test_task_mutation_result_rejects_malformed_expiry_prefix(
+    payload: dict[str, JsonValue],
+) -> None:
+    """Conditional expiry requires one closed, canonical, non-future Lease."""
+    task = _task()
+    expired = replace(
+        _event(task, TaskEventType.CLAIM_EXPIRED, cursor=1),
+        payload=payload,
+    )
+    updated = _event(task, TaskEventType.TASK_UPDATED, cursor=2)
+
+    with pytest.raises(ValidationError, match="Claim expiry event"):
+        TaskMutationResult(task=task, events=(expired, updated))
 
 
 @pytest.mark.parametrize(

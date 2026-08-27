@@ -1,4 +1,4 @@
-"""Enumerated values shared by Phase 3 domain entities and pure rules."""
+"""Enumerated values shared by cumulative domain entities and pure rules."""
 
 from enum import StrEnum
 
@@ -14,7 +14,7 @@ class TaskState(StrEnum):
 
 
 class TaskEventType(StrEnum):
-    """Append-only Task event types emitted through Phase 3."""
+    """Append-only Task event types emitted through Phase 4."""
 
     TASK_CREATED = "task_created"
     TASK_UPDATED = "task_updated"
@@ -25,6 +25,12 @@ class TaskEventType(StrEnum):
     REVIEW_REJECTED = "review_rejected"
     TASK_COMPLETED = "task_completed"
     TASK_CANCELLED = "task_cancelled"
+    TASK_CLAIMED = "task_claimed"
+    CLAIM_RENEWED = "claim_renewed"
+    CLAIM_RELEASED = "claim_released"
+    CLAIM_EXPIRED = "claim_expired"
+    PROGRESS_REPORTED = "progress_reported"
+    OBSERVATION_ADDED = "observation_added"
 
 
 class ApprovalRequirement(StrEnum):
@@ -62,7 +68,7 @@ class TaskOperationalView(StrEnum):
 
 
 class ReadinessReason(StrEnum):
-    """Stable reasons why a Task is absent from the ready view."""
+    """Stable reasons contributing to a Task operational projection."""
 
     TASK_BLOCKED = "task_blocked"
     TASK_AWAITING_REVIEW = "task_awaiting_review"
@@ -71,8 +77,26 @@ class ReadinessReason(StrEnum):
     NOT_YET_AVAILABLE = "not_yet_available"
     UNSATISFIED_DEPENDENCY = "unsatisfied_dependency"
     UNSATISFIABLE_DEPENDENCY = "unsatisfiable_dependency"
-    ACTIVE_ATTEMPT = "active_attempt"
-    STALE_ATTEMPT = "stale_attempt"
+    ACTIVE_CLAIM = "active_claim"
+    STALE_CLAIM = "stale_claim"
+
+
+class AttemptStatus(StrEnum):
+    """Lifecycle states of an Agent execution Attempt."""
+
+    ACTIVE = "active"
+    RELEASED = "released"
+    EXPIRED = "expired"
+    SUBMITTED = "submitted"
+
+
+class ObservationKind(StrEnum):
+    """Inert categories for structured Agent observations."""
+
+    NOTE = "note"
+    RISK = "risk"
+    BLOCKER = "blocker"
+    QUESTION = "question"
 
 
 class TaskTransition(StrEnum):

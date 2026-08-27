@@ -12,6 +12,7 @@ from workaholic.application import (
     InvalidTransitionError,
     RejectResultMutation,
     ResultInvalidError,
+    SubmitAgentResultMutation,
     SubmitHumanResultMutation,
     TaskSubmissionResult,
     UnsatisfiableDependencyError,
@@ -28,12 +29,22 @@ from workaholic.domain import (
     TaskState,
     TaskTransition,
     transition_task_state,
+    validate_agent_submission,
     validate_human_submission,
     validate_task_result_consistency,
 )
-from workaholic.persistence.sqlite._records import (
-    canonical_json,
+from workaholic.persistence.sqlite._claim_state import (
+    StoredClaimState,
+    end_agent_claim_as_submitted,
+    end_human_claim,
+    guard_human_task_mutation,
+    load_claim_state,
+    require_current_claim_owner,
 )
+from workaholic.persistence.sqlite._event_records import (
+    insert_task_event as _insert_task_event,
+)
+from workaholic.persistence.sqlite._records import canonical_json, parse_timestamp
 from workaholic.persistence.sqlite._result_records import (
     TASK_RESULT_FIELDS,
     read_idempotent_result_outcome,
@@ -42,7 +53,6 @@ from workaholic.persistence.sqlite._result_records import (
     task_result_row,
 )
 from workaholic.persistence.sqlite._task_lifecycle import (
-    _insert_task_event,
     _load_authorized_task,
     _load_dependencies,
     _write_task_if_version,
@@ -52,23 +62,23 @@ from workaholic.persistence.sqlite.errors import StorageUnavailableError
 
 if TYPE_CHECKING:
     import sqlite3
-    from datetime import datetime
     from pathlib import Path
 
     from workaholic.application import TaskResultInput
     from workaholic.domain import (
         JsonValue,
-        RequestId,
         SubjectId,
         TaskEventId,
     )
     from workaholic.persistence.sqlite._event_records import TaskEventRecord
 
+type _SubmissionMutation = SubmitHumanResultMutation | SubmitAgentResultMutation
 type _ResultMutation = (
-    SubmitHumanResultMutation | ApproveResultMutation | RejectResultMutation
+    _SubmissionMutation | ApproveResultMutation | RejectResultMutation
 )
 
 _SUBMIT_OPERATION: Final = "task.result.submit"
+_SUBMIT_AGENT_OPERATION: Final = "task.result.submit.agent"
 _APPROVE_OPERATION: Final = "task.result.approve"
 _REJECT_OPERATION: Final = "task.result.reject"
 
@@ -81,18 +91,12 @@ class _ResultPlan:
     transition: TaskTransition
 
 
-@dataclass(slots=True)
-class _EventMutation:
-    """One event identity combined with shared mutation attribution."""
-
-    event_id: TaskEventId
-    actor_subject_id: SubjectId
-    request_id: RequestId
-    occurred_at: datetime
-
-
 _SUBMIT_PLAN: Final = _ResultPlan(
     operation=_SUBMIT_OPERATION,
+    transition=TaskTransition.SUBMIT,
+)
+_SUBMIT_AGENT_PLAN: Final = _ResultPlan(
+    operation=_SUBMIT_AGENT_OPERATION,
     transition=TaskTransition.SUBMIT,
 )
 _APPROVE_PLAN: Final = _ResultPlan(
@@ -130,6 +134,34 @@ def submit_human_result(
         database_path,
         mutation=candidate,
         plan=_SUBMIT_PLAN,
+    )
+
+
+def submit_agent_result(
+    database_path: Path,
+    mutation: SubmitAgentResultMutation,
+) -> TaskSubmissionResult:
+    """Atomically store an Agent Result and end its exact current Attempt.
+
+    Args:
+        database_path: Absolute path to the validated SQLite store.
+        mutation: Validated optimistic Agent submission mutation.
+
+    Returns:
+        Committed Task, Result, submitted Attempt, and ordered events.
+
+    Raises:
+        ApplicationError: If authorization, Lease, version, or semantics fail.
+        StorageUnavailableError: If persisted state violates its contract.
+
+    """
+    candidate: object = mutation
+    if type(candidate) is not SubmitAgentResultMutation:
+        raise StorageUnavailableError
+    return _execute_result_mutation(
+        database_path,
+        mutation=candidate,
+        plan=_SUBMIT_AGENT_PLAN,
     )
 
 
@@ -229,16 +261,55 @@ def _execute_result_mutation(
             if replay is not None:
                 _require_matching_result(replay, mutation=mutation, fresh=False)
                 return replay
+            human_owner_state: StoredClaimState | None = None
+            agent_owner_state: StoredClaimState | None = None
+            expiry_records: tuple[TaskEventRecord, ...] = ()
+            if isinstance(mutation, SubmitHumanResultMutation):
+                human_owner_state, expiry_records = guard_human_task_mutation(
+                    connection,
+                    task=current,
+                    actor_subject_id=mutation.actor_subject_id,
+                    request_id=mutation.request_id,
+                    occurred_at=mutation.occurred_at,
+                    claim_expired_event_id=mutation.claim_expired_event_id,
+                )
+            elif isinstance(mutation, SubmitAgentResultMutation):
+                agent_owner_state = require_current_claim_owner(
+                    load_claim_state(connection, task=current),
+                    subject_id=mutation.actor_subject_id,
+                    attempt_id=mutation.attempt_id,
+                    now=mutation.occurred_at,
+                )
             if current.version != mutation.expected_version:
                 raise VersionConflictError
             _require_monotonic_time(current, mutation=mutation)
-            if isinstance(mutation, SubmitHumanResultMutation):
+            submitted_attempt = None
+            if isinstance(
+                mutation,
+                (SubmitHumanResultMutation, SubmitAgentResultMutation),
+            ):
                 result, target_state = _prepare_submission(
                     connection,
                     current=current,
                     mutation=mutation,
                 )
                 _insert_result(connection, result=result)
+                if isinstance(mutation, SubmitHumanResultMutation):
+                    end_human_claim(
+                        connection,
+                        task=current,
+                        state=human_owner_state,
+                        actor_subject_id=mutation.actor_subject_id,
+                    )
+                else:
+                    submitted_attempt = end_agent_claim_as_submitted(
+                        connection,
+                        task=current,
+                        state=_require_agent_owner_state(agent_owner_state),
+                        actor_subject_id=mutation.actor_subject_id,
+                        attempt_id=mutation.attempt_id,
+                        occurred_at=mutation.occurred_at,
+                    )
             else:
                 result, target_state = _prepare_review(
                     connection,
@@ -261,16 +332,18 @@ def _execute_result_mutation(
                 updated_at=mutation.occurred_at,
             )
             _write_task_if_version(connection, previous=current, updated=updated)
-            event_records = _append_events(
+            operation_records = _append_events(
                 connection,
                 mutation=mutation,
                 task=updated,
                 result=result,
             )
+            event_records = (*expiry_records, *operation_records)
             outcome = TaskSubmissionResult(
                 task=updated,
                 result=result,
                 events=tuple(record.event for record in event_records),
+                attempt=submitted_attempt,
             )
             _require_matching_result(outcome, mutation=mutation, fresh=True)
             record_idempotent_result_outcome(
@@ -292,18 +365,38 @@ def _execute_result_mutation(
         raise StorageUnavailableError from error
 
 
+def _require_agent_owner_state(
+    state: StoredClaimState | None,
+) -> StoredClaimState:
+    """Return the Agent owner state guaranteed by submission dispatch.
+
+    Args:
+        state: Agent owner state resolved before optimistic version validation.
+
+    Returns:
+        Exact current Agent Claim and Attempt state.
+
+    Raises:
+        StorageUnavailableError: If dispatch lost the required state.
+
+    """
+    if state is None:
+        raise StorageUnavailableError
+    return state
+
+
 def _prepare_submission(
     connection: sqlite3.Connection,
     *,
     current: Task,
-    mutation: SubmitHumanResultMutation,
+    mutation: _SubmissionMutation,
 ) -> tuple[TaskResult, TaskState]:
-    """Build and validate a Human Result against current Task dependencies.
+    """Build and validate a Result against current Task dependencies.
 
     Args:
         connection: Active validated write transaction.
         current: Authoritative open Task.
-        mutation: Validated Human submission mutation.
+        mutation: Validated Human or Agent submission mutation.
 
     Returns:
         New immutable Result and approval-dependent target state.
@@ -337,20 +430,35 @@ def _prepare_submission(
             id=mutation.result_id,
             task_uid=current.uid,
             submitted_by=mutation.actor_subject_id,
-            attempt_id=None,
+            attempt_id=(
+                mutation.attempt_id
+                if isinstance(mutation, SubmitAgentResultMutation)
+                else None
+            ),
             submitted_at=mutation.occurred_at,
-            comment=mutation.comment,
+            comment=(
+                mutation.comment
+                if isinstance(mutation, SubmitHumanResultMutation)
+                else None
+            ),
             summary=mutation.result.summary,
             criteria=mutation.result.criteria,
             artifacts=mutation.result.artifacts,
             proposed_follow_ups=mutation.result.proposed_follow_ups,
             review=ResultReview(status=review_status),
         )
-        target_state = validate_human_submission(
-            task=current,
-            prerequisites=prerequisites,
-            result=result,
-        )
+        if isinstance(mutation, SubmitHumanResultMutation):
+            target_state = validate_human_submission(
+                task=current,
+                prerequisites=prerequisites,
+                result=result,
+            )
+        else:
+            target_state = validate_agent_submission(
+                task=current,
+                prerequisites=prerequisites,
+                result=result,
+            )
     except DomainValidationError as error:
         raise ResultInvalidError from error
     if (mutation.task_completed_event_id is not None) != (
@@ -367,7 +475,7 @@ def _prepare_review(
     mutation: ApproveResultMutation | RejectResultMutation,
     transition: TaskTransition,
 ) -> tuple[TaskResult, TaskState]:
-    """Load and disposition the current pending Human Result.
+    """Load and disposition the current pending Human or Agent Result.
 
     Args:
         connection: Active validated write transaction.
@@ -380,7 +488,7 @@ def _prepare_review(
 
     Raises:
         InvalidTransitionError: If the Task is not awaiting review.
-        ResultInvalidError: If no valid pending Human Result is selected.
+        ResultInvalidError: If no valid pending Result is selected.
         StorageUnavailableError: If authoritative time regresses.
 
     """
@@ -399,10 +507,8 @@ def _prepare_review(
         result_id=str(current.current_result_id),
         task_uid=str(current.uid),
     )
-    if (
-        result.attempt_id is not None
-        or result.review.status is not ResultReviewStatus.PENDING
-        or mutation.occurred_at < result.submitted_at
+    if result.review.status is not ResultReviewStatus.PENDING or (
+        mutation.occurred_at < result.submitted_at
     ):
         if mutation.occurred_at < result.submitted_at:
             raise StorageUnavailableError
@@ -411,7 +517,7 @@ def _prepare_review(
         validate_task_result_consistency(
             task=current,
             result=result,
-            human_submission=True,
+            human_submission=result.attempt_id is None,
         )
         if isinstance(mutation, ApproveResultMutation):
             review = ResultReview(
@@ -469,7 +575,7 @@ def _load_prerequisite_tasks(
 
 
 def _insert_result(connection: sqlite3.Connection, *, result: TaskResult) -> None:
-    """Insert one already validated immutable Human Result row."""
+    """Insert one already validated immutable Human or Agent Result row."""
     values = task_result_row(result)
     placeholders = ", ".join("?" for _field in TASK_RESULT_FIELDS)
     connection.execute(
@@ -542,21 +648,22 @@ def _append_events(
 ) -> tuple[TaskEventRecord, ...]:
     """Append the exact ordered events for one Result mutation."""
     specs = _event_specs(mutation)
+    attempt_id = (
+        mutation.attempt_id if isinstance(mutation, SubmitAgentResultMutation) else None
+    )
     records: list[TaskEventRecord] = []
     for event_id, event_type in specs:
-        event_mutation = _EventMutation(
-            event_id=event_id,
-            actor_subject_id=mutation.actor_subject_id,
-            request_id=mutation.request_id,
-            occurred_at=mutation.occurred_at,
-        )
         records.append(
             _insert_task_event(
                 connection,
-                mutation=event_mutation,
+                event_id=event_id,
                 task=task,
+                actor_subject_id=mutation.actor_subject_id,
+                request_id=mutation.request_id,
                 event_type=event_type,
+                occurred_at=mutation.occurred_at,
                 payload=_event_payload(event_type, task=task, result=result),
+                attempt_id=attempt_id,
             )
         )
     return tuple(records)
@@ -566,7 +673,10 @@ def _event_specs(
     mutation: _ResultMutation,
 ) -> tuple[tuple[TaskEventId, TaskEventType], ...]:
     """Return exact generated identities and types in append order."""
-    if isinstance(mutation, SubmitHumanResultMutation):
+    if isinstance(
+        mutation,
+        (SubmitHumanResultMutation, SubmitAgentResultMutation),
+    ):
         first = (
             mutation.result_submitted_event_id,
             TaskEventType.RESULT_SUBMITTED,
@@ -612,6 +722,8 @@ def _mutation_fingerprint(mutation: _ResultMutation) -> str:
             "comment": mutation.comment,
             "result": _result_input_mapping(mutation.result),
         }
+    elif isinstance(mutation, SubmitAgentResultMutation):
+        operation_input = {"result": _result_input_mapping(mutation.result)}
     elif isinstance(mutation, ApproveResultMutation):
         operation_input = {"comment": mutation.comment}
     else:
@@ -619,6 +731,11 @@ def _mutation_fingerprint(mutation: _ResultMutation) -> str:
     encoded = canonical_json(
         {
             "actor_subject_id": str(mutation.actor_subject_id),
+            "attempt_id": (
+                str(mutation.attempt_id)
+                if isinstance(mutation, SubmitAgentResultMutation)
+                else None
+            ),
             "expected_version": mutation.expected_version,
             "input": operation_input,
             "project_id": str(mutation.project_id),
@@ -664,23 +781,66 @@ def _require_matching_result(
     task = result.task
     stored_result = result.result
     records = result.events
+    has_expiry_prefix = (
+        isinstance(mutation, SubmitHumanResultMutation)
+        and records[0].event_type is TaskEventType.CLAIM_EXPIRED
+    )
+    operation_events = records[1:] if has_expiry_prefix else records
     expected_specs = _event_specs(mutation)
+    is_agent_submission = isinstance(mutation, SubmitAgentResultMutation)
+    is_human_submission = isinstance(mutation, SubmitHumanResultMutation)
+    expected_event_attempt = (
+        mutation.attempt_id if isinstance(mutation, SubmitAgentResultMutation) else None
+    )
     if (
         task.uid != mutation.task_uid
         or task.project_id != mutation.project_id
         or task.version != mutation.expected_version + 1
         or stored_result.task_uid != task.uid
-        or stored_result.attempt_id is not None
-        or tuple(event.event_type for event in records)
+        or (is_agent_submission and stored_result.attempt_id != expected_event_attempt)
+        or (is_human_submission and stored_result.attempt_id is not None)
+        or tuple(event.event_type for event in operation_events)
         != tuple(event_type for _event_id, event_type in expected_specs)
         or any(event.actor_subject_id != mutation.actor_subject_id for event in records)
+        or any(event.attempt_id != expected_event_attempt for event in operation_events)
         or any(
             dict(event.payload)
             != _event_payload(event.event_type, task=task, result=stored_result)
-            for event in records
+            for event in operation_events
         )
     ):
         raise StorageUnavailableError
+    if fresh and any(
+        event.id != event_id
+        or event.request_id != mutation.request_id
+        or event.occurred_at != mutation.occurred_at
+        for event, (event_id, _event_type) in zip(
+            operation_events,
+            expected_specs,
+            strict=True,
+        )
+    ):
+        raise StorageUnavailableError
+    if has_expiry_prefix:
+        if not isinstance(mutation, SubmitHumanResultMutation):
+            raise StorageUnavailableError
+        expired = records[0]
+        payload = expired.payload
+        if (
+            expired.actor_subject_id != mutation.actor_subject_id
+            or (
+                fresh
+                and (
+                    expired.id != mutation.claim_expired_event_id
+                    or expired.request_id != mutation.request_id
+                    or expired.occurred_at != mutation.occurred_at
+                )
+            )
+            or set(payload) != {"lease_expires_at"}
+            or not isinstance(payload["lease_expires_at"], str)
+            or parse_timestamp(payload["lease_expires_at"]) > expired.occurred_at
+        ):
+            raise StorageUnavailableError
     if isinstance(mutation, SubmitHumanResultMutation):
         valid_semantics = (
             stored_result.submitted_by == mutation.actor_subject_id
@@ -697,6 +857,27 @@ def _require_matching_result(
                 )
             )
             and task.current_result_id == stored_result.id
+        )
+        valid_fresh_identity = stored_result.id == mutation.result_id
+    elif isinstance(mutation, SubmitAgentResultMutation):
+        valid_semantics = (
+            stored_result.submitted_by == mutation.actor_subject_id
+            and stored_result.attempt_id == mutation.attempt_id
+            and stored_result.comment is None
+            and _result_body_matches(stored_result, mutation.result)
+            and (
+                (
+                    stored_result.review.status is ResultReviewStatus.NOT_REQUIRED
+                    and task.state is TaskState.DONE
+                )
+                or (
+                    stored_result.review.status is ResultReviewStatus.PENDING
+                    and task.state is TaskState.REVIEW
+                )
+            )
+            and task.current_result_id == stored_result.id
+            and result.attempt is not None
+            and result.attempt.id == mutation.attempt_id
         )
         valid_fresh_identity = stored_result.id == mutation.result_id
     elif isinstance(mutation, ApproveResultMutation):
@@ -721,7 +902,7 @@ def _require_matching_result(
         raise StorageUnavailableError
     if fresh and (
         not valid_fresh_identity
-        or tuple(event.id for event in records)
+        or tuple(event.id for event in operation_events)
         != tuple(event_id for event_id, _event_type in expected_specs)
         or any(event.request_id != mutation.request_id for event in records)
         or any(event.occurred_at != mutation.occurred_at for event in records)

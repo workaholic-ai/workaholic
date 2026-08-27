@@ -22,6 +22,7 @@ _GATE_ENVIRONMENT_KEYS = (
     "WORKAHOLIC_PHASE_1_GATE_RUNNING",
     "WORKAHOLIC_PHASE_2_GATE_RUNNING",
     "WORKAHOLIC_PHASE_3_GATE_RUNNING",
+    "WORKAHOLIC_PHASE_4_GATE_RUNNING",
 )
 _EXPECTED_WHEEL_SUMMARY = {
     "approved_version": 5,
@@ -45,7 +46,7 @@ _EXPECTED_WHEEL_SUMMARY = {
         "review_approved",
         "task_completed",
     ],
-    "schema_version": 3,
+    "schema_version": 4,
 }
 _FUTURE_GOLDEN_REASONS = (
     "Phase 4: missing agent claims, leases, heartbeats, and result submission.",
@@ -55,6 +56,7 @@ _FUTURE_GOLDEN_REASONS = (
 )
 
 pytestmark = [
+    pytest.mark.distribution,
     pytest.mark.e2e,
     pytest.mark.requires_network,
     pytest.mark.requires_uv,
@@ -259,7 +261,7 @@ def test_phase_three_gate_passes_from_a_clean_committed_clone(
     for step in range(1, 7):
         assert f"[{step}/6]" in result.stdout
     assert _wheel_summary(result.stdout) == _EXPECTED_WHEEL_SUMMARY
-    assert "Verified Phase 3 Human lifecycle from workaholic 0.3.0a1." in (
+    assert "Verified Phase 3 Human lifecycle from workaholic 0.4.0a1." in (
         result.stdout
     )
     for reason in _FUTURE_GOLDEN_REASONS:
@@ -316,7 +318,7 @@ def test_phase_three_gate_rejects_external_state_before_execution(
 
 def test_phase_three_wheel_smoke_rejects_a_malformed_wheel(tmp_path: Path) -> None:
     """A file with a wheel suffix cannot cross the installation boundary."""
-    malformed_wheel = tmp_path / "workaholic_ai-0.3.0a1-py3-none-any.whl"
+    malformed_wheel = tmp_path / "workaholic_ai-0.4.0a1-py3-none-any.whl"
     malformed_wheel.write_bytes(b"not a wheel archive")
     environment = _clean_environment(tmp_path)
 

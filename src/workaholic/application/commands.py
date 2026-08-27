@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from datetime import datetime  # noqa: TC003
+from datetime import datetime, timedelta
 from enum import StrEnum
 from typing import cast
 
@@ -25,6 +25,7 @@ from workaholic.domain import (
     AcceptanceCriterion,
     ApprovalRequirement,
     ArtifactReference,
+    AttemptId,
     ContextReference,
     CriterionOutcome,
     CriterionStatus,
@@ -37,10 +38,12 @@ from workaholic.domain import (
     SubjectId,
     TaskEventId,
     TaskId,
+    TaskProgress,
     normalize_bounded_printable_text,
     normalize_project_name,
     normalize_task_objective,
     normalize_task_title,
+    resolve_lease_duration,
     validate_profile_name,
     validate_project_key,
     validate_task_key,
@@ -1465,14 +1468,44 @@ class _ExistingTaskMutation(_CommandModel):
         )
 
 
-class TaskUpdateMutation(_ExistingTaskMutation):
+class _ClaimGuardedTaskMutation(_ExistingTaskMutation):
+    """Human Task mutation carrying a candidate lazy-expiry event identity."""
+
+    claim_expired_event_id: TaskEventId
+
+    @model_validator(mode="after")
+    def _validate_all_event_ids_are_distinct(self) -> _ClaimGuardedTaskMutation:
+        """Prevent requested and conditional expiry events from sharing an ID.
+
+        Returns:
+            The mutation with pairwise-distinct candidate event identities.
+
+        Raises:
+            ValueError: If any event identity is reused within the mutation.
+
+        """
+        event_ids = tuple(
+            value
+            for name in type(self).model_fields
+            if name.endswith("event_id")
+            and isinstance((value := getattr(self, name)), TaskEventId)
+        )
+        _validate_distinct_event_ids(
+            event_ids[0],
+            *event_ids[1:],
+            label="Task mutation",
+        )
+        return self
+
+
+class TaskUpdateMutation(_ClaimGuardedTaskMutation):
     """Atomically apply one Task definition patch at an expected version."""
 
     event_id: TaskEventId
     patch: TaskUpdatePatch
 
 
-class TaskBlockMutation(_ExistingTaskMutation):
+class TaskBlockMutation(_ClaimGuardedTaskMutation):
     """Atomically block one open Task at an expected version."""
 
     event_id: TaskEventId
@@ -1493,13 +1526,13 @@ class TaskBlockMutation(_ExistingTaskMutation):
         return _validate_required_reason(value, label="Task blocking reason")
 
 
-class TaskUnblockMutation(_ExistingTaskMutation):
+class TaskUnblockMutation(_ClaimGuardedTaskMutation):
     """Atomically unblock one Task at an expected version."""
 
     event_id: TaskEventId
 
 
-class TaskCancelMutation(_ExistingTaskMutation):
+class TaskCancelMutation(_ClaimGuardedTaskMutation):
     """Atomically cancel one mutable Task at an expected version."""
 
     event_id: TaskEventId
@@ -1520,7 +1553,7 @@ class TaskCancelMutation(_ExistingTaskMutation):
         return _validate_optional_reason(value, label="Task cancellation reason")
 
 
-class AddTaskDependencyMutation(_ExistingTaskMutation):
+class AddTaskDependencyMutation(_ClaimGuardedTaskMutation):
     """Atomically add one same-Project prerequisite edge."""
 
     event_id: TaskEventId
@@ -1531,7 +1564,7 @@ class RemoveTaskDependencyMutation(AddTaskDependencyMutation):
     """Atomically remove one existing prerequisite edge."""
 
 
-class SubmitHumanResultMutation(_ExistingTaskMutation):
+class SubmitHumanResultMutation(_ClaimGuardedTaskMutation):
     """Atomically submit a Human Result without an Agent Attempt."""
 
     result_id: ResultId
@@ -1553,22 +1586,6 @@ class SubmitHumanResultMutation(_ExistingTaskMutation):
 
         """
         return _validate_optional_result_text(value, label="Result comment")
-
-    @model_validator(mode="after")
-    def _validate_distinct_event_ids(self) -> SubmitHumanResultMutation:
-        """Require distinct submitted and optional completion events.
-
-        Returns:
-            The validated submission mutation.
-
-        Raises:
-            ValueError: If one event identity is reused.
-
-        """
-        if self.task_completed_event_id == self.result_submitted_event_id:
-            message = "Result submission event identities must be distinct."
-            raise ValueError(message)
-        return self
 
 
 class ApproveResultMutation(_ExistingTaskMutation):
@@ -1628,6 +1645,252 @@ class RejectResultMutation(_ExistingTaskMutation):
 
         """
         return _validate_required_reason(value, label="Review rejection reason")
+
+
+class _ClaimOperationMutation(_CommandModel):
+    """Shared trusted attribution for one Phase 4 Claim operation."""
+
+    project_id: ProjectId
+    actor_subject_id: SubjectId
+    request_id: RequestId
+    occurred_at: datetime
+    idempotency_key: str | None = None
+
+    @field_validator("occurred_at", mode="before")
+    @classmethod
+    def _validate_occurred_at(cls, value: object) -> datetime:
+        """Require one authoritative UTC operation timestamp.
+
+        Args:
+            value: Candidate timestamp.
+
+        Returns:
+            The validated UTC datetime.
+
+        """
+        return validate_utc_timestamp(value, label="Claim operation occurred_at")
+
+    @field_validator("idempotency_key", mode="before")
+    @classmethod
+    def _validate_idempotency_key(cls, value: object) -> str | None:
+        """Validate an optional Claim-operation replay key.
+
+        Args:
+            value: Candidate idempotency key.
+
+        Returns:
+            The validated key or ``None``.
+
+        """
+        return _validate_opaque_token(
+            value,
+            label="Idempotency key",
+            maximum=_IDEMPOTENCY_KEY_MAX_LENGTH,
+            optional=True,
+        )
+
+
+class ClaimTaskMutation(_ClaimOperationMutation):
+    """Atomically acquire one explicit ready Task for a Human owner."""
+
+    task_uid: TaskId
+    lease_duration_seconds: int
+    task_claimed_event_id: TaskEventId
+    claim_expired_event_id: TaskEventId
+
+    @model_validator(mode="after")
+    def _validate_claim_contract(self) -> ClaimTaskMutation:
+        """Validate Human Lease bounds and distinct candidate events.
+
+        Returns:
+            The validated targeted Human Claim mutation.
+
+        Raises:
+            ValueError: If Lease seconds or event identities are invalid.
+
+        """
+        _validate_lease_duration_seconds(
+            self.lease_duration_seconds,
+            attempt_id=None,
+        )
+        _validate_distinct_event_ids(
+            self.task_claimed_event_id,
+            self.claim_expired_event_id,
+            label="Claim acquisition",
+        )
+        return self
+
+
+class ClaimNextTaskMutation(_ClaimOperationMutation):
+    """Atomically pull the highest-ranked ready Task for one Agent Attempt."""
+
+    attempt_id: AttemptId
+    lease_duration_seconds: int
+    task_claimed_event_id: TaskEventId
+    claim_expired_event_id: TaskEventId
+
+    @model_validator(mode="after")
+    def _validate_claim_contract(self) -> ClaimNextTaskMutation:
+        """Validate Agent Lease bounds and distinct candidate events.
+
+        Returns:
+            The validated Agent pull mutation.
+
+        Raises:
+            ValueError: If Lease seconds or event identities are invalid.
+
+        """
+        _validate_lease_duration_seconds(
+            self.lease_duration_seconds,
+            attempt_id=self.attempt_id,
+        )
+        _validate_distinct_event_ids(
+            self.task_claimed_event_id,
+            self.claim_expired_event_id,
+            label="Claim acquisition",
+        )
+        return self
+
+
+class RenewClaimMutation(_ClaimOperationMutation):
+    """Atomically renew a Human Claim or heartbeat an Agent Attempt."""
+
+    task_uid: TaskId
+    attempt_id: AttemptId | None
+    lease_duration_seconds: int
+    claim_renewed_event_id: TaskEventId
+
+    @model_validator(mode="after")
+    def _validate_lease_contract(self) -> RenewClaimMutation:
+        """Validate the duration against the nullable-Attempt owner path.
+
+        Returns:
+            The validated renewal mutation.
+
+        """
+        _validate_lease_duration_seconds(
+            self.lease_duration_seconds,
+            attempt_id=self.attempt_id,
+        )
+        return self
+
+
+class ReleaseClaimMutation(_ClaimOperationMutation):
+    """Atomically release the exact current Human or Agent Claim."""
+
+    task_uid: TaskId
+    attempt_id: AttemptId | None
+    claim_released_event_id: TaskEventId
+
+
+class ReportTaskProgressMutation(_ClaimOperationMutation):
+    """Atomically append bounded progress for one current Agent Attempt."""
+
+    task_uid: TaskId
+    attempt_id: AttemptId
+    progress: TaskProgress
+    progress_reported_event_id: TaskEventId
+    observation_event_ids: tuple[TaskEventId, ...] = ()
+
+    @model_validator(mode="after")
+    def _validate_progress_events(self) -> ReportTaskProgressMutation:
+        """Bind one event identity to every ordered progress observation.
+
+        Returns:
+            The validated progress mutation.
+
+        Raises:
+            ValueError: If event count or identity uniqueness is invalid.
+
+        """
+        observation_count = len(self.progress.observations or ())
+        if len(self.observation_event_ids) != observation_count:
+            message = (
+                "Progress observation event identities must align one-for-one "
+                "with observations."
+            )
+            raise ValueError(message)
+        _validate_distinct_event_ids(
+            self.progress_reported_event_id,
+            *self.observation_event_ids,
+            label="Progress",
+        )
+        return self
+
+
+class SubmitAgentResultMutation(_ExistingTaskMutation):
+    """Atomically submit structured Result data for one current Agent Attempt."""
+
+    attempt_id: AttemptId
+    result_id: ResultId
+    result_submitted_event_id: TaskEventId
+    task_completed_event_id: TaskEventId | None = None
+    result: TaskResultInput
+
+    @model_validator(mode="after")
+    def _validate_distinct_event_ids(self) -> SubmitAgentResultMutation:
+        """Require distinct submitted and optional completion events.
+
+        Returns:
+            The validated Agent submission mutation.
+
+        Raises:
+            ValueError: If one event identity is reused.
+
+        """
+        _validate_distinct_event_ids(
+            self.result_submitted_event_id,
+            self.task_completed_event_id,
+            label="Agent Result submission",
+        )
+        return self
+
+
+def _validate_lease_duration_seconds(
+    value: object,
+    *,
+    attempt_id: AttemptId | None,
+) -> int:
+    """Validate exact integer Lease seconds through the pure domain bounds.
+
+    Args:
+        value: Candidate resolved duration in seconds.
+        attempt_id: Null for Human bounds or one Agent Attempt identity.
+
+    Returns:
+        The validated integer second count.
+
+    Raises:
+        DomainValidationError: If value is not an in-range real integer.
+
+    """
+    if type(value) is not int or value < 1:
+        message = "Lease duration seconds must be a positive integer."
+        raise DomainValidationError(message)
+    resolve_lease_duration(timedelta(seconds=value), attempt_id=attempt_id)
+    return value
+
+
+def _validate_distinct_event_ids(
+    first: TaskEventId,
+    *others: TaskEventId | None,
+    label: str,
+) -> None:
+    """Require all supplied candidate TaskEvent identities to be distinct.
+
+    Args:
+        first: Required first event identity.
+        others: Optional remaining event identities.
+        label: Safe operation label for validation errors.
+
+    Raises:
+        ValueError: If any supplied identity is reused.
+
+    """
+    supplied = (first, *(item for item in others if item is not None))
+    if len(set(supplied)) != len(supplied):
+        message = f"{label} event identities must be distinct."
+        raise ValueError(message)
 
 
 def _validate_opaque_token(

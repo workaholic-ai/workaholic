@@ -802,7 +802,7 @@ summary = {
     "prerequisite_version": completed_prerequisite["version"],
     "ready_after_prerequisite": [value["key"] for value in ready_after],
     "reviewed_events": event_types,
-    "schema_version": 3,
+    "schema_version": 4,
 }
 print(json.dumps(summary, separators=(",", ":"), sort_keys=True))
 PY

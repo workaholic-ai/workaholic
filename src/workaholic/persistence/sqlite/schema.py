@@ -1,4 +1,4 @@
-"""Transactional Phase 3 SQLite schema creation and exact validation."""
+"""Transactional Phase 4 SQLite schema creation and exact validation."""
 
 from __future__ import annotations
 
@@ -16,7 +16,8 @@ from workaholic.persistence.sqlite.errors import SchemaUnsupportedError
 if TYPE_CHECKING:
     from pathlib import Path
 
-SCHEMA_VERSION: Final = 3
+SCHEMA_VERSION: Final = 4
+_CREATE_STATEMENT_MIN_WORDS: Final = 3
 
 _SCHEMA_STATEMENTS: Final = (
     """
@@ -201,6 +202,88 @@ _SCHEMA_STATEMENTS: Final = (
             REFERENCES tasks(uid, project_id) ON DELETE RESTRICT
     ) STRICT
     """,
+    """
+    CREATE TABLE task_attempts (
+        id TEXT PRIMARY KEY
+            CHECK (length(id) BETWEEN 5 AND 132 AND id GLOB 'atm_*'),
+        task_uid TEXT NOT NULL,
+        project_id TEXT NOT NULL,
+        subject_id TEXT NOT NULL
+            REFERENCES subjects(id) ON DELETE RESTRICT,
+        status TEXT NOT NULL
+            CHECK (status IN ('active', 'released', 'expired', 'submitted')),
+        started_at TEXT NOT NULL
+            CHECK (
+                length(started_at) BETWEEN 20 AND 27
+                AND substr(started_at, 11, 1) = 'T'
+                AND substr(started_at, -1, 1) = 'Z'
+            ),
+        ended_at TEXT
+            CHECK (
+                ended_at IS NULL
+                OR (
+                    length(ended_at) BETWEEN 20 AND 27
+                    AND substr(ended_at, 11, 1) = 'T'
+                    AND substr(ended_at, -1, 1) = 'Z'
+                    AND ended_at >= started_at
+                )
+            ),
+        lease_expires_at TEXT NOT NULL
+            CHECK (
+                length(lease_expires_at) BETWEEN 20 AND 27
+                AND substr(lease_expires_at, 11, 1) = 'T'
+                AND substr(lease_expires_at, -1, 1) = 'Z'
+                AND lease_expires_at > started_at
+            ),
+        UNIQUE (id, task_uid, subject_id),
+        UNIQUE (id, task_uid, project_id, subject_id),
+        FOREIGN KEY (task_uid, project_id)
+            REFERENCES tasks(uid, project_id) ON DELETE RESTRICT,
+        CHECK (
+            (status = 'active' AND ended_at IS NULL)
+            OR (status != 'active' AND ended_at IS NOT NULL)
+        ),
+        CHECK (status != 'expired' OR ended_at = lease_expires_at),
+        CHECK (
+            status NOT IN ('released', 'submitted')
+            OR ended_at < lease_expires_at
+        )
+    ) STRICT
+    """,
+    """
+    CREATE TABLE task_claims (
+        task_uid TEXT PRIMARY KEY,
+        project_id TEXT NOT NULL,
+        subject_id TEXT NOT NULL
+            REFERENCES subjects(id) ON DELETE RESTRICT,
+        attempt_id TEXT UNIQUE
+            CHECK (
+                attempt_id IS NULL
+                OR (
+                    length(attempt_id) BETWEEN 5 AND 132
+                    AND attempt_id GLOB 'atm_*'
+                )
+            ),
+        claimed_at TEXT NOT NULL
+            CHECK (
+                length(claimed_at) BETWEEN 20 AND 27
+                AND substr(claimed_at, 11, 1) = 'T'
+                AND substr(claimed_at, -1, 1) = 'Z'
+            ),
+        lease_expires_at TEXT NOT NULL
+            CHECK (
+                length(lease_expires_at) BETWEEN 20 AND 27
+                AND substr(lease_expires_at, 11, 1) = 'T'
+                AND substr(lease_expires_at, -1, 1) = 'Z'
+                AND lease_expires_at > claimed_at
+            ),
+        FOREIGN KEY (task_uid, project_id)
+            REFERENCES tasks(uid, project_id) ON DELETE RESTRICT,
+        FOREIGN KEY (attempt_id, task_uid, project_id, subject_id)
+            REFERENCES task_attempts(id, task_uid, project_id, subject_id)
+            ON DELETE RESTRICT
+    ) STRICT
+    """,
     f"""
     CREATE TABLE task_results (
         id TEXT PRIMARY KEY
@@ -318,7 +401,10 @@ _SCHEMA_STATEMENTS: Final = (
                 AND review_comment IS NULL
                 AND rejection_reason IS NOT NULL
             )
-        )
+        ),
+        FOREIGN KEY (attempt_id, task_uid, submitted_by)
+            REFERENCES task_attempts(id, task_uid, subject_id)
+            ON DELETE RESTRICT
     ) STRICT
     """,
     f"""
@@ -359,7 +445,13 @@ _SCHEMA_STATEMENTS: Final = (
                     'review_approved',
                     'review_rejected',
                     'task_completed',
-                    'task_cancelled'
+                    'task_cancelled',
+                    'task_claimed',
+                    'claim_renewed',
+                    'claim_released',
+                    'claim_expired',
+                    'progress_reported',
+                    'observation_added'
                 )
             ),
         occurred_at TEXT NOT NULL
@@ -379,7 +471,10 @@ _SCHEMA_STATEMENTS: Final = (
         FOREIGN KEY (task_uid, project_id)
             REFERENCES tasks(uid, project_id) ON DELETE RESTRICT,
         FOREIGN KEY (actor_subject_id, actor_kind)
-            REFERENCES subjects(id, kind) ON DELETE RESTRICT
+            REFERENCES subjects(id, kind) ON DELETE RESTRICT,
+        FOREIGN KEY (attempt_id, task_uid, project_id, actor_subject_id)
+            REFERENCES task_attempts(id, task_uid, project_id, subject_id)
+            ON DELETE RESTRICT
     ) STRICT
     """,
     f"""
@@ -403,7 +498,13 @@ _SCHEMA_STATEMENTS: Final = (
                     'task.dependency.remove',
                     'task.result.submit',
                     'task.result.approve',
-                    'task.result.reject'
+                    'task.result.reject',
+                    'task.claim',
+                    'task.claim.next',
+                    'task.claim.renew',
+                    'task.claim.release',
+                    'task.progress.report',
+                    'task.result.submit.agent'
                 )
             ),
         caller_key TEXT NOT NULL
@@ -447,6 +548,26 @@ _SCHEMA_STATEMENTS: Final = (
     ON task_results (task_uid, submitted_at, id)
     """,
     """
+    CREATE INDEX idx_task_attempts_task_history
+    ON task_attempts (task_uid, started_at DESC, id)
+    """,
+    """
+    CREATE INDEX idx_task_attempts_active_lease
+    ON task_attempts (status, lease_expires_at, task_uid)
+    """,
+    """
+    CREATE INDEX idx_task_claims_project_task
+    ON task_claims (project_id, task_uid)
+    """,
+    """
+    CREATE INDEX idx_task_claims_owner
+    ON task_claims (subject_id, attempt_id, task_uid)
+    """,
+    """
+    CREATE INDEX idx_task_claims_lease_expiry
+    ON task_claims (lease_expires_at, task_uid)
+    """,
+    """
     CREATE INDEX idx_task_events_task_cursor
     ON task_events (task_uid, cursor)
     """,
@@ -456,13 +577,43 @@ _SCHEMA_STATEMENTS: Final = (
     """,
     """
     INSERT INTO store_metadata (singleton, schema_version)
-    VALUES (1, 3)
+    VALUES (1, 4)
     """,
 )
 
 
+def _schema_signature_from_statements(
+    statements: tuple[str, ...],
+) -> tuple[tuple[str, str, str], ...]:
+    """Build the expected explicit SQLite schema-object signature.
+
+    Args:
+        statements: Closed schema statement sequence.
+
+    Returns:
+        Sorted object type, name, and canonical SQL triples.
+
+    """
+    signature: list[tuple[str, str, str]] = []
+    for statement in statements:
+        sql = statement.strip()
+        words = sql.split(maxsplit=3)
+        if len(words) < _CREATE_STATEMENT_MIN_WORDS or words[0] != "CREATE":
+            continue
+        object_type = words[1].lower()
+        if object_type not in {"index", "table", "trigger", "view"}:
+            continue
+        signature.append((object_type, words[2], sql))
+    return tuple(sorted(signature))
+
+
+_EXPECTED_SCHEMA_SIGNATURE: Final = _schema_signature_from_statements(
+    _SCHEMA_STATEMENTS
+)
+
+
 def initialize_empty_store(database_path: Path) -> None:
-    """Atomically create or accept one empty Phase 3 SQLite store.
+    """Atomically create or accept one empty Phase 4 SQLite store.
 
     Concurrent callers serialize through a bounded immediate transaction. An
     existing nonempty store is validated and never repaired or migrated.
@@ -471,7 +622,7 @@ def initialize_empty_store(database_path: Path) -> None:
         database_path: Absolute target path for the SQLite database.
 
     Raises:
-        SchemaUnsupportedError: If an existing store is not exact version 3.
+        SchemaUnsupportedError: If an existing store is not exact version 4.
         StorageBusyError: If another writer outlives the bounded lock wait.
         StorageUnavailableError: If storage cannot be initialized safely.
 
@@ -494,7 +645,7 @@ def validate_store_schema(connection: sqlite3.Connection) -> None:
         connection: Open SQLite connection to inspect.
 
     Raises:
-        SchemaUnsupportedError: If metadata is absent, malformed, or not version 3.
+        SchemaUnsupportedError: If metadata is absent, malformed, or not version 4.
 
     """
     candidate: object = connection
@@ -520,6 +671,25 @@ def validate_store_schema(connection: sqlite3.Connection) -> None:
         or type(schema_version) is not int
         or schema_version != SCHEMA_VERSION
     ):
+        raise SchemaUnsupportedError
+    try:
+        rows = connection.execute(
+            """
+            SELECT type, name, sql
+            FROM sqlite_schema
+            WHERE name NOT LIKE 'sqlite_%'
+              AND type IN ('table', 'index', 'view', 'trigger')
+            ORDER BY type, name
+            """
+        ).fetchall()
+        signature = tuple(
+            (object_type, name, sql.strip())
+            for object_type, name, sql in rows
+            if isinstance(sql, str)
+        )
+    except sqlite3.DatabaseError as error:
+        raise SchemaUnsupportedError from error
+    if signature != _EXPECTED_SCHEMA_SIGNATURE:
         raise SchemaUnsupportedError
 
 

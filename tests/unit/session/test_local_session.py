@@ -12,7 +12,10 @@ import pytest
 from pydantic import ValidationError
 
 import workaholic.session as session_package
-from tests.unit.session.fakes import UnavailablePhaseThreeServices
+from tests.unit.session.fakes import (
+    UnavailablePhaseFourServices,
+    UnavailablePhaseThreeServices,
+)
 from workaholic.application import (
     ApplicationError,
     ApplicationErrorCode,
@@ -533,6 +536,8 @@ def _session(
         lifecycle=UnavailablePhaseThreeServices(),
         dependencies=UnavailablePhaseThreeServices(),
         results=UnavailablePhaseThreeServices(),
+        claims=UnavailablePhaseFourServices(),
+        execution=UnavailablePhaseFourServices(),
     )
     return LocalSession(
         context=context,
@@ -922,6 +927,8 @@ def test_constructor_runtime_validates_every_dependency(
         lifecycle=UnavailablePhaseThreeServices(),
         dependencies=UnavailablePhaseThreeServices(),
         results=UnavailablePhaseThreeServices(),
+        claims=UnavailablePhaseFourServices(),
+        execution=UnavailablePhaseFourServices(),
     )
     dependencies: list[object] = [context, _Profiles(), _Runtimes(runtime)]
     dependencies[dependency_index] = object()
@@ -1070,6 +1077,8 @@ def test_invalid_context_gateway_output_is_context_invalid() -> None:
         lifecycle=UnavailablePhaseThreeServices(),
         dependencies=UnavailablePhaseThreeServices(),
         results=UnavailablePhaseThreeServices(),
+        claims=UnavailablePhaseFourServices(),
+        execution=UnavailablePhaseFourServices(),
     )
     session = LocalSession(
         context=cast("WorkspaceContextGateway", _InvalidContext()),

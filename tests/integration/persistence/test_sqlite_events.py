@@ -59,6 +59,17 @@ pytestmark = pytest.mark.integration
 _BASE_TIME = datetime(2026, 8, 1, 8, 0, 0, 111111, tzinfo=UTC)
 _ACTOR_ID = SubjectId("sub_local")
 _PROJECT_ID = ProjectId("prj_acme")
+_PHASE_THREE_EVENT_TYPES = {
+    TaskEventType.TASK_CREATED,
+    TaskEventType.TASK_UPDATED,
+    TaskEventType.TASK_BLOCKED,
+    TaskEventType.TASK_UNBLOCKED,
+    TaskEventType.RESULT_SUBMITTED,
+    TaskEventType.REVIEW_APPROVED,
+    TaskEventType.REVIEW_REJECTED,
+    TaskEventType.TASK_COMPLETED,
+    TaskEventType.TASK_CANCELLED,
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -156,6 +167,7 @@ def _build_event_scenario(tmp_path: Path) -> _EventScenario:
             project_id=target.project_id,
             actor_subject_id=_ACTOR_ID,
             event_id=TaskEventId("evt_target_updated"),
+            claim_expired_event_id=TaskEventId("evt_target_updated_expired"),
             request_id=RequestId("req_target_updated"),
             occurred_at=_at(3),
             expected_version=target.version,
@@ -168,6 +180,7 @@ def _build_event_scenario(tmp_path: Path) -> _EventScenario:
             project_id=target.project_id,
             actor_subject_id=_ACTOR_ID,
             event_id=TaskEventId("evt_target_blocked"),
+            claim_expired_event_id=TaskEventId("evt_target_blocked_expired"),
             request_id=RequestId("req_target_blocked"),
             occurred_at=_at(4),
             expected_version=target.version,
@@ -180,6 +193,7 @@ def _build_event_scenario(tmp_path: Path) -> _EventScenario:
             project_id=cancelled.project_id,
             actor_subject_id=_ACTOR_ID,
             event_id=TaskEventId("evt_cancelled_cancelled"),
+            claim_expired_event_id=TaskEventId("evt_cancelled_expired"),
             request_id=RequestId("req_cancelled_cancelled"),
             occurred_at=_at(5),
             expected_version=cancelled.version,
@@ -192,6 +206,7 @@ def _build_event_scenario(tmp_path: Path) -> _EventScenario:
             project_id=target.project_id,
             actor_subject_id=_ACTOR_ID,
             event_id=TaskEventId("evt_target_unblocked"),
+            claim_expired_event_id=TaskEventId("evt_target_unblocked_expired"),
             request_id=RequestId("req_target_unblocked"),
             occurred_at=_at(6),
             expected_version=target.version,
@@ -204,6 +219,7 @@ def _build_event_scenario(tmp_path: Path) -> _EventScenario:
             actor_subject_id=_ACTOR_ID,
             result_id=ResultId("res_target_first"),
             result_submitted_event_id=TaskEventId("evt_target_submitted_first"),
+            claim_expired_event_id=TaskEventId("evt_target_first_expired"),
             request_id=RequestId("req_target_submitted_first"),
             occurred_at=_at(7),
             expected_version=target.version,
@@ -230,6 +246,7 @@ def _build_event_scenario(tmp_path: Path) -> _EventScenario:
             actor_subject_id=_ACTOR_ID,
             result_id=ResultId("res_target_second"),
             result_submitted_event_id=TaskEventId("evt_target_submitted_second"),
+            claim_expired_event_id=TaskEventId("evt_target_second_expired"),
             request_id=RequestId("req_target_submitted_second"),
             occurred_at=_at(9),
             expected_version=target.version,
@@ -353,7 +370,7 @@ def test_history_replays_every_committed_event_once_across_cursor_gaps(
         event.event_type
         for event in _read(scenario.repository, scenario.cancelled.uid).events
     )
-    assert all_types == set(TaskEventType)
+    assert all_types == _PHASE_THREE_EVENT_TYPES
 
 
 def test_multi_event_transitions_preserve_request_order_and_immutable_payload(
@@ -489,6 +506,7 @@ def test_rejected_mutations_never_appear_in_history(tmp_path: Path) -> None:
             project_id=task.project_id,
             actor_subject_id=_ACTOR_ID,
             event_id=TaskEventId("evt_rollback_updated"),
+            claim_expired_event_id=TaskEventId("evt_rollback_updated_expired"),
             request_id=RequestId("req_rollback_updated"),
             occurred_at=_at(2),
             expected_version=task.version,
@@ -503,6 +521,7 @@ def test_rejected_mutations_never_appear_in_history(tmp_path: Path) -> None:
                 project_id=updated.project_id,
                 actor_subject_id=_ACTOR_ID,
                 event_id=TaskEventId("evt_rollback_rejected"),
+                claim_expired_event_id=TaskEventId("evt_rollback_rejected_expired"),
                 request_id=RequestId("req_rollback_rejected"),
                 occurred_at=_at(3),
                 expected_version=task.version,

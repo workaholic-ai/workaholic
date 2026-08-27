@@ -1,4 +1,4 @@
-"""Human Task submission and review CLI commands."""
+"""Human and Agent Task submission plus Human review CLI commands."""
 
 from __future__ import annotations
 
@@ -7,8 +7,12 @@ from typing import TYPE_CHECKING, Annotated
 import typer
 from pydantic import ValidationError
 
-from workaholic.cli.errors import write_failure, write_invalid_input
+from workaholic.cli.errors import (
+    write_failure,
+    write_invalid_input,
+)
 from workaholic.cli.options import (  # noqa: TC001 - Typer resolves aliases
+    AttemptOption,
     ExpectedVersionOption,
     IdempotencyKeyOption,
     JsonOption,
@@ -17,13 +21,19 @@ from workaholic.cli.options import (  # noqa: TC001 - Typer resolves aliases
     TaskSelectorArgument,
 )
 from workaholic.cli.rendering import write_success
-from workaholic.cli.runtime import SessionProvider  # noqa: TC001 - public callback
+from workaholic.cli.runtime import (
+    SessionProvider,
+    acquire_session,
+)
 from workaholic.cli.serialization import (
+    agent_submission_data,
+    agent_submission_summary,
     task_submission_data,
     task_submission_summary,
 )
 from workaholic.cli.structured_input import (
     StructuredInputError,
+    load_required_structured_object,
     load_structured_object,
     merge_structured_fields,
 )
@@ -32,7 +42,9 @@ from workaholic.cli.task_mutations import (
     replace_task_expected_version,
     require_task_mutation_version_or_exit,
 )
+from workaholic.domain import AttemptId, DomainValidationError
 from workaholic.session import (
+    AgentSubmitRequest,
     TaskApproveRequest,
     TaskRejectRequest,
     TaskSubmissionResult,
@@ -101,6 +113,7 @@ def register_task_result_commands(
     @application.command("submit")
     def submit_task(  # noqa: PLR0913 - explicit public CLI contract
         task: TaskSelectorArgument,
+        attempt: AttemptOption = None,
         comment: CommentOption = None,
         result_file: ResultFileOption = None,
         expected_version: ExpectedVersionOption = None,
@@ -109,55 +122,30 @@ def register_task_result_commands(
         json_mode: JsonOption = False,  # noqa: FBT002
         non_interactive: NonInteractiveOption = False,  # noqa: FBT002
     ) -> None:
-        """Submit Human work directly without an Agent Attempt."""
-        require_task_mutation_version_or_exit(
-            expected_version,
-            json_mode=json_mode,
-            non_interactive=non_interactive,
-        )
-        try:
-            file_values = (
-                {} if result_file is None else load_structured_object(result_file)
+        """Submit Human work or one exact Agent Attempt's structured Result."""
+        if attempt is not None:
+            _submit_agent_task(
+                session_provider,
+                task=task,
+                attempt=attempt,
+                comment=comment,
+                result_file=result_file,
+                expected_version=expected_version,
+                idempotency_key=idempotency_key,
+                project=project,
+                json_mode=json_mode,
             )
-            result_values = merge_structured_fields(
-                file_values=file_values,
-                inline_values={},
-                allowed_fields=_RESULT_FILE_FIELDS,
-            )
-            provisional = TaskSubmitRequest.model_validate(
-                {
-                    "task": task,
-                    "comment": comment,
-                    "result": result_values,
-                    "expected_version": (
-                        1 if expected_version is None else expected_version
-                    ),
-                    "idempotency_key": idempotency_key,
-                    "project": project,
-                }
-            )
-        except StructuredInputError, ValidationError:
-            write_invalid_input(
-                "Task-submission input is invalid.", json_mode=json_mode
-            )
-        prepared = prepare_task_mutation_or_exit(
+            return
+        _submit_human_task(
             session_provider,
             task=task,
-            project=project,
+            comment=comment,
+            result_file=result_file,
             expected_version=expected_version,
-            action="submit Human work",
+            idempotency_key=idempotency_key,
+            project=project,
             json_mode=json_mode,
-        )
-        if prepared is None:
-            return
-        request = replace_task_expected_version(
-            provisional,
-            TaskSubmitRequest,
-            prepared.expected_version,
-        )
-        _invoke_submission(
-            lambda: prepared.session.submit_human_result(request),
-            json_mode=json_mode,
+            non_interactive=non_interactive,
         )
 
     @application.command("approve")
@@ -223,6 +211,147 @@ def register_task_result_commands(
             json_mode=json_mode,
             non_interactive=non_interactive,
         )
+
+
+def _submit_human_task(  # noqa: PLR0913 - explicit dispatch boundary
+    session_provider: SessionProvider,
+    *,
+    task: str,
+    comment: str | None,
+    result_file: str | None,
+    expected_version: int | None,
+    idempotency_key: str | None,
+    project: str | None,
+    json_mode: bool,
+    non_interactive: bool,
+) -> None:
+    """Validate and submit direct Human work with existing convenience.
+
+    Args:
+        session_provider: Command-scoped Session factory.
+        task: Selected Task key or UID.
+        comment: Optional Human comment.
+        result_file: Optional structured Result source.
+        expected_version: Explicit version or Human convenience omission.
+        idempotency_key: Optional replay key.
+        project: Optional explicit Project key.
+        json_mode: Whether machine-readable output was selected.
+        non_interactive: Whether Human interaction is disabled.
+
+    """
+    require_task_mutation_version_or_exit(
+        expected_version,
+        json_mode=json_mode,
+        non_interactive=non_interactive,
+    )
+    try:
+        file_values = {} if result_file is None else load_structured_object(result_file)
+        result_values = merge_structured_fields(
+            file_values=file_values,
+            inline_values={},
+            allowed_fields=_RESULT_FILE_FIELDS,
+        )
+        provisional = TaskSubmitRequest.model_validate(
+            {
+                "task": task,
+                "comment": comment,
+                "result": result_values,
+                "expected_version": 1 if expected_version is None else expected_version,
+                "idempotency_key": idempotency_key,
+                "project": project,
+            }
+        )
+    except StructuredInputError, ValidationError:
+        write_invalid_input("Task-submission input is invalid.", json_mode=json_mode)
+    prepared = prepare_task_mutation_or_exit(
+        session_provider,
+        task=task,
+        project=project,
+        expected_version=expected_version,
+        action="submit Human work",
+        json_mode=json_mode,
+    )
+    if prepared is None:
+        return
+    request = replace_task_expected_version(
+        provisional,
+        TaskSubmitRequest,
+        prepared.expected_version,
+    )
+    _invoke_submission(
+        lambda: prepared.session.submit_human_result(request),
+        json_mode=json_mode,
+    )
+
+
+def _submit_agent_task(  # noqa: PLR0913 - explicit dispatch boundary
+    session_provider: SessionProvider,
+    *,
+    task: str,
+    attempt: str,
+    comment: str | None,
+    result_file: str | None,
+    expected_version: int | None,
+    idempotency_key: str | None,
+    project: str | None,
+    json_mode: bool,
+) -> None:
+    """Validate and submit one exact Agent Attempt without interaction.
+
+    Args:
+        session_provider: Command-scoped Session factory.
+        task: Selected Task key or UID.
+        attempt: Exact Agent Attempt owner token.
+        comment: Human-only option, which must be absent.
+        result_file: Required structured Result source.
+        expected_version: Required positive claimed Task version.
+        idempotency_key: Optional replay key.
+        project: Optional explicit Project key.
+        json_mode: Whether machine-readable output was selected.
+
+    """
+    if expected_version is None:
+        write_invalid_input(
+            "Agent submission requires --expected-version.",
+            json_mode=json_mode,
+        )
+    try:
+        _require_absent_agent_comment(comment)
+        result_values = merge_structured_fields(
+            file_values=load_required_structured_object(result_file),
+            inline_values={},
+            allowed_fields=_RESULT_FILE_FIELDS,
+        )
+        request = AgentSubmitRequest.model_validate(
+            {
+                "task": task,
+                "attempt": AttemptId(attempt),
+                "result": result_values,
+                "expected_version": expected_version,
+                "idempotency_key": idempotency_key,
+                "project": project,
+            }
+        )
+    except StructuredInputError, DomainValidationError, ValidationError:
+        write_invalid_input("Task-submission input is invalid.", json_mode=json_mode)
+    _invoke_agent_submission(
+        lambda: acquire_session(session_provider).submit_agent_result(request),
+        json_mode=json_mode,
+    )
+
+
+def _require_absent_agent_comment(comment: str | None) -> None:
+    """Reject the Human-only comment option on Agent submission.
+
+    Args:
+        comment: Optional CLI comment value.
+
+    Raises:
+        StructuredInputError: If a Human comment was supplied.
+
+    """
+    if comment is not None:
+        raise StructuredInputError
 
 
 def _run_review_mutation[  # noqa: PLR0913 - shared explicit review contract
@@ -304,6 +433,32 @@ def _invoke_submission(
                 task_submission_data(result)
                 if json_mode
                 else task_submission_summary(result)
+            ),
+            json_mode=json_mode,
+        )
+    except Exception as error:  # noqa: BLE001 - redact every boundary failure
+        write_failure(error, json_mode=json_mode)
+
+
+def _invoke_agent_submission(
+    operation: Callable[[], TaskSubmissionResult],
+    *,
+    json_mode: bool,
+) -> None:
+    """Invoke and safely render one Attempt-backed Agent submission.
+
+    Args:
+        operation: Deferred Session call returning one exact Agent result.
+        json_mode: Whether to emit the automation envelope.
+
+    """
+    try:
+        result = _validated_submission_result(operation())
+        write_success(
+            (
+                agent_submission_data(result)
+                if json_mode
+                else agent_submission_summary(result)
             ),
             json_mode=json_mode,
         )

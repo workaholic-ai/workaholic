@@ -1,4 +1,4 @@
-"""Canonical Phase 3 TaskEvent serialization and strict row codecs."""
+"""Canonical Phase 4 TaskEvent serialization and strict row codecs."""
 
 from __future__ import annotations
 
@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Final, cast
 
 from workaholic.domain import (
+    AttemptId,
     ProjectId,
     RequestId,
     SubjectId,
@@ -28,7 +29,10 @@ from workaholic.persistence.sqlite._records import (
 from workaholic.persistence.sqlite.errors import StorageUnavailableError
 
 if TYPE_CHECKING:
-    from workaholic.domain import JsonValue
+    import sqlite3
+    from datetime import datetime
+
+    from workaholic.domain import JsonValue, Task
 
 TASK_EVENT_FIELDS: Final = (
     "cursor",
@@ -65,10 +69,10 @@ class TaskEventRecord:
 
     event: TaskEvent
     actor_kind: SubjectKind
-    attempt_id: str | None
+    attempt_id: AttemptId | None
 
     def __post_init__(self) -> None:
-        """Validate the Phase 3 event-attribution contract."""
+        """Validate the Phase 4 event-attribution snapshot contract."""
         candidate_event: object = self.event
         candidate_kind: object = self.actor_kind
         if not isinstance(candidate_event, TaskEvent):
@@ -76,9 +80,152 @@ class TaskEventRecord:
         if (
             not isinstance(candidate_kind, SubjectKind)
             or candidate_kind.value != SubjectKind.HUMAN.value
-            or self.attempt_id is not None
+            or self.attempt_id != candidate_event.attempt_id
         ):
             raise StorageUnavailableError
+
+
+def insert_task_event(  # noqa: PLR0913 - exact durable event boundary.
+    connection: sqlite3.Connection,
+    *,
+    event_id: TaskEventId,
+    task: Task,
+    actor_subject_id: SubjectId,
+    request_id: RequestId,
+    event_type: TaskEventType,
+    occurred_at: datetime,
+    payload: Mapping[str, JsonValue],
+    attempt_id: AttemptId | None,
+) -> TaskEventRecord:
+    """Append one attributable Task event in an active write transaction.
+
+    Args:
+        connection: Active schema-validated SQLite write transaction.
+        event_id: Globally unique candidate event identity.
+        task: Complete Task receiving the event.
+        actor_subject_id: Authenticated bootstrap Subject identity.
+        request_id: Current logical request identity.
+        event_type: Closed semantic event type.
+        occurred_at: Authoritative UTC transaction time.
+        payload: Validated JSON-compatible event payload.
+        attempt_id: Agent Attempt attribution or ``None`` for Human execution.
+
+    Returns:
+        Persisted event with its allocated monotonic cursor.
+
+    Raises:
+        StorageUnavailableError: If an input or allocated cursor is malformed.
+
+    """
+    try:
+        event = TaskEvent(
+            id=event_id,
+            cursor=1,
+            task_uid=task.uid,
+            project_id=task.project_id,
+            actor_subject_id=actor_subject_id,
+            request_id=request_id,
+            event_type=event_type,
+            occurred_at=occurred_at,
+            payload=payload,
+            attempt_id=attempt_id,
+        )
+    except (TypeError, ValueError) as error:
+        raise StorageUnavailableError from error
+    inserted = connection.execute(
+        """
+        INSERT INTO task_events (
+            id, task_uid, project_id, actor_subject_id, actor_kind, attempt_id,
+            request_id, event_type, occurred_at, payload_json
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            str(event.id),
+            str(event.task_uid),
+            str(event.project_id),
+            str(event.actor_subject_id),
+            SubjectKind.HUMAN.value,
+            None if attempt_id is None else str(attempt_id),
+            str(event.request_id),
+            event.event_type.value,
+            serialize_timestamp(event.occurred_at),
+            canonical_json(event.payload),
+        ),
+    )
+    persisted = TaskEvent(
+        id=event.id,
+        cursor=require_integer(inserted.lastrowid),
+        task_uid=event.task_uid,
+        project_id=event.project_id,
+        actor_subject_id=event.actor_subject_id,
+        request_id=event.request_id,
+        event_type=event.event_type,
+        occurred_at=event.occurred_at,
+        payload=event.payload,
+        attempt_id=event.attempt_id,
+    )
+    return TaskEventRecord(
+        event=persisted,
+        actor_kind=SubjectKind.HUMAN,
+        attempt_id=attempt_id,
+    )
+
+
+def load_task_event_record(
+    connection: sqlite3.Connection,
+    *,
+    event_id: TaskEventId,
+) -> TaskEventRecord | None:
+    """Load one exact event record by its globally unique identity.
+
+    Args:
+        connection: Active schema-validated SQLite transaction.
+        event_id: Exact TaskEvent identity to load.
+
+    Returns:
+        The hydrated event record, or ``None`` when it does not exist.
+
+    Raises:
+        StorageUnavailableError: If the identity or stored row is malformed.
+
+    """
+    candidate: object = event_id
+    if not isinstance(candidate, TaskEventId):
+        raise StorageUnavailableError
+    row = connection.execute(
+        f"""
+        SELECT {", ".join(TASK_EVENT_FIELDS)}
+        FROM task_events
+        WHERE id = ?
+        """,  # noqa: S608 - fields are a closed module constant.
+        (str(candidate),),
+    ).fetchone()
+    if row is None:
+        return None
+    return task_event_record_from_row(row)
+
+
+def require_persisted_task_event_record(
+    connection: sqlite3.Connection,
+    *,
+    expected: TaskEventRecord,
+) -> None:
+    """Require storage to retain an exact immutable event replay record.
+
+    Args:
+        connection: Active schema-validated SQLite transaction.
+        expected: Event record decoded from a durable logical outcome.
+
+    Raises:
+        StorageUnavailableError: If the input is invalid or storage differs.
+
+    """
+    candidate: object = expected
+    if not isinstance(candidate, TaskEventRecord):
+        raise StorageUnavailableError
+    actual = load_task_event_record(connection, event_id=candidate.event.id)
+    if actual != candidate:
+        raise StorageUnavailableError
 
 
 def task_event_record_mapping(record: TaskEventRecord) -> dict[str, object]:
@@ -101,7 +248,9 @@ def task_event_record_mapping(record: TaskEventRecord) -> dict[str, object]:
     return {
         "actor_kind": candidate.actor_kind.value,
         "actor_subject_id": str(event.actor_subject_id),
-        "attempt_id": candidate.attempt_id,
+        "attempt_id": (
+            None if candidate.attempt_id is None else str(candidate.attempt_id)
+        ),
         "cursor": event.cursor,
         "event_type": event.event_type.value,
         "id": str(event.id),
@@ -217,8 +366,8 @@ def _build_event_record(
     """
     try:
         actor_kind = SubjectKind(require_text(value[5]))
-        if value[6] is not None:
-            raise StorageUnavailableError
+        attempt_text = None if value[6] is None else require_text(value[6])
+        attempt_id = None if attempt_text is None else AttemptId(attempt_text)
         payload_value = value[10]
         if payload_is_json:
             payload = parse_json_object(
@@ -240,9 +389,10 @@ def _build_event_record(
                 event_type=TaskEventType(require_text(value[8])),
                 occurred_at=parse_timestamp(value[9]),
                 payload=cast("Mapping[str, JsonValue]", payload),
+                attempt_id=attempt_id,
             ),
             actor_kind=actor_kind,
-            attempt_id=None,
+            attempt_id=attempt_id,
         )
     except (IndexError, TypeError, ValueError) as error:
         raise StorageUnavailableError from error

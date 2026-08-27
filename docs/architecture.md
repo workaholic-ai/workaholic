@@ -21,23 +21,25 @@ Python package: workaholic-ai
 Executable:     workaholic
 ```
 
-## Current implementation: `0.3.0a1`
+## Current implementation: `0.4.0a1`
 
-The Phase 3 Human Workflow Alpha implements the embedded `LocalSession`,
+The Phase 4 Local Agent Alpha implements the embedded `LocalSession`,
 trusted embedded profiles, canonical upward `.workaholic.env` discovery,
 multiple named Projects, safe Workspace binding, and SQLite schema version
-`3`. Its 19 local operations cover complete Task definitions, optimistic
+`4`. Its 24 local operations cover complete Task definitions, optimistic
 updates, explicit state transitions, dependencies, readiness, structured Human
-Results, review, and attributable event history. Each CLI invocation composes
-these adapters in-process, performs one operation, and exits; no daemon is
-started.
+Results and review, exclusive Human and Agent Claims, bounded Leases, Agent
+Attempts, heartbeat, progress, release, submission, and attributable event
+history. Each CLI invocation composes these adapters in-process, performs one
+operation, and exits; no daemon is started.
 
 The remaining diagrams and decisions describe the accepted v1 destination, not
-the current feature inventory. `0.3.0a1` does not implement Agents, Claims,
-Attempts, Leases, Tokens, remote profiles, credentials, `RemoteSession`, a server,
-JSON/PostgreSQL adapters, Project archival, parent/child Task hierarchy, or
-schema migration. Proposed Result follow-ups never create Tasks automatically.
-Alpha storage and automation remain disposable.
+the current feature inventory. `0.4.0a1` reuses the bootstrap Subject and does
+not implement distinct Agent identities, Tokens, remote profiles, credentials,
+`RemoteSession`, a server, JSON/PostgreSQL adapters, capability-based
+scheduling, Project archival, force interruption, parent/child Task hierarchy,
+or schema migration. Proposed Result follow-ups never create Tasks
+automatically. Alpha storage and automation remain disposable.
 
 ## 1. Architectural decisions
 
@@ -726,13 +728,15 @@ the Claim and moves the Attempt to `submitted`, including when the Task enters
 review. Approval and rejection operate on the Result and never revive the old
 Attempt.
 
-A stale process cannot submit using an old attempt ID, even when the same agent identity later reclaims the task.
+A stale process cannot submit using an old Attempt ID, even when the same Agent
+identity later reclaims the Task.
 
 Correctness does not depend on a background scheduler. Lease validity uses
 authoritative transaction time and the half-open rule
-`now < lease_expires_at`. Expiry is evaluated during claims, renewals,
-heartbeats, submissions, mutations, and relevant queries. A server may perform
-housekeeping, but it is an optimization rather than a requirement.
+`now < lease_expires_at`. Claims and writes evaluate expiry transactionally.
+Pure reads only project an expired stored Claim as stale and non-owning; they
+never materialize expiry or append events. A server may perform housekeeping,
+but it is an optimization rather than a requirement.
 
 Phase 4 local Human and Agent commands use the sole embedded bootstrap Subject.
 Human command shape and null Attempt attribution distinguish Human Claims;
@@ -743,6 +747,24 @@ Claim, renewal, heartbeat, progress, release, and expiry do not increment the
 Task version. Agent claim returns the current version, and Agent submission
 requires that expected version plus the current Attempt. Successful Human or
 Agent submission increments the Task version once.
+
+Phase 4 Lease text matches `^[1-9][0-9]*(s|m|h|d)$`. Human claim and renewal
+default to `8h` and accept `1m` through `30d`; Agent claim and heartbeat
+default to `15m` and accept `1s` through `24h`. Renewal derives expiry from
+authoritative transaction time rather than extending the prior expiry.
+
+An expired stored Claim may make a Task both `ready` and `stale`. The next
+successful write that needs the Task materializes expiry, removes the Claim,
+sets an Agent Attempt to `expired` with `ended_at = lease_expires_at`, and
+appends `claim_expired`. A stale Agent request returns `LEASE_LOST` and does
+not commit its requested operation.
+
+Structured Agent progress is bounded append-only TaskEvent data. It contains
+at least one optional message of at most 4,000 characters, integer percentage
+from 0 through 100, or at most 50 ordered observations. Observation kinds are
+`note`, `risk`, `blocker`, and `question`; a blocker observation does not
+change Task state. One request appends `progress_reported` followed by its
+`observation_added` events and does not change Task version or `updated_at`.
 
 ## 9. Results and review
 
@@ -944,11 +966,11 @@ SQLite is the default for local use.
 
 Each CLI invocation opens a short-lived connection. Compound operations such as number allocation, claiming, event creation, and idempotency recording occur in one write transaction.
 
-Phase 3 uses disposable SQLite schema version `3` for lifecycle state,
-dependencies, Results, reviews, and expanded events. It rejects Phase 2 version
-`2` unchanged and provides no migration, conversion, import, export, or
-automatic reset. This is the exact schema used by the current `0.3.0a1`
-implementation.
+Phase 4 uses disposable SQLite schema version `4` for lifecycle state,
+dependencies, Claims, Attempts, Leases, Results, reviews, and expanded events.
+It rejects Phase 3 version `3` unchanged and provides no migration, conversion,
+import, export, or automatic reset. This is the exact schema used by the
+current `0.4.0a1` implementation.
 
 ### PostgreSQL backend
 

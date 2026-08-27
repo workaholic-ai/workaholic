@@ -1,6 +1,6 @@
 # Workaholic AI Persistence Contract
 
-- Status: Accepted v1 contract through Phase 4 with Phase 3 SQLite implementation
+- Status: Accepted v1 contract through Phase 4 with Phase 4 SQLite implementation
 - Decision date: 2026-07-29
 - Contract scope: Observable semantics shared by JSON, SQLite, and PostgreSQL
 - Public API status: Internal architecture contract, not a third-party API
@@ -8,19 +8,20 @@
 ## Current implementation notice
 
 This document specifies persistence semantics implemented incrementally across
-v1. The current `0.3.0a1` development package implements the Phase 3 SQLite
-adapter and disposable schema version `3`, including multiple Projects,
+v1. The current `0.4.0a1` development package implements the Phase 4 SQLite
+adapter and disposable schema version `4`, including multiple Projects,
 optimistic Task mutations, dependencies, readiness, structured Human Results,
-review, attributable TaskEvents, idempotency, deterministic ordering, and
+review, exclusive Claims, Attempts, bounded Leases, Agent progress and
+submission, attributable TaskEvents, idempotency, deterministic ordering, and
 selection-bound cursors. JSON and PostgreSQL adapters and schema migration
 remain unavailable.
 
-An unsupported alpha store, including Phase 2 schema version `2`, is rejected
+An unsupported alpha store, including Phase 3 schema version `3`, is rejected
 unchanged. Preserve any needed information outside Workaholic, verify the exact
 disposable profile data and Workspace contexts, remove only those verified
 alpha artifacts, and run `workaholic up` again. There is no in-place reset,
-automatic migration, backend conversion, import, or export command in Phase 3.
-Phase 3 never migrates, converts, or reinterprets version `2`.
+automatic migration, backend conversion, import, or export command in Phase 4.
+Phase 4 never migrates, converts, or reinterprets version `3`.
 
 ## Normative language
 
@@ -351,8 +352,12 @@ Phase 4 supports two Claim operations:
 - an Agent pulls the highest-ranked ready Task and creates a Claim with a new
   non-null Attempt.
 
-A Human Claim uses a longer Lease window than an Agent Claim. Exact defaults,
-minimums, and maximums belong to the Phase 4 command contract.
+A Human Claim uses a longer Lease window than an Agent Claim. Duration text
+matches `^[1-9][0-9]*(s|m|h|d)$`. Human claim and renewal default to `8h` and
+accept `1m` through `30d`; Agent claim and heartbeat default to `15m` and
+accept `1s` through `24h`. The application passes a validated resolved duration
+to persistence. Renewal sets expiry to authoritative transaction time plus that
+duration and never extends from the old expiry.
 
 Human claiming is optional. Capability filtering is not part of v1. One
 `claim_task` or `claim_next_task` transaction:
@@ -399,7 +404,9 @@ eligible according to normal readiness rules.
 Lease validity uses authoritative transaction time and
 `now < lease_expires_at`. A foreign, expired, ended, or superseded Claim or
 Attempt returns a Lease-lost, locked, or authorization outcome as appropriate
-and commits no partial state.
+and commits no partial state. Unknown and non-current Agent Attempt conditions
+intentionally collapse to the same Lease-lost outcome so persistence does not
+disclose execution history.
 
 Agent Attempt states are exactly `active`, `released`, `expired`, and
 `submitted`; the last three are terminal and populate `ended_at`. Submission
@@ -414,6 +421,31 @@ Claim, renew, heartbeat, progress, release, and expiry do not increment the
 Task version. Agent claim returns the current Task version. Agent submission
 requires that expected version and the current Attempt, then increments the
 Task version exactly once on success.
+
+Pure reads never delete a Claim, end an Attempt, append an event, allocate a
+cursor, or record idempotency. They derive an expired stored Claim as stale and
+non-owning; it does not block readiness, so a Task may be both `ready` and
+`stale`. A later successful write that needs the Task materializes expiry
+inside its transaction before continuing. Materialization removes the Claim,
+sets an Agent Attempt to `expired` with `ended_at = lease_expires_at`, and
+appends `claim_expired` at the current authoritative time. The event retains
+the expired Attempt where present and stores the authoritative
+`lease_expires_at` in its payload. A stale Agent operation itself fails with
+Lease-lost and does not commit its requested operation.
+
+## Structured progress
+
+Agent progress is append-only event data, not a mutable progress projection or
+separate persistence table. The validated command contains at least one of a
+trimmed message of at most 4,000 characters, a real integer percentage from 0
+through 100, or at most 50 ordered observations. Each observation contains one
+of `note`, `risk`, `blocker`, or `question` plus trimmed text of at most 4,000
+characters.
+
+One request appends `progress_reported` first and then one
+`observation_added` event per observation in input order. A blocker observation
+is inert and does not change stored Task state. Progress changes no Task field,
+Task version, Claim, Attempt, Result, or `updated_at`.
 
 ## Results and review
 
@@ -473,6 +505,15 @@ Phase 3 event types are exactly `task_created`, `task_updated`,
 `task_claimed`, `claim_renewed`, `claim_released`, `claim_expired`,
 `progress_reported`, and `observation_added` without changing Phase 3 records.
 
+Phase 4 Claim-event payloads contain the resulting `lease_expires_at`.
+`claim_expired` contains the expired `lease_expires_at`.
+`progress_reported` contains only the supplied message and percentage fields,
+and each `observation_added` contains one validated observation. Explicit
+release alone appends `claim_released`; submission and cancellation end the
+Claim through their existing events. In Phase 4, both command paths use the
+bootstrap Subject and TaskEvent actor kind remains `human`; a non-null Attempt
+ID is the Agent attribution.
+
 `read_task_events_after` is Task- and Project-authorized, accepts an optional
 nonnegative Instance cursor and a limit from 1 through 500, and returns a stable
 ascending page. Empty pages are successful. Reads never allocate a cursor or
@@ -496,6 +537,12 @@ logical outcome.
 Adapters must persist idempotency records in durable Instance state. An
 in-memory process cache is not sufficient.
 
+Phase 4 Claim and execution fingerprints include the Project, Task selector
+when present, nullable Attempt, resolved Lease duration, expected version when
+present, and complete structured payload. A successful replay returns the
+original closed outcome and original events. Failed validation, no available
+Task, locked Task, and lost Lease do not consume an idempotency key.
+
 ## Queries and pagination
 
 Equivalent queries return equivalent records and ordering across adapters.
@@ -507,9 +554,9 @@ Filters use domain meaning rather than backend expressions. Backend-specific
 query syntax, row identifiers, sort order, and null behavior must not leak into
 CLI JSON.
 
-Reads must not mutate domain state except where a documented semantic operation
-transactionally materializes required expiry behavior. Housekeeping may improve
-performance but cannot be required for correctness.
+Reads must not mutate domain state. Expiry materialization belongs only to a
+documented successful write transaction. Housekeeping may improve performance
+but cannot be required for correctness.
 
 ## Semantic failure outcomes
 
@@ -549,6 +596,14 @@ and then releases the lock.
 SQLite uses short-lived connections for CLI invocations. Compound operations,
 including task-number allocation, claims, events, and idempotency, use one write
 transaction with bounded lock handling.
+
+The Phase 4 embedded adapter accepts exact SQLite schema version `4`. It stores
+Claims with nullable unique Attempt identity and Attempts with terminal-state
+and timestamp constraints while preserving existing Result, TaskEvent, and
+idempotency relationships. Version `3`, malformed, missing, older, and newer
+versions return the existing unsupported-schema outcome without modifying the
+file. Phase 4 provides no migration, conversion, import, export, or silent
+reset.
 
 ### PostgreSQL
 

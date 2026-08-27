@@ -25,6 +25,7 @@ _GATE_ENVIRONMENT_KEYS = (
     "WORKAHOLIC_PHASE_1_GATE_RUNNING",
     "WORKAHOLIC_PHASE_2_GATE_RUNNING",
     "WORKAHOLIC_PHASE_3_GATE_RUNNING",
+    "WORKAHOLIC_PHASE_4_GATE_RUNNING",
 )
 _QUICK_START_PATTERN = re.compile(
     r"## Quick start\n.*?```bash\n(?P<commands>.*?)\n```",
@@ -32,6 +33,7 @@ _QUICK_START_PATTERN = re.compile(
 )
 
 pytestmark = [
+    pytest.mark.distribution,
     pytest.mark.e2e,
     pytest.mark.requires_network,
     pytest.mark.requires_uv,

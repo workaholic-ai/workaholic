@@ -11,11 +11,14 @@ from workaholic.application import (
     DependencyCycleError,
     ExitCategory,
     InvalidTransitionError,
+    LeaseLostError,
+    NoTaskAvailableError,
     ProfileInvalidError,
     ProfileNotFoundError,
     ProfileUnsupportedError,
     ProjectNotFoundError,
     ResultInvalidError,
+    TaskLockedError,
     UnsatisfiableDependencyError,
     VersionConflictError,
     WorkspaceBindingConflictError,
@@ -32,6 +35,7 @@ _EXPECTED_ERROR_SEMANTICS = {
     ApplicationErrorCode.NOT_INITIALIZED: (ExitCategory.MISSING, False),
     ApplicationErrorCode.PROJECT_NOT_FOUND: (ExitCategory.MISSING, False),
     ApplicationErrorCode.TASK_NOT_FOUND: (ExitCategory.MISSING, False),
+    ApplicationErrorCode.NO_TASK_AVAILABLE: (ExitCategory.MISSING, True),
     ApplicationErrorCode.PROJECT_KEY_CONFLICT: (ExitCategory.CONFLICT, False),
     ApplicationErrorCode.WORKSPACE_BINDING_CONFLICT: (
         ExitCategory.CONFLICT,
@@ -47,6 +51,8 @@ _EXPECTED_ERROR_SEMANTICS = {
         False,
     ),
     ApplicationErrorCode.RESULT_INVALID: (ExitCategory.INPUT_USAGE, False),
+    ApplicationErrorCode.TASK_LOCKED: (ExitCategory.CONFLICT, True),
+    ApplicationErrorCode.LEASE_LOST: (ExitCategory.CONFLICT, False),
     ApplicationErrorCode.PERMISSION_DENIED: (ExitCategory.AUTHORIZATION, False),
     ApplicationErrorCode.SCHEMA_UNSUPPORTED: (ExitCategory.OPERATIONAL, False),
     ApplicationErrorCode.STORAGE_BUSY: (ExitCategory.OPERATIONAL, True),
@@ -147,6 +153,35 @@ def test_phase_three_errors_have_exact_safe_public_messages() -> None:
         assert error.code is code
         assert error.safe_message == message
         assert not error.retryable
+
+
+def test_phase_four_errors_have_exact_safe_public_messages() -> None:
+    """Claim failures expose fixed redacted messages and retry semantics."""
+    expected = (
+        (
+            NoTaskAvailableError(),
+            ApplicationErrorCode.NO_TASK_AVAILABLE,
+            "No ready Task is available to claim.",
+            True,
+        ),
+        (
+            TaskLockedError(),
+            ApplicationErrorCode.TASK_LOCKED,
+            "The Task has a current Claim owned by another execution.",
+            True,
+        ),
+        (
+            LeaseLostError(),
+            ApplicationErrorCode.LEASE_LOST,
+            "The Claim is no longer current.",
+            False,
+        ),
+    )
+
+    for error, code, message, retryable in expected:
+        assert error.code is code
+        assert error.safe_message == message
+        assert error.retryable is retryable
 
 
 @pytest.mark.parametrize(

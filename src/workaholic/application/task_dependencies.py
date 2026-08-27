@@ -142,6 +142,7 @@ class TaskDependencyApplication:
         )
         try:
             event_id = self._identifiers.new_event_id()
+            claim_expired_event_id = self._identifiers.new_event_id()
             request_id = self._identifiers.new_request_id()
             occurred_at = self._clock.now()
             if add:
@@ -151,6 +152,7 @@ class TaskDependencyApplication:
                     project_id=command.project_id,
                     actor_subject_id=command.subject_id,
                     event_id=event_id,
+                    claim_expired_event_id=claim_expired_event_id,
                     request_id=request_id,
                     occurred_at=occurred_at,
                     expected_version=command.expected_version,
@@ -165,6 +167,7 @@ class TaskDependencyApplication:
                     project_id=command.project_id,
                     actor_subject_id=command.subject_id,
                     event_id=event_id,
+                    claim_expired_event_id=claim_expired_event_id,
                     request_id=request_id,
                     occurred_at=occurred_at,
                     expected_version=command.expected_version,
@@ -246,7 +249,7 @@ def _matches_result(
 
     """
     task = result.task
-    event = result.events[0]
+    event = result.events[-1]
     contains = mutation.prerequisite_uid in task.depends_on
     expected_payload = {
         "dependency": "added" if add else "removed",
@@ -262,6 +265,7 @@ def _matches_result(
         and event.event_type is TaskEventType.TASK_UPDATED
         and event.actor_subject_id == mutation.actor_subject_id
         and event.occurred_at == task.updated_at
+        and _matches_expiry_prefix(result, mutation=mutation)
         and (
             mutation.idempotency_key is not None
             or (
@@ -271,6 +275,29 @@ def _matches_result(
             )
         )
         and dict(event.payload) == expected_payload
+    )
+
+
+def _matches_expiry_prefix(
+    result: TaskMutationResult,
+    *,
+    mutation: _DependencyMutation,
+) -> bool:
+    """Return whether a nullable expiry prefix matches fresh/replay identity rules."""
+    if len(result.events) == 1:
+        return True
+    expired = result.events[0]
+    return (
+        expired.event_type is TaskEventType.CLAIM_EXPIRED
+        and expired.actor_subject_id == mutation.actor_subject_id
+        and (
+            mutation.idempotency_key is not None
+            or (
+                expired.id == mutation.claim_expired_event_id
+                and expired.request_id == mutation.request_id
+                and expired.occurred_at == mutation.occurred_at
+            )
+        )
     )
 
 

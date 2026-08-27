@@ -17,6 +17,8 @@ if TYPE_CHECKING:
         ProjectGrant,
         Subject,
         Task,
+        TaskAttempt,
+        TaskClaim,
         TaskEvent,
         TaskReadiness,
         TaskResult,
@@ -25,11 +27,13 @@ if TYPE_CHECKING:
     from workaholic.session import (
         ContextResult,
         StatusResult,
+        TaskClaimResult,
         TaskDetails,
         TaskEventPage,
         TaskEventResult,
         TaskMutationResult,
         TaskPage,
+        TaskProgressResult,
         TaskSubmissionResult,
     )
 
@@ -254,13 +258,13 @@ def created_task_data(task: Task) -> dict[str, JsonValue]:
 
 
 def task_event_data(event: TaskEvent) -> dict[str, JsonValue]:
-    """Serialize one attributable Phase 3 Human TaskEvent.
+    """Serialize one attributable TaskEvent.
 
     Args:
         event: Validated domain event returned by a mutation.
 
     Returns:
-        Complete public Human TaskEvent object.
+        Complete public TaskEvent object.
 
     """
     return {
@@ -269,13 +273,136 @@ def task_event_data(event: TaskEvent) -> dict[str, JsonValue]:
         "task_uid": str(event.task_uid),
         "project_id": str(event.project_id),
         "actor_subject_id": str(event.actor_subject_id),
-        "actor_kind": "human",
-        "attempt_id": None,
+        "actor_kind": "agent" if event.attempt_id is not None else "human",
+        "attempt_id": (None if event.attempt_id is None else str(event.attempt_id)),
         "request_id": str(event.request_id),
         "type": event.event_type.value,
         "occurred_at": normalize_json_value(event.occurred_at),
         "payload": normalize_json_value(event.payload),
     }
+
+
+def task_claim_data(claim: TaskClaim) -> dict[str, JsonValue]:
+    """Serialize one current exclusive Task Claim.
+
+    Args:
+        claim: Validated current Claim.
+
+    Returns:
+        Complete public Claim object.
+
+    """
+    return {
+        "task_uid": str(claim.task_uid),
+        "task_key": claim.task_key,
+        "subject_id": str(claim.subject_id),
+        "attempt_id": (None if claim.attempt_id is None else str(claim.attempt_id)),
+        "claimed_at": normalize_json_value(claim.claimed_at),
+        "lease_expires_at": normalize_json_value(claim.lease_expires_at),
+    }
+
+
+def task_attempt_data(attempt: TaskAttempt) -> dict[str, JsonValue]:
+    """Serialize one Agent execution Attempt.
+
+    Args:
+        attempt: Validated active or terminal Attempt.
+
+    Returns:
+        Complete public Attempt object.
+
+    """
+    return {
+        "id": str(attempt.id),
+        "task_uid": str(attempt.task_uid),
+        "subject_id": str(attempt.subject_id),
+        "status": attempt.status.value,
+        "lease_expires_at": normalize_json_value(attempt.lease_expires_at),
+        "started_at": normalize_json_value(attempt.started_at),
+        "ended_at": (
+            None if attempt.ended_at is None else normalize_json_value(attempt.ended_at)
+        ),
+    }
+
+
+def task_claim_result_data(result: TaskClaimResult) -> dict[str, JsonValue]:
+    """Serialize one Claim acquisition, renewal, heartbeat, or release.
+
+    Args:
+        result: Validated Task ownership operation result.
+
+    Returns:
+        Closed Task, Claim, Attempt, and event result shape.
+
+    """
+    return {
+        "task": task_data(result.task),
+        "claim": None if result.claim is None else task_claim_data(result.claim),
+        "attempt": (
+            None if result.attempt is None else task_attempt_data(result.attempt)
+        ),
+        "events": [task_event_data(event) for event in result.events],
+    }
+
+
+def task_claim_summary(result: TaskClaimResult) -> str:
+    """Render one concise ownership result without inventing an Attempt.
+
+    Args:
+        result: Validated Task ownership operation result.
+
+    Returns:
+        Stable multiline Human-readable ownership summary.
+
+    """
+    lines = [task_summary(result.task)]
+    if result.claim is None:
+        lines.append("Claim: released")
+    else:
+        expires_at = normalize_json_value(result.claim.lease_expires_at)
+        lines.append(f"Claim: {result.claim.subject_id}\tlease_expires_at={expires_at}")
+    if result.attempt is not None:
+        lines.append(
+            f"Attempt: {result.attempt.id}\tstatus={result.attempt.status.value}"
+        )
+    return "\n".join(lines)
+
+
+def task_progress_data(result: TaskProgressResult) -> dict[str, JsonValue]:
+    """Serialize one current Agent progress operation result.
+
+    Args:
+        result: Validated Task, ownership, and ordered progress events.
+
+    Returns:
+        Closed Task, Claim, Attempt, and events result shape.
+
+    """
+    return {
+        "task": task_data(result.task),
+        "claim": task_claim_data(result.claim),
+        "attempt": task_attempt_data(result.attempt),
+        "events": [task_event_data(event) for event in result.events],
+    }
+
+
+def task_progress_summary(result: TaskProgressResult) -> str:
+    """Render one concise Agent progress outcome.
+
+    Args:
+        result: Validated Task progress result.
+
+    Returns:
+        Stable Human-readable ownership and event summary.
+
+    """
+    return "\n".join(
+        (
+            task_summary(result.task),
+            f"Attempt: {result.attempt.id}\tstatus={result.attempt.status.value}",
+            f"Progress events: {len(result.events)}",
+        )
+    )
 
 
 def task_result_data(result: TaskResult) -> dict[str, JsonValue]:
@@ -293,7 +420,9 @@ def task_result_data(result: TaskResult) -> dict[str, JsonValue]:
         "id": str(result.id),
         "task_uid": str(result.task_uid),
         "submitted_by": str(result.submitted_by),
-        "attempt_id": result.attempt_id,
+        "attempt_id": (
+            str(result.attempt_id) if result.attempt_id is not None else None
+        ),
         "submitted_at": normalize_json_value(result.submitted_at),
         "comment": result.comment,
         "summary": result.summary,
@@ -365,6 +494,55 @@ def task_submission_data(result: TaskSubmissionResult) -> dict[str, JsonValue]:
     }
 
 
+def agent_submission_data(result: TaskSubmissionResult) -> dict[str, JsonValue]:
+    """Serialize one Attempt-backed Agent Result submission.
+
+    Args:
+        result: Validated Agent submission with a terminal Attempt.
+
+    Returns:
+        Closed Task, Result, released Claim, Attempt, and event shape.
+
+    Raises:
+        ValueError: If the result does not contain an Agent Attempt.
+
+    """
+    if result.attempt is None or result.result.attempt_id is None:
+        message = "Agent submission requires terminal Attempt data."
+        raise ValueError(message)
+    return {
+        "task": task_data(result.task),
+        "result": task_result_data(result.result),
+        "claim": None,
+        "attempt": task_attempt_data(result.attempt),
+        "events": [task_event_data(event) for event in result.events],
+    }
+
+
+def agent_submission_summary(result: TaskSubmissionResult) -> str:
+    """Render one concise Attempt-backed Agent submission outcome.
+
+    Args:
+        result: Validated Agent submission with a terminal Attempt.
+
+    Returns:
+        Stable Human-readable Task, Result, and Attempt disposition.
+
+    Raises:
+        ValueError: If the result does not contain an Agent Attempt.
+
+    """
+    if result.attempt is None:
+        message = "Agent submission requires terminal Attempt data."
+        raise ValueError(message)
+    return "\n".join(
+        (
+            task_submission_summary(result),
+            f"Attempt: {result.attempt.id}\tstatus={result.attempt.status.value}",
+        )
+    )
+
+
 def task_submission_summary(result: TaskSubmissionResult) -> str:
     """Render one concise Human submission or review outcome.
 
@@ -400,7 +578,7 @@ def task_event_result_data(event: TaskEventResult) -> dict[str, JsonValue]:
         "project_id": str(event.project_id),
         "actor_subject_id": str(event.actor_subject_id),
         "actor_kind": event.actor_kind.value,
-        "attempt_id": event.attempt_id,
+        "attempt_id": str(event.attempt_id) if event.attempt_id is not None else None,
         "request_id": str(event.request_id),
         "type": event.event_type.value,
         "occurred_at": normalize_json_value(event.occurred_at),

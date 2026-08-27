@@ -12,11 +12,20 @@ from workaholic.persistence.sqlite._bootstrap import (
     bootstrap_local_project as _bootstrap_local_project,
 )
 from workaholic.persistence.sqlite._projects import create_project as _create_project
+from workaholic.persistence.sqlite._task_claims import (
+    claim_next_task as _claim_next_task,
+)
+from workaholic.persistence.sqlite._task_claims import claim_task as _claim_task
+from workaholic.persistence.sqlite._task_claims import release_claim as _release_claim
+from workaholic.persistence.sqlite._task_claims import renew_claim as _renew_claim
 from workaholic.persistence.sqlite._task_dependencies import (
     add_task_dependency as _add_task_dependency,
 )
 from workaholic.persistence.sqlite._task_dependencies import (
     remove_task_dependency as _remove_task_dependency,
+)
+from workaholic.persistence.sqlite._task_execution import (
+    report_task_progress as _report_task_progress,
 )
 from workaholic.persistence.sqlite._task_lifecycle import (
     block_task as _block_task,
@@ -35,6 +44,9 @@ from workaholic.persistence.sqlite._task_results import (
 )
 from workaholic.persistence.sqlite._task_results import reject_result as _reject_result
 from workaholic.persistence.sqlite._task_results import (
+    submit_agent_result as _submit_agent_result,
+)
+from workaholic.persistence.sqlite._task_results import (
     submit_human_result as _submit_human_result,
 )
 from workaholic.persistence.sqlite._tasks import create_task as _create_task
@@ -46,6 +58,8 @@ if TYPE_CHECKING:
         ApproveResultMutation,
         BootstrapMutation,
         BootstrapResult,
+        ClaimNextTaskMutation,
+        ClaimTaskMutation,
         Clock,
         GetLocalStatus,
         GetProjectByKey,
@@ -59,16 +73,22 @@ if TYPE_CHECKING:
         ProjectCreationResult,
         ReadTaskEvents,
         RejectResultMutation,
+        ReleaseClaimMutation,
         RemoveTaskDependencyMutation,
+        RenewClaimMutation,
+        ReportTaskProgressMutation,
         StatusResult,
+        SubmitAgentResultMutation,
         SubmitHumanResultMutation,
         TaskBlockMutation,
         TaskCancelMutation,
+        TaskClaimResult,
         TaskCreationMutation,
         TaskDetails,
         TaskEventPage,
         TaskMutationResult,
         TaskPage,
+        TaskProgressResult,
         TaskSubmissionResult,
         TaskUnblockMutation,
         TaskUpdateMutation,
@@ -91,7 +111,7 @@ class SQLiteRepository:
         """Bind the adapter to one absolute local database path.
 
         Args:
-            database_path: Absolute path to a schema-version-3 SQLite store.
+            database_path: Absolute path to a schema-version-4 SQLite store.
             clock: Optional authoritative clock for time-derived read views.
 
         Raises:
@@ -198,6 +218,72 @@ class SQLiteRepository:
         """
         return _cancel_task(self._database_path, mutation)
 
+    def claim_task(self, mutation: ClaimTaskMutation) -> TaskClaimResult:
+        """Atomically acquire one explicit ready Task for a Human.
+
+        Args:
+            mutation: Validated targeted Human Claim mutation.
+
+        Returns:
+            Current Human Claim with ordered acquisition events.
+
+        """
+        return _claim_task(self._database_path, mutation)
+
+    def claim_next_task(
+        self,
+        mutation: ClaimNextTaskMutation,
+    ) -> TaskClaimResult:
+        """Atomically pull the highest-ranked ready Task for an Agent.
+
+        Args:
+            mutation: Validated Project-scoped Agent Claim mutation.
+
+        Returns:
+            Selected Task, active Claim/Attempt, and ordered events.
+
+        """
+        return _claim_next_task(self._database_path, mutation)
+
+    def renew_claim(self, mutation: RenewClaimMutation) -> TaskClaimResult:
+        """Atomically renew a Human Claim or heartbeat an Agent Attempt.
+
+        Args:
+            mutation: Validated exact owner token and replacement duration.
+
+        Returns:
+            Task and atomically renewed Claim ownership.
+
+        """
+        return _renew_claim(self._database_path, mutation)
+
+    def release_claim(self, mutation: ReleaseClaimMutation) -> TaskClaimResult:
+        """Atomically release one exact current owner token.
+
+        Args:
+            mutation: Validated exact Human or Agent owner token.
+
+        Returns:
+            Task with no Claim and a nullable released Agent Attempt.
+
+        """
+        return _release_claim(self._database_path, mutation)
+
+    def report_task_progress(
+        self,
+        mutation: ReportTaskProgressMutation,
+    ) -> TaskProgressResult:
+        """Atomically append structured progress for a current Agent Attempt.
+
+        Args:
+            mutation: Validated progress and exact current owner token.
+
+        Returns:
+            Unchanged Task and ownership with ordered progress events.
+
+        """
+        return _report_task_progress(self._database_path, mutation)
+
     def add_task_dependency(
         self,
         mutation: AddTaskDependencyMutation,
@@ -242,6 +328,21 @@ class SQLiteRepository:
 
         """
         return _submit_human_result(self._database_path, mutation)
+
+    def submit_agent_result(
+        self,
+        mutation: SubmitAgentResultMutation,
+    ) -> TaskSubmissionResult:
+        """Atomically submit one Result through an exact current Agent Attempt.
+
+        Args:
+            mutation: Validated optimistic Agent submission mutation.
+
+        Returns:
+            Committed Task, Result, terminal Attempt, and ordered events.
+
+        """
+        return _submit_agent_result(self._database_path, mutation)
 
     def approve_result(
         self,
@@ -380,7 +481,7 @@ class SQLiteRepository:
         )
 
     def list_tasks_by_view(self, command: ListTasksByView) -> TaskPage:
-        """Read one view-bound deterministic Phase 3 Task page.
+        """Read one view-bound deterministic Phase 4 Task page.
 
         Args:
             command: Validated view, scope, and pagination query.

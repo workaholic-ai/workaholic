@@ -202,9 +202,16 @@ class _Clock:
 class _Identifiers:
     """Deterministic subset of the application IdentifierFactory contract."""
 
+    def __init__(self) -> None:
+        """Initialize per-operation event identity sequencing."""
+        self._event_number = 0
+
     def new_event_id(self) -> TaskEventId:
-        """Return the update event identity."""
-        return TaskEventId("evt_update")
+        """Return the requested event followed by the expiry candidate."""
+        self._event_number += 1
+        return TaskEventId(
+            "evt_update" if self._event_number == 1 else "evt_update_expired"
+        )
 
     def new_request_id(self) -> RequestId:
         """Return the update request identity."""
@@ -308,12 +315,40 @@ def test_update_by_task_id_builds_one_exact_attributable_mutation() -> None:
             project_id=ProjectId("prj_acme"),
             actor_subject_id=SubjectId("sub_local"),
             event_id=TaskEventId("evt_update"),
+            claim_expired_event_id=TaskEventId("evt_update_expired"),
             request_id=RequestId("req_update"),
             occurred_at=_NOW,
             expected_version=1,
             patch=patch,
         )
     ]
+
+
+def test_update_accepts_one_fresh_lazy_expiry_prefix() -> None:
+    """Application validation accepts the exact conditional expiry event."""
+    patch = TaskUpdatePatch(title="Updated task")
+    base = _result(patch)
+    expired = replace(
+        base.events[0],
+        id=TaskEventId("evt_update_expired"),
+        cursor=1,
+        event_type=TaskEventType.CLAIM_EXPIRED,
+        payload={"lease_expires_at": "2026-08-01T09:29:00Z"},
+    )
+    expected = TaskMutationResult(task=base.task, events=(expired, base.events[0]))
+    repository = _RecordingRepository(expected)
+
+    actual = _application(repository).update(
+        UpdateTaskInput(
+            project_id=ProjectId("prj_acme"),
+            subject_id=SubjectId("sub_local"),
+            task=TaskId("tsk_first"),
+            expected_version=1,
+            patch=patch,
+        )
+    )
+
+    assert actual is expected
 
 
 def test_update_resolves_human_key_and_forwards_complete_definition_patch() -> None:
@@ -403,6 +438,7 @@ def test_block_builds_exact_mutation_and_validates_blocked_result() -> None:
             project_id=ProjectId("prj_acme"),
             actor_subject_id=SubjectId("sub_local"),
             event_id=TaskEventId("evt_update"),
+            claim_expired_event_id=TaskEventId("evt_update_expired"),
             request_id=RequestId("req_update"),
             occurred_at=_NOW,
             expected_version=1,
@@ -441,6 +477,7 @@ def test_unblock_resolves_human_key_and_builds_exact_mutation() -> None:
             project_id=ProjectId("prj_acme"),
             actor_subject_id=SubjectId("sub_local"),
             event_id=TaskEventId("evt_update"),
+            claim_expired_event_id=TaskEventId("evt_update_expired"),
             request_id=RequestId("req_update"),
             occurred_at=_NOW,
             expected_version=1,
@@ -474,6 +511,7 @@ def test_cancel_builds_exact_mutation_with_optional_reason(
             project_id=ProjectId("prj_acme"),
             actor_subject_id=SubjectId("sub_local"),
             event_id=TaskEventId("evt_update"),
+            claim_expired_event_id=TaskEventId("evt_update_expired"),
             request_id=RequestId("req_update"),
             occurred_at=_NOW,
             expected_version=1,

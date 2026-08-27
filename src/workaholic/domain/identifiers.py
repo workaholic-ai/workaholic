@@ -179,3 +179,23 @@ class RequestId:
 
         """
         return self.value
+
+
+@dataclass(frozen=True, slots=True)
+class AttemptId:
+    """Opaque identity of one Agent execution Attempt."""
+
+    value: str
+
+    def __post_init__(self) -> None:
+        """Validate the Attempt identifier at construction."""
+        _validate_identifier(self.value, prefix="atm_", label="Attempt ID")
+
+    def __str__(self) -> str:
+        """Return the serialized identifier.
+
+        Returns:
+            The opaque prefixed identifier.
+
+        """
+        return self.value

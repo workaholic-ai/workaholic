@@ -114,9 +114,16 @@ class _Clock:
 class _Identifiers:
     """Deterministic dependency-test identity factory subset."""
 
+    def __init__(self) -> None:
+        """Initialize per-operation event identity sequencing."""
+        self._event_number = 0
+
     def new_event_id(self) -> TaskEventId:
-        """Return the candidate dependency event identity."""
-        return TaskEventId("evt_dependency")
+        """Return the dependency event followed by the expiry candidate."""
+        self._event_number += 1
+        return TaskEventId(
+            "evt_dependency" if self._event_number == 1 else "evt_dependency_expired"
+        )
 
     def new_request_id(self) -> RequestId:
         """Return the candidate dependency request identity."""
@@ -218,12 +225,39 @@ def test_add_by_canonical_ids_builds_exact_attributable_mutation() -> None:
             project_id=ProjectId("prj_acme"),
             actor_subject_id=SubjectId("sub_local"),
             event_id=TaskEventId("evt_dependency"),
+            claim_expired_event_id=TaskEventId("evt_dependency_expired"),
             request_id=RequestId("req_dependency"),
             occurred_at=_NOW,
             expected_version=1,
             idempotency_key="dependency-add-1",
         )
     ]
+
+
+def test_dependency_add_accepts_one_fresh_lazy_expiry_prefix() -> None:
+    """Dependency orchestration validates an exact conditional expiry event."""
+    base = _result(add=True)
+    expired = replace(
+        base.events[0],
+        id=TaskEventId("evt_dependency_expired"),
+        cursor=2,
+        event_type=TaskEventType.CLAIM_EXPIRED,
+        payload={"lease_expires_at": "2026-08-01T09:59:00Z"},
+    )
+    expected = TaskMutationResult(task=base.task, events=(expired, base.events[0]))
+    repository = _Repository(result=expected)
+
+    actual = _application(repository).add(
+        AddTaskDependencyInput(
+            project_id=ProjectId("prj_acme"),
+            subject_id=SubjectId("sub_local"),
+            task=TaskId("tsk_1"),
+            prerequisite=TaskId("tsk_2"),
+            expected_version=1,
+        )
+    )
+
+    assert actual is expected
 
 
 def test_remove_resolves_both_human_keys_once_and_dispatches_remove() -> None:

@@ -147,6 +147,16 @@ repos:
         files: ^((CHANGELOG|README)\.md|scripts/(smoke-phase-3-wheel|verify-phase-3)\.sh|tests/e2e/test_phase_3_distribution\.py|tests/unit/scripts/test_(smoke_phase_three_wheel|verify_phase_three)\.py)$
         pass_filenames: false
 
+      - id: phase-four-contracts
+        name: Phase 4 acceptance and wheel journey contracts
+        entry: >-
+          uv run --frozen pytest --no-cov
+          tests/unit/scripts/test_smoke_phase_four_wheel.py
+          tests/unit/scripts/test_verify_phase_four.py
+        language: system
+        files: ^((CHANGELOG|README)\.md|scripts/(smoke-phase-4-wheel|verify-phase-4)\.sh|tests/e2e/test_phase_4_distribution\.py|tests/unit/scripts/test_(smoke_phase_four_wheel|verify_phase_four)\.py)$
+        pass_filenames: false
+
       - id: pytest
         name: pytest with coverage
         entry: uv run --frozen pytest

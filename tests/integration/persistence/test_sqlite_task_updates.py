@@ -137,6 +137,7 @@ def _mutation(  # noqa: PLR0913 - explicit fixture controls aid boundary tests.
         project_id=task.project_id,
         actor_subject_id=SubjectId("sub_local"),
         event_id=TaskEventId(f"evt_{suffix}"),
+        claim_expired_event_id=TaskEventId(f"evt_{suffix}_expired"),
         request_id=RequestId(f"req_{suffix}"),
         occurred_at=occurred_at,
         expected_version=expected_version,
@@ -321,9 +322,10 @@ def test_complete_update_commits_one_version_timestamp_event_and_idempotency(
         "2026-08-01T09:00:00.222222Z",
     )
     outcome = json.loads(idempotency_row[4])
-    assert set(outcome) == {"event", "task"}
+    assert set(outcome) == {"events", "task"}
+    assert len(outcome["events"]) == 1
     assert outcome["task"]["version"] == 2
-    assert outcome["event"]["id"] == "evt_update"
+    assert outcome["events"][0]["id"] == "evt_update"
 
 
 def test_no_op_update_is_rejected_without_writes(tmp_path: Path) -> None:
@@ -527,11 +529,11 @@ def test_tampered_replay_outcome_or_event_is_never_returned(
         elif tamper == "task":
             outcome["task"]["priority"] = 90
         elif tamper == "event":
-            outcome["event"]["event_type"] = "task_blocked"
+            outcome["events"][0]["event_type"] = "task_blocked"
         elif tamper == "event-shape":
-            outcome["event"] = 7
+            outcome["events"] = [7]
         elif tamper == "result-mismatch":
-            outcome["event"]["task_uid"] = "tsk_other"
+            outcome["events"][0]["task_uid"] = "tsk_other"
         else:
             connection.execute(
                 "UPDATE task_events SET payload_json = '{}' WHERE id = 'evt_update'"

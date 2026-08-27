@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, cast
 
 import pytest
 
+from tests.unit.session.fakes import UnavailablePhaseFourServices
 from workaholic.application import (
     AddTaskDependencyInput,
     ApplicationError,
@@ -634,6 +635,8 @@ def _fixture() -> _Fixture:
         lifecycle=lifecycle,
         dependencies=dependencies,
         results=results,
+        claims=UnavailablePhaseFourServices(),
+        execution=UnavailablePhaseFourServices(),
     )
     return _Fixture(
         session=LocalSession(
