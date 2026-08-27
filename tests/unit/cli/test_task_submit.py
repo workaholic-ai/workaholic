@@ -7,6 +7,7 @@ from subprocess import CompletedProcess
 from typing import TYPE_CHECKING, cast
 
 import pytest
+from click import unstyle
 from tests.golden import require_error, require_object, require_success
 from tests.unit.cli.fakes import (
     RecordingSession,
@@ -637,11 +638,13 @@ def test_task_submit_help_exposes_both_human_and_agent_paths() -> None:
     help_result = _RUNNER.invoke(
         create_app(provider),
         ["task", "submit", "--help"],
+        env={"GITHUB_ACTIONS": "true", "NO_COLOR": None},
     )
 
     assert help_result.exit_code == 0
-    assert "--attempt" in help_result.stdout
-    assert "--result-file" in help_result.stdout
-    assert "--comment" in help_result.stdout
-    assert "--expected-version" in help_result.stdout
+    help_text = unstyle(help_result.stdout)
+    assert "--attempt" in help_text
+    assert "--result-file" in help_text
+    assert "--comment" in help_text
+    assert "--expected-version" in help_text
     assert provider.call_count == 0

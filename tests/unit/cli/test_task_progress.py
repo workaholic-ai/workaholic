@@ -7,6 +7,7 @@ from subprocess import CompletedProcess
 from typing import TYPE_CHECKING, cast
 
 import pytest
+from click import unstyle
 from tests.golden import require_error, require_object, require_success
 from tests.unit.cli.fakes import RecordingSession, SessionProviderSpy
 from typer.testing import CliRunner, Result
@@ -328,9 +329,11 @@ def test_task_progress_help_exposes_required_execution_controls() -> None:
     result = _RUNNER.invoke(
         create_app(SessionProviderSpy(RecordingSession())),
         ["task", "progress", "--help"],
+        env={"GITHUB_ACTIONS": "true", "NO_COLOR": None},
     )
 
     assert result.exit_code == 0
+    help_text = unstyle(result.stdout)
     for option in (
         "--attempt",
         "--input-file",
@@ -339,4 +342,4 @@ def test_task_progress_help_exposes_required_execution_controls() -> None:
         "--json",
         "--non-interactive",
     ):
-        assert option in result.stdout
+        assert option in help_text

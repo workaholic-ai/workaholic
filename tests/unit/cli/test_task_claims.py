@@ -6,6 +6,7 @@ from datetime import timedelta
 from subprocess import CompletedProcess
 
 import pytest
+from click import unstyle
 from tests.golden import require_error, require_object, require_success
 from tests.unit.cli.fakes import RecordingSession, SessionProviderSpy
 from typer.testing import CliRunner, Result
@@ -360,14 +361,16 @@ def test_claim_command_help_exposes_stable_automation_options(command: str) -> N
             command,
             "--help",
         ],
+        env={"GITHUB_ACTIONS": "true", "NO_COLOR": None},
     )
 
     assert result.exit_code == 0
-    assert "--project" in result.stdout
-    assert "--idempotency-key" in result.stdout
-    assert "--json" in result.stdout
-    assert "--non-interactive" in result.stdout
+    help_text = unstyle(result.stdout)
+    assert "--project" in help_text
+    assert "--idempotency-key" in help_text
+    assert "--json" in help_text
+    assert "--non-interactive" in help_text
     if command != "release":
-        assert "--lease" in result.stdout
+        assert "--lease" in help_text
     if command in {"heartbeat", "release"}:
-        assert "--attempt" in result.stdout
+        assert "--attempt" in help_text
