@@ -5,12 +5,12 @@ Workaholic AI becomes useful and, eventually, releasable. Each file is an
 executable pytest specification that uses only supported user-facing
 boundaries for domain operations.
 
-Phase 3 enables the complete Human solo journey and retains the Phase 2
-multi-project journey through a fresh-process CLI harness, real SQLite
-persistence, isolated trusted profiles, and durable Workspace context
-discovery. The other four journeys remain explicitly skipped until their
-complete real implementations exist. A mock, in-memory stand-in, or fake
-product response is not sufficient.
+Phase 4 enables the complete Human solo, multi-project, and local Agent
+journeys through a fresh-process CLI harness, real SQLite persistence,
+isolated trusted profiles, durable Workspace context discovery, and
+synchronized process races. The other three journeys remain explicitly
+skipped until their complete real implementations exist. A mock, in-memory
+stand-in, or fake product response is not sufficient.
 
 ## Journey inventory
 
@@ -18,7 +18,7 @@ product response is not sufficient.
 | --- | --- | --- | --- |
 | Solo | [test_solo_journey.py](test_solo_journey.py) | Phase 3 | Enabled: a Human completes dependency-bound work, submits structured evidence without an Attempt, receives review approval, and inspects complete attributable history across fresh CLI processes |
 | Multi-project | [test_multi_project_journey.py](test_multi_project_journey.py) | Phase 2 | Enabled: nested and repeated Project bindings, upward context discovery, independent stable Project task keys, all-Project reads, restart persistence, and isolated profiles run across fresh CLI processes |
-| Agent | [test_agent_journey.py](test_agent_journey.py) | Phase 4 | Real local Agents can claim, heartbeat, submit, and receive `LEASE_LOST` after expiry through CLI JSON |
+| Agent | [test_agent_journey.py](test_agent_journey.py) | Phase 4 | Enabled: Human and Agent Claims, heartbeat, progress, locks, submission, exact expiry/reclaim, and a simultaneous Human/two-Agent race run through fresh CLI processes with one bootstrap Subject |
 | Team | [test_team_journey.py](test_team_journey.py) | Phase 6 | Two remote Humans and an Agent can use one authenticated server through RemoteSession |
 | Backend parity | [test_backend_conformance_journey.py](test_backend_conformance_journey.py) | Phase 7 | JSON, SQLite, and PostgreSQL expose equivalent behavior through the same public CLI workflow |
 | Clean install | [test_clean_install_journey.py](test_clean_install_journey.py) | Phase 9 | A version-pinned release candidate can be fetched and run through `uvx` outside the source checkout |

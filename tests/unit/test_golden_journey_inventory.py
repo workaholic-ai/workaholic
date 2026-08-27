@@ -49,12 +49,10 @@ class MarkerUse:
 _EXPECTED_JOURNEYS = {
     "test_agent_journey.py": JourneyExpectation(
         test_name=(
-            "test_agent_completes_current_attempt_but_cannot_renew_an_expired_attempt"
+            "test_human_and_agent_claims_are_exclusive_across_fresh_cli_processes"
         ),
         enabling_phase=4,
-        skip_reason=(
-            "Phase 4: missing agent claims, leases, heartbeats, and result submission."
-        ),
+        skip_reason=None,
     ),
     "test_backend_conformance_journey.py": JourneyExpectation(
         test_name="test_supported_backends_expose_the_same_task_behavior",
@@ -262,14 +260,14 @@ def test_enabled_and_blocked_golden_specs_have_exact_markers() -> None:
             expectation.skip_reason is None
             for expectation in _EXPECTED_JOURNEYS.values()
         )
-        == 2
+        == 3
     )
     assert (
         sum(
             expectation.skip_reason is not None
             for expectation in _EXPECTED_JOURNEYS.values()
         )
-        == 4
+        == 3
     )
 
     for filename, expectation in _EXPECTED_JOURNEYS.items():

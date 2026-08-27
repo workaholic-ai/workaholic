@@ -9,6 +9,7 @@ from subprocess import CompletedProcess
 import pytest
 
 from tests.golden import (
+    GoldenCliInvocation,
     SubprocessGoldenJourneyRunner,
     _isolated_cli_environment,
     require_error,
@@ -334,6 +335,58 @@ def test_subprocess_runner_accepts_only_exact_owned_paths_and_valid_profile(
     )
 
     assert result.returncode == 0
+
+
+def test_subprocess_runner_races_fresh_processes_in_stable_order(
+    tmp_path: Path,
+) -> None:
+    """The race helper starts bounded real CLIs and preserves caller order."""
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    runner = SubprocessGoldenJourneyRunner(
+        data_directory=tmp_path / "data",
+        config_directory=tmp_path / "config",
+    )
+    invocations = (
+        GoldenCliInvocation(arguments=("--version",), cwd=workspace),
+        GoldenCliInvocation(arguments=("--help",), cwd=workspace),
+    )
+
+    results = runner.cli_race(invocations)
+
+    assert tuple(result.returncode for result in results) == (0, 0)
+    assert "workaholic" in results[0].stdout.lower()
+    assert "usage" in results[1].stdout.lower()
+
+
+def test_subprocess_runner_validates_every_race_before_starting_processes(
+    tmp_path: Path,
+) -> None:
+    """Malformed race collections and unsafe siblings fail before execution."""
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    runner = SubprocessGoldenJourneyRunner(
+        data_directory=tmp_path / "data",
+        config_directory=tmp_path / "config",
+    )
+    valid = GoldenCliInvocation(arguments=("--version",), cwd=workspace)
+    unsafe = GoldenCliInvocation(
+        arguments=("--version",),
+        cwd=workspace,
+        environment={"WORKAHOLIC_TOKEN": "private"},
+    )
+
+    with pytest.raises(ValueError, match="between two and eight"):
+        runner.cli_race((valid,))
+    with pytest.raises(TypeError, match="exact invocation"):
+        runner.cli_race((valid, object()))  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="undocumented"):
+        runner.cli_race((valid, unsafe))
+    with pytest.raises(TypeError):
+        GoldenCliInvocation(
+            arguments=("--version",),
+            cwd=Path("relative-workspace"),
+        )
 
 
 def test_subprocess_runner_does_not_inherit_credentials_or_arbitrary_state(
