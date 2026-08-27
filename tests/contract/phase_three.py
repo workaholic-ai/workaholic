@@ -7,6 +7,7 @@ from enum import StrEnum
 from typing import TYPE_CHECKING, Literal, Protocol, TypedDict, overload
 
 from tests.contract.phase_two import (
+    PhaseTwoIdentifierFactory,
     PhaseTwoRepositoryFactory,
     PhaseTwoSessionFactory,
 )
@@ -15,10 +16,8 @@ from workaholic.application import (
     AddTaskDependencyMutation,
     ApproveResultMutation,
     Clock,
-    IdentifierFactory,
     RejectResultMutation,
     RemoveTaskDependencyMutation,
-    ResultIdentifierFactory,
     SubmitHumanResultMutation,
     TaskBlockMutation,
     TaskCancelMutation,
@@ -70,11 +69,7 @@ class TransactionFailurePoint(StrEnum):
     RESULT_IDEMPOTENCY = "result_idempotency"
 
 
-class PhaseThreeIdentifierFactory(
-    IdentifierFactory,
-    ResultIdentifierFactory,
-    Protocol,
-):
+class PhaseThreeIdentifierFactory(PhaseTwoIdentifierFactory, Protocol):
     """Generate every deterministic identity required through Phase 3."""
 
 

@@ -36,10 +36,11 @@ if TYPE_CHECKING:
     from collections.abc import Callable
     from pathlib import Path
 
+    from tests.contract.phase_two import PhaseTwoIdentifierFactory
+
     from workaholic.application import (
         BootstrapResult,
         Clock,
-        IdentifierFactory,
         ProjectCreationResult,
         WorkaholicRepository,
     )
@@ -75,7 +76,7 @@ class _SQLiteRepositoryFactory:
         """
         return DeterministicClock(current=phase_two_time(offset))
 
-    def identifiers(self, namespace: str) -> IdentifierFactory:
+    def identifiers(self, namespace: str) -> PhaseTwoIdentifierFactory:
         """Construct a deterministic identifier sequence.
 
         Args:

@@ -14,10 +14,12 @@ if TYPE_CHECKING:
         ContextResult,
         ProjectCreationResult,
         StatusResult,
+        TaskClaimResult,
         TaskDetails,
         TaskEventPage,
         TaskMutationResult,
         TaskPage,
+        TaskProgressResult,
         TaskSubmissionResult,
     )
     from workaholic.domain import (
@@ -26,7 +28,15 @@ if TYPE_CHECKING:
     )
     from workaholic.session.local import LocalRuntime
     from workaholic.session.models import (
+        AgentHeartbeatRequest,
+        AgentProgressRequest,
+        AgentReleaseRequest,
+        AgentSubmitRequest,
+        AgentTaskClaimRequest,
         ContextRequest,
+        HumanClaimReleaseRequest,
+        HumanClaimRenewRequest,
+        HumanTaskClaimRequest,
         ProjectBindRequest,
         ProjectCreateRequest,
         ProjectListRequest,
@@ -474,6 +484,105 @@ class WorkaholicSession(TaskSession, Protocol):
 
         Returns:
             Polling-safe TaskEvent page.
+
+        """
+        ...
+
+    def claim_task(self, request: HumanTaskClaimRequest) -> TaskClaimResult:
+        """Acquire one targeted Task Claim for the bootstrap Human.
+
+        Args:
+            request: Validated Human Claim intent without an Attempt.
+
+        Returns:
+            Current Task, Human Claim, and ordered events.
+
+        """
+        ...
+
+    def claim_next_task(self, request: AgentTaskClaimRequest) -> TaskClaimResult:
+        """Pull one ready Project Task for a new Agent Attempt.
+
+        Args:
+            request: Validated Agent Claim and Lease intent.
+
+        Returns:
+            Selected Task, active Claim and Attempt, and ordered events.
+
+        """
+        ...
+
+    def renew_claim(self, request: HumanClaimRenewRequest) -> TaskClaimResult:
+        """Renew one targeted Claim owned by the bootstrap Human.
+
+        Args:
+            request: Validated Human renewal intent without an Attempt.
+
+        Returns:
+            Task, renewed Human Claim, and renewal event.
+
+        """
+        ...
+
+    def heartbeat_attempt(self, request: AgentHeartbeatRequest) -> TaskClaimResult:
+        """Renew the Claim held by one exact active Agent Attempt.
+
+        Args:
+            request: Validated Agent owner token and Lease intent.
+
+        Returns:
+            Task, renewed Agent Claim and Attempt, and renewal event.
+
+        """
+        ...
+
+    def release_claim(self, request: HumanClaimReleaseRequest) -> TaskClaimResult:
+        """Release one targeted Claim owned by the bootstrap Human.
+
+        Args:
+            request: Validated Human release intent without an Attempt.
+
+        Returns:
+            Task without a current Claim and its release event.
+
+        """
+        ...
+
+    def release_attempt(self, request: AgentReleaseRequest) -> TaskClaimResult:
+        """Release one exact active Agent Attempt and its Claim.
+
+        Args:
+            request: Validated Agent release owner token.
+
+        Returns:
+            Task, terminal released Attempt, and release event.
+
+        """
+        ...
+
+    def report_progress(self, request: AgentProgressRequest) -> TaskProgressResult:
+        """Append structured progress for one exact active Agent Attempt.
+
+        Args:
+            request: Validated Agent owner token and structured progress.
+
+        Returns:
+            Current ownership and ordered progress events.
+
+        """
+        ...
+
+    def submit_agent_result(
+        self,
+        request: AgentSubmitRequest,
+    ) -> TaskSubmissionResult:
+        """Submit one structured Result through an exact Agent Attempt.
+
+        Args:
+            request: Validated optimistic Agent submission intent.
+
+        Returns:
+            Committed Task, Result, terminal Attempt, and ordered events.
 
         """
         ...

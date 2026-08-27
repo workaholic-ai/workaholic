@@ -34,6 +34,12 @@ from workaholic.domain import (
     build_task_key,
     validate_profile_name,
 )
+from workaholic.session._phase_four import (
+    LocalExecutionOperations,
+    PhaseFourClaimService,
+    PhaseFourExecutionService,
+    PhaseFourScope,
+)
 from workaholic.session._phase_three import (
     LocalTaskOperations,
     PhaseThreeDependencyService,
@@ -63,9 +69,11 @@ if TYPE_CHECKING:
         GetTaskDetails,
         ListTasksByView,
         ReadTaskEvents,
+        TaskClaimResult,
         TaskDetails,
         TaskEventPage,
         TaskMutationResult,
+        TaskProgressResult,
         TaskSubmissionResult,
     )
     from workaholic.session.base import (
@@ -74,6 +82,14 @@ if TYPE_CHECKING:
         WorkspaceContextGateway,
     )
     from workaholic.session.models import (
+        AgentHeartbeatRequest,
+        AgentProgressRequest,
+        AgentReleaseRequest,
+        AgentSubmitRequest,
+        AgentTaskClaimRequest,
+        HumanClaimReleaseRequest,
+        HumanClaimRenewRequest,
+        HumanTaskClaimRequest,
         TaskAddDependencyRequest,
         TaskApproveRequest,
         TaskBlockRequest,
@@ -270,6 +286,8 @@ class LocalRuntime:
     lifecycle: PhaseThreeLifecycleService
     dependencies: PhaseThreeDependencyService
     results: PhaseThreeResultService
+    claims: PhaseFourClaimService
+    execution: PhaseFourExecutionService
 
     def __post_init__(self) -> None:
         """Validate the runtime's explicit stable capability surface."""
@@ -300,6 +318,15 @@ class LocalRuntime:
             _require_callable(self.dependencies, method_name, "dependency service")
         for method_name in ("submit", "approve", "reject"):
             _require_callable(self.results, method_name, "Result service")
+        for method_name in (
+            "claim_task",
+            "claim_next_task",
+            "renew_claim",
+            "release_claim",
+        ):
+            _require_callable(self.claims, method_name, "Claim service")
+        for method_name in ("report_progress", "submit_result"):
+            _require_callable(self.execution, method_name, "execution service")
         object.__setattr__(self, "profile", profile)
 
 
@@ -350,6 +377,9 @@ class LocalSession:
         self._profiles = profiles
         self._runtimes = runtimes
         self._task_operations = LocalTaskOperations(self._resolve_phase_three_scope)
+        self._execution_operations = LocalExecutionOperations(
+            self._resolve_phase_four_scope
+        )
 
     def up(self, request: UpRequest) -> BootstrapResult:
         """Bootstrap only the selected profile before writing current context.
@@ -810,6 +840,41 @@ class LocalSession:
         """Return one bounded attributable TaskEvent history page."""
         return self._task_operations.read_task_events(request)
 
+    def claim_task(self, request: HumanTaskClaimRequest) -> TaskClaimResult:
+        """Acquire one targeted Task Claim for the bootstrap Human."""
+        return self._execution_operations.claim_task(request)
+
+    def claim_next_task(self, request: AgentTaskClaimRequest) -> TaskClaimResult:
+        """Pull the highest-ranked ready Task for a new Agent Attempt."""
+        return self._execution_operations.claim_next_task(request)
+
+    def renew_claim(self, request: HumanClaimRenewRequest) -> TaskClaimResult:
+        """Renew one Claim owned by the bootstrap Human."""
+        return self._execution_operations.renew_claim(request)
+
+    def heartbeat_attempt(self, request: AgentHeartbeatRequest) -> TaskClaimResult:
+        """Renew the Claim held by one exact active Agent Attempt."""
+        return self._execution_operations.heartbeat_attempt(request)
+
+    def release_claim(self, request: HumanClaimReleaseRequest) -> TaskClaimResult:
+        """Release one Claim owned by the bootstrap Human."""
+        return self._execution_operations.release_claim(request)
+
+    def release_attempt(self, request: AgentReleaseRequest) -> TaskClaimResult:
+        """Release one exact active Agent Attempt and its Claim."""
+        return self._execution_operations.release_attempt(request)
+
+    def report_progress(self, request: AgentProgressRequest) -> TaskProgressResult:
+        """Append structured progress for one exact active Agent Attempt."""
+        return self._execution_operations.report_progress(request)
+
+    def submit_agent_result(
+        self,
+        request: AgentSubmitRequest,
+    ) -> TaskSubmissionResult:
+        """Submit one structured Result through an exact Agent Attempt."""
+        return self._execution_operations.submit_agent_result(request)
+
     def _resolve_phase_three_scope(
         self,
         *,
@@ -854,6 +919,31 @@ class LocalSession:
             lifecycle=resolved.runtime.lifecycle,
             dependencies=resolved.runtime.dependencies,
             results=resolved.runtime.results,
+        )
+
+    def _resolve_phase_four_scope(self, *, project: str | None) -> PhaseFourScope:
+        """Resolve one trusted bootstrap Subject and Project execution scope.
+
+        Args:
+            project: Optional explicit Project key, otherwise Workspace context.
+
+        Returns:
+            Authorized Project, bootstrap Subject, and Phase 4 services.
+
+        """
+        resolved = self._resolve_runtime(None)
+        identity = self._select_identity(resolved)
+        _require_project_selector(resolved, project)
+        selected = self._select_project(
+            resolved,
+            identity,
+            explicit_project=project,
+        )
+        return PhaseFourScope(
+            subject_id=identity.subject_id,
+            project=selected.status.project,
+            claims=resolved.runtime.claims,
+            execution=resolved.runtime.execution,
         )
 
     def _resolve_runtime(self, explicit_profile: str | None) -> _ResolvedRuntime:

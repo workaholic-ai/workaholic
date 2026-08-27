@@ -9,7 +9,10 @@ from typing import cast
 
 import pytest
 
-from tests.unit.session.fakes import UnavailablePhaseThreeServices
+from tests.unit.session.fakes import (
+    UnavailablePhaseFourServices,
+    UnavailablePhaseThreeServices,
+)
 from workaholic.application import (
     ApplicationError,
     ApplicationErrorCode,
@@ -384,6 +387,8 @@ def _runtime(*, profile: str = "local") -> _RuntimeBundle:
             lifecycle=UnavailablePhaseThreeServices(),
             dependencies=UnavailablePhaseThreeServices(),
             results=UnavailablePhaseThreeServices(),
+            claims=UnavailablePhaseFourServices(),
+            execution=UnavailablePhaseFourServices(),
         ),
         identity=identity,
         bootstrap=bootstrap,
@@ -783,6 +788,8 @@ def test_local_runtime_validates_profile_and_capabilities() -> None:
             lifecycle=UnavailablePhaseThreeServices(),
             dependencies=UnavailablePhaseThreeServices(),
             results=UnavailablePhaseThreeServices(),
+            claims=UnavailablePhaseFourServices(),
+            execution=UnavailablePhaseFourServices(),
         )
     with pytest.raises(TypeError, match=r"select\(\)"):
         LocalRuntime(
@@ -795,4 +802,6 @@ def test_local_runtime_validates_profile_and_capabilities() -> None:
             lifecycle=UnavailablePhaseThreeServices(),
             dependencies=UnavailablePhaseThreeServices(),
             results=UnavailablePhaseThreeServices(),
+            claims=UnavailablePhaseFourServices(),
+            execution=UnavailablePhaseFourServices(),
         )

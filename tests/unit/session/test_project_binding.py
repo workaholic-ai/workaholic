@@ -9,7 +9,10 @@ from typing import cast
 
 import pytest
 
-from tests.unit.session.fakes import UnavailablePhaseThreeServices
+from tests.unit.session.fakes import (
+    UnavailablePhaseFourServices,
+    UnavailablePhaseThreeServices,
+)
 from workaholic.application import (
     ApplicationError,
     ApplicationErrorCode,
@@ -325,6 +328,8 @@ def _session() -> tuple[LocalSession, _Context, _Queries, list[str]]:
         lifecycle=UnavailablePhaseThreeServices(),
         dependencies=UnavailablePhaseThreeServices(),
         results=UnavailablePhaseThreeServices(),
+        claims=UnavailablePhaseFourServices(),
+        execution=UnavailablePhaseFourServices(),
     )
     session = LocalSession(
         context=context,

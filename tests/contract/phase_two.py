@@ -14,11 +14,13 @@ from tests.contract.phase_one import (
 
 from workaholic.application import (
     Clock,
+    ExecutionIdentifierFactory,
     IdentifierFactory,
     ProjectCreationMutation,
     TaskCreationMutation,
 )
 from workaholic.domain import (
+    AttemptId,
     InstanceId,
     ProjectId,
     RequestId,
@@ -65,7 +67,7 @@ class PhaseTwoRepositoryFactory(PhaseOneRepositoryFactory, Protocol):
         """
         ...
 
-    def identifiers(self, namespace: str) -> IdentifierFactory:
+    def identifiers(self, namespace: str) -> PhaseTwoIdentifierFactory:
         """Construct a deterministic identifier sequence.
 
         Args:
@@ -76,6 +78,14 @@ class PhaseTwoRepositoryFactory(PhaseOneRepositoryFactory, Protocol):
 
         """
         ...
+
+
+class PhaseTwoIdentifierFactory(
+    IdentifierFactory,
+    ExecutionIdentifierFactory,
+    Protocol,
+):
+    """Generate every deterministic identity required through Phase 4."""
 
 
 class PhaseTwoSessionFactory(PhaseOneSessionFactory, Protocol):
@@ -186,6 +196,10 @@ class DeterministicIdentifierFactory:
     def new_request_id(self) -> RequestId:
         """Return the next deterministic request identifier."""
         return RequestId(self._next("req"))
+
+    def new_attempt_id(self) -> AttemptId:
+        """Return the next deterministic Agent Attempt identifier."""
+        return AttemptId(self._next("atm"))
 
     def _next(self, prefix: str) -> str:
         """Return the next text identifier for one fixed prefix.

@@ -7,6 +7,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from tests.unit.session.fakes import UnavailablePhaseFourSession
+
 from workaholic.application import (
     BootstrapResult,
     ContextResult,
@@ -415,7 +417,7 @@ def task_event_page(
     return TaskEventPage(events=events, next_cursor=effective_cursor)
 
 
-class RecordingSession:
+class RecordingSession(UnavailablePhaseFourSession):
     """Configurable explicit fake for the cumulative Session boundary."""
 
     def __init__(self) -> None:
