@@ -18,9 +18,11 @@ from pydantic import (
 )
 
 from workaholic.domain import (
+    AttemptId,
     InstanceId,
     ProjectId,
     RequestId,
+    ResultId,
     SubjectId,
     TaskEventId,
     TaskId,
@@ -32,8 +34,10 @@ type JsonValue = (
 
 CLI_SCHEMA: Final[Literal["workaholic.cli/v1"]] = "workaholic.cli/v1"
 _IDENTIFIER_TYPES: Final = (
+    AttemptId,
     InstanceId,
     ProjectId,
+    ResultId,
     SubjectId,
     TaskId,
     TaskEventId,

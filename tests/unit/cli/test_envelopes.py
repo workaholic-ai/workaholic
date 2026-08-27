@@ -24,9 +24,11 @@ from workaholic.cli.envelopes import (
     normalize_json_value,
 )
 from workaholic.cli.options import (
+    AttemptOption,
     CursorOption,
     IdempotencyKeyOption,
     JsonOption,
+    LeaseOption,
     LimitOption,
     NonInteractiveOption,
 )
@@ -341,6 +343,8 @@ def test_option_aliases_are_explicit_non_prompting_boundaries() -> None:
         (JsonOption, "--json"),
         (NonInteractiveOption, "--non-interactive"),
         (IdempotencyKeyOption, "--idempotency-key"),
+        (LeaseOption, "--lease"),
+        (AttemptOption, "--attempt"),
         (CursorOption, "--cursor"),
         (LimitOption, "--limit"),
     )

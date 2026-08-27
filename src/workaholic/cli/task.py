@@ -38,6 +38,7 @@ from workaholic.cli.structured_input import (
     merge_structured_fields,
     parse_utc_timestamp_field,
 )
+from workaholic.cli.task_claims import register_task_claim_commands
 from workaholic.cli.task_events import register_task_event_commands
 from workaholic.cli.task_mutations import register_task_mutation_commands
 from workaholic.cli.task_results import register_task_result_commands
@@ -92,7 +93,7 @@ _TASK_CREATE_FILE_FIELDS = frozenset(
 )
 
 
-def register_task_commands(
+def register_task_commands(  # noqa: PLR0915 - cumulative CLI registration
     application: typer.Typer,
     *,
     session_provider: SessionProvider,
@@ -246,6 +247,10 @@ def register_task_commands(
         session_provider=session_provider,
     )
     register_task_event_commands(
+        application,
+        session_provider=session_provider,
+    )
+    register_task_claim_commands(
         application,
         session_provider=session_provider,
     )

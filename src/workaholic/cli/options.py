@@ -46,6 +46,28 @@ IdempotencyKeyOption = Annotated[
     ),
 ]
 
+LeaseOption = Annotated[
+    str | None,
+    typer.Option(
+        ...,
+        "--lease",
+        help="Set the Claim Lease using one positive duration such as 15m or 8h.",
+        metavar="DURATION",
+        prompt=False,
+    ),
+]
+
+AttemptOption = Annotated[
+    str | None,
+    typer.Option(
+        ...,
+        "--attempt",
+        help="Select one exact Agent execution Attempt.",
+        metavar="ATTEMPT",
+        prompt=False,
+    ),
+]
+
 ProfileOption = Annotated[
     str | None,
     typer.Option(

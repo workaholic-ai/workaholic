@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -14,6 +14,7 @@ from workaholic.application import (
     ContextResult,
     ProjectCreationResult,
     StatusResult,
+    TaskClaimResult,
     TaskDetails,
     TaskEventPage,
     TaskEventResult,
@@ -24,6 +25,8 @@ from workaholic.application import (
 )
 from workaholic.domain import (
     ApprovalRequirement,
+    AttemptId,
+    AttemptStatus,
     Instance,
     InstanceId,
     Project,
@@ -38,6 +41,8 @@ from workaholic.domain import (
     SubjectId,
     SubjectKind,
     Task,
+    TaskAttempt,
+    TaskClaim,
     TaskEvent,
     TaskEventId,
     TaskEventType,
@@ -50,7 +55,13 @@ from workaholic.domain import (
 
 if TYPE_CHECKING:
     from workaholic.session import (
+        AgentHeartbeatRequest,
+        AgentReleaseRequest,
+        AgentTaskClaimRequest,
         ContextRequest,
+        HumanClaimReleaseRequest,
+        HumanClaimRenewRequest,
+        HumanTaskClaimRequest,
         ProjectBindRequest,
         ProjectCreateRequest,
         ProjectListRequest,
@@ -417,10 +428,72 @@ def task_event_page(
     return TaskEventPage(events=events, next_cursor=effective_cursor)
 
 
+def task_claim_result(
+    *,
+    agent: bool,
+    event_type: TaskEventType = TaskEventType.TASK_CLAIMED,
+    released: bool = False,
+) -> TaskClaimResult:
+    """Build one internally consistent CLI-test Claim operation result.
+
+    Args:
+        agent: Whether the owner path carries an Agent Attempt.
+        event_type: Claim lifecycle event represented by the result.
+        released: Whether the current Claim is absent after explicit release.
+
+    Returns:
+        Validated deterministic Claim result.
+
+    """
+    first_task = task()
+    attempt_id = AttemptId("atm_cli") if agent else None
+    lease_expires_at = _NOW + timedelta(minutes=15)
+    occurred_at = _NOW + timedelta(minutes=1) if released else _NOW
+    current_claim = None
+    if not released:
+        current_claim = TaskClaim(
+            task_uid=first_task.uid,
+            task_key=first_task.key,
+            subject_id=subject().id,
+            attempt_id=attempt_id,
+            claimed_at=_NOW,
+            lease_expires_at=lease_expires_at,
+        )
+    attempt = None
+    if attempt_id is not None:
+        attempt = TaskAttempt(
+            id=attempt_id,
+            task_uid=first_task.uid,
+            subject_id=subject().id,
+            status=AttemptStatus.RELEASED if released else AttemptStatus.ACTIVE,
+            lease_expires_at=lease_expires_at,
+            started_at=_NOW,
+            ended_at=occurred_at if released else None,
+        )
+    event = TaskEvent(
+        id=TaskEventId(f"evt_{event_type.value}_{'agent' if agent else 'human'}"),
+        cursor=2,
+        task_uid=first_task.uid,
+        project_id=first_task.project_id,
+        actor_subject_id=subject().id,
+        attempt_id=attempt_id,
+        request_id=RequestId(f"req_{event_type.value}"),
+        event_type=event_type,
+        occurred_at=occurred_at,
+        payload={"lease_expires_at": lease_expires_at.isoformat()},
+    )
+    return TaskClaimResult(
+        task=first_task,
+        claim=current_claim,
+        attempt=attempt,
+        events=(event,),
+    )
+
+
 class RecordingSession(UnavailablePhaseFourSession):
     """Configurable explicit fake for the cumulative Session boundary."""
 
-    def __init__(self) -> None:
+    def __init__(self) -> None:  # noqa: PLR0915 - cumulative Session fake
         """Initialize deterministic results, failures, and call logs."""
         first_task = task()
         self.up_result = bootstrap_result()
@@ -486,6 +559,26 @@ class RecordingSession(UnavailablePhaseFourSession):
         self.task_reject_result = task_submission_result(ResultReviewStatus.REJECTED)
         self.task_event_page_result = task_event_page(task_event_result())
         self.task_event_page_results: list[TaskEventPage] = []
+        self.human_claim_result = task_claim_result(agent=False)
+        self.agent_claim_result = task_claim_result(agent=True)
+        self.human_renew_result = task_claim_result(
+            agent=False,
+            event_type=TaskEventType.CLAIM_RENEWED,
+        )
+        self.agent_heartbeat_result = task_claim_result(
+            agent=True,
+            event_type=TaskEventType.CLAIM_RENEWED,
+        )
+        self.human_release_result = task_claim_result(
+            agent=False,
+            event_type=TaskEventType.CLAIM_RELEASED,
+            released=True,
+        )
+        self.agent_release_result = task_claim_result(
+            agent=True,
+            event_type=TaskEventType.CLAIM_RELEASED,
+            released=True,
+        )
         self.failures: dict[str, Exception] = {}
         self.up_requests: list[UpRequest] = []
         self.status_requests: list[StatusRequest] = []
@@ -508,6 +601,12 @@ class RecordingSession(UnavailablePhaseFourSession):
         self.task_approve_requests: list[TaskApproveRequest] = []
         self.task_reject_requests: list[TaskRejectRequest] = []
         self.task_event_requests: list[TaskEventsRequest] = []
+        self.human_claim_requests: list[HumanTaskClaimRequest] = []
+        self.agent_claim_requests: list[AgentTaskClaimRequest] = []
+        self.human_renew_requests: list[HumanClaimRenewRequest] = []
+        self.agent_heartbeat_requests: list[AgentHeartbeatRequest] = []
+        self.human_release_requests: list[HumanClaimReleaseRequest] = []
+        self.agent_release_requests: list[AgentReleaseRequest] = []
 
     def up(self, request: UpRequest) -> BootstrapResult:
         """Record and answer one bootstrap request."""
@@ -657,6 +756,42 @@ class RecordingSession(UnavailablePhaseFourSession):
         if self.task_event_page_results:
             return self.task_event_page_results.pop(0)
         return self.task_event_page_result
+
+    def claim_task(self, request: HumanTaskClaimRequest) -> TaskClaimResult:
+        """Record and answer one targeted Human Claim."""
+        self.human_claim_requests.append(request)
+        self._raise_failure("claim_task")
+        return self.human_claim_result
+
+    def claim_next_task(self, request: AgentTaskClaimRequest) -> TaskClaimResult:
+        """Record and answer one Agent Task pull."""
+        self.agent_claim_requests.append(request)
+        self._raise_failure("claim_next_task")
+        return self.agent_claim_result
+
+    def renew_claim(self, request: HumanClaimRenewRequest) -> TaskClaimResult:
+        """Record and answer one Human Claim renewal."""
+        self.human_renew_requests.append(request)
+        self._raise_failure("renew_claim")
+        return self.human_renew_result
+
+    def heartbeat_attempt(self, request: AgentHeartbeatRequest) -> TaskClaimResult:
+        """Record and answer one Agent Attempt heartbeat."""
+        self.agent_heartbeat_requests.append(request)
+        self._raise_failure("heartbeat_attempt")
+        return self.agent_heartbeat_result
+
+    def release_claim(self, request: HumanClaimReleaseRequest) -> TaskClaimResult:
+        """Record and answer one Human Claim release."""
+        self.human_release_requests.append(request)
+        self._raise_failure("release_claim")
+        return self.human_release_result
+
+    def release_attempt(self, request: AgentReleaseRequest) -> TaskClaimResult:
+        """Record and answer one Agent Attempt release."""
+        self.agent_release_requests.append(request)
+        self._raise_failure("release_attempt")
+        return self.agent_release_result
 
     def _raise_failure(self, operation: str) -> None:
         """Raise the configured failure for one operation, if present.
