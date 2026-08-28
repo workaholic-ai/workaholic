@@ -33,7 +33,10 @@ namespace.
 
 An independently authenticated Human or Agent identity. Every mutation is
 attributed to a Subject. A Subject's kind describes who operates it, while
-ProjectGrants and instance-administrator status determine authorization.
+ProjectGrants and Instance-administrator status determine authorization. Its
+Instance-scoped lowercase handle is the immutable automation identifier;
+display name is mutable presentation text. Subject kind and handle cannot
+change, and Subjects are not deleted in v1.
 
 ## Human
 
@@ -53,8 +56,11 @@ owned Attempt.
 ## ProjectGrant
 
 The assignment of one project-scoped role to a Subject for a Project. The v1
-roles are Viewer, Agent, Operator, and Owner. A ProjectGrant never authorizes
-access to another Project.
+roles are cumulative in the order Viewer, Agent, Operator, and Owner. One
+Subject has at most one current, versioned ProjectGrant per Project; assigning
+another role replaces that grant through optimistic concurrency. A
+ProjectGrant never authorizes access to another Project, and each Project must
+retain at least one enabled Owner.
 
 ## Task
 
@@ -71,7 +77,9 @@ The current exclusive, expiring ownership record for one Task. A Claim records
 its Task, owning Subject, Lease, and nullable Attempt identity. A Human Claim
 has a null Attempt; an Agent Claim has the current non-null Attempt. No current
 Claim means the Task is unclaimed. Phase 4 ownership is the pair of Subject and
-nullable Attempt; capability filtering is not part of v1.
+nullable Attempt; capability filtering is not part of v1. Revoking a Token or
+disabling the owning Subject does not force-release a Claim. Another valid
+Token for the same Subject may continue its exact owned Attempt.
 
 ## Attempt
 
@@ -109,6 +117,16 @@ Subject kind, Attempt when applicable, request identity, structured payload,
 timestamp, and ordered Instance cursor. One semantic mutation may append
 multiple consecutive TaskEvents while incrementing the Task version once.
 
+## AuditEvent
+
+An immutable, typed, append-only record of an Instance or security-
+administration mutation. AuditEvents cover bootstrap, Project creation,
+Subject and administrator lifecycle, ProjectGrant changes, and Token issue or
+revocation. They record authenticated Subject, kind, Token and request
+identities plus non-secret change facts. Bootstrap alone has a null actor Token.
+AuditEvents never contain raw Tokens, Token hashes, credential paths, or
+keyring locators and do not duplicate TaskEvents.
+
 ## Session
 
 The presentation-independent interface through which official clients issue
@@ -132,16 +150,33 @@ state and time.
 
 ## Token
 
-A high-entropy bearer credential belonging to one Subject. Only a Token hash is
-stored by Workaholic AI. Raw Tokens must not appear in repository context,
-normal command arguments, task data, events, or logs.
+A high-entropy bearer credential belonging to one Subject. Only a lowercase
+SHA-256 Token hash is stored by Workaholic AI. One Subject may have multiple
+independently expiring and revocable Tokens. Canonical raw form is
+`<token-id>.<secret>` with 32 random
+secret bytes encoded as unpadded URL-safe base64. A pending Token does not
+authenticate; active validity uses `now < expires_at`; revoked and expired
+Tokens fail immediately. Raw Tokens must not appear in repository context,
+normal command arguments, task data, events, or logs. Tokens are not deleted or
+renewed in place in v1.
+
+## Credential store
+
+A trusted local adapter that holds a Human's raw Token by profile outside a
+Workspace. Phase 5 prefers the operating-system keyring and uses a dedicated
+account-protected `credentials.toml` fallback only when configured or no
+keyring backend exists. Stored metadata binds the credential to its expected
+Instance and Subject. Agent credentials instead use trusted environment,
+mounted-secret, or orchestrator injection.
 
 ## Instance administrator
 
 A trusted Instance-wide role that can create Projects, Subjects, Tokens, and
-instance-wide grants. The administrator and the infrastructure controlling the
-process, secrets, and persistence service are inside the trusted computing
-base for v1.
+manage administrator status. It is separate from cumulative Project roles and
+does not authorize ordinary Project data without a ProjectGrant. Every Instance
+must retain at least one enabled administrator. The administrator and the
+infrastructure controlling the process, secrets, and persistence service are
+inside the trusted computing base for v1.
 
 ## Idempotency key
 
@@ -164,3 +199,4 @@ Capability-based Task scheduling is outside v1.
 - [Product scope](product-scope.md)
 - [Compatibility policy](compatibility-policy.md)
 - [Threat model](threat-model.md)
+- [ADR 0013: Phase 5 Token and Authorization Model](adr/0013-phase-five-token-and-authorization-model.md)

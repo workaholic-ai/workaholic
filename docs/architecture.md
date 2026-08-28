@@ -1010,14 +1010,21 @@ Each store records a schema version. An incompatible version fails safely with a
 
 ## 12. Authentication and authorization
 
+The exact Phase 5 security choices in this section are fixed by
+[ADR 0013](adr/0013-phase-five-token-and-authorization-model.md).
+
 ### Subjects
 
 ```json
 {
   "id": "sub_01K9...",
+  "instance_id": "ins_01K9...",
   "kind": "agent",
-  "name": "billing-code-agent",
-  "disabled": false
+  "handle": "billing-code-agent",
+  "display_name": "Billing code agent",
+  "enabled": true,
+  "is_instance_admin": false,
+  "version": 1
 }
 ```
 
@@ -1028,24 +1035,45 @@ human
 agent
 ```
 
-Every independently operating agent receives its own identity. Shared “all agents” credentials are discouraged because they make lease ownership and audit history ambiguous.
+Every independently operating Human or Agent receives one Subject. Handles
+match `^[a-z][a-z0-9-]{1,62}$`, are unique within an Instance, and are immutable
+and non-reusable. Display names are presentation data and may change. Subject
+kind is immutable and does not itself grant permission. Shared "all agents"
+credentials are not a supported operating model because they make Claim
+ownership, revocation, and audit history ambiguous.
 
 ### Tokens
 
-Tokens are high-entropy bearer credentials. Only hashes are stored.
+Tokens are independently expiring and revocable high-entropy bearer
+credentials. One Subject may own several Tokens; Instance administrators issue
+Tokens, while a Subject may inspect and revoke its own Token metadata. Subjects
+and Tokens are not deleted in v1.
 
 ```json
 {
   "id": "tok_01K9...",
   "subject_id": "sub_01K9...",
+  "status": "active",
+  "created_at": "2026-09-01T00:00:00Z",
   "expires_at": "2026-10-01T00:00:00Z",
   "revoked_at": null
 }
 ```
 
-For humans, credentials are stored in the operating-system credential store where available, with a protected configuration-file fallback.
+The canonical raw form is `<token-id>.<secret>`. The secret is unpadded
+URL-safe base64 for 32 cryptographically random bytes. Workaholic stores only a
+lowercase SHA-256 digest of the complete canonical Token and compares it in
+constant time after an indexed Token-ID lookup. A raw Token is revealed only
+through an explicit protected output boundary during provisioning and cannot
+be recovered from persistence.
 
-For agents, credentials are supplied through:
+For Humans, credentials are stored by trusted profile in the operating-system
+credential store where available, with a protected `credentials.toml` fallback
+under a dedicated account-only configuration directory. An expected Instance
+and Subject identity is stored with the credential so profile redirection fails
+closed. A keyring operation failure never silently downgrades to a file.
+
+For Agents, credentials are supplied through:
 
 ```text
 environment variables
@@ -1053,39 +1081,91 @@ mounted secrets
 orchestrator secret injection
 ```
 
-Tokens never appear in `.workaholic.env` or normal command arguments.
+`WORKAHOLIC_TOKEN` and `WORKAHOLIC_TOKEN_FILE` are trusted process inputs and
+are mutually exclusive. An explicitly selected source is authoritative: a
+malformed, expired, revoked, or otherwise invalid explicit Token never falls
+back to a stored Human credential. Tokens never appear in `.workaholic.env`,
+`profiles.toml`, task content, Results, events, normal logs, or normal command
+arguments.
 
 ### Roles
 
-| Role                   | Main permissions                                                                 |
-| ---------------------- | -------------------------------------------------------------------------------- |
-| Viewer                 | Read tasks, projects, claims, attempts, and events                               |
-| Agent                  | Claim, heartbeat, report progress, release, submit                               |
-| Operator               | Create and edit tasks, block/unblock, review, cancel                             |
-| Owner                  | Operator rights plus project settings and grants                                 |
-| Instance administrator | Create projects, subjects, tokens, and instance-wide grants                      |
+Project roles are cumulative in the exact order
+`viewer < agent < operator < owner`:
 
-Subject kind and role are separate. An agent identity normally receives the Agent role, but the authorization model does not hard-code that assumption.
+| Role | Additional permission |
+| --- | --- |
+| Viewer | Read the Project, Tasks, Results, Claims, Attempts, and TaskEvents |
+| Agent | Pull, heartbeat, report progress, release, and submit Agent work |
+| Operator | Create and mutate Tasks, use Human Claims, submit, and review |
+| Owner | Assign, replace, list, and revoke ProjectGrants |
+
+One Subject has at most one current ProjectGrant per Project. Granting another
+role replaces that row through optimistic concurrency. Agent execution also
+requires Agent Subject kind; Human Claim, renew, and release also require Human
+Subject kind. Other Operator operations are role-controlled regardless of kind.
+
+Instance administrator is a separate Instance-wide flag. It authorizes Project
+creation, Subject lifecycle, administrator changes, and Token lifecycle, but it
+does not reveal or mutate ordinary Project data without a ProjectGrant. The
+Instance must retain an enabled administrator and every Project must retain an
+enabled Owner; grant changes and Subject disablement enforce both invariants in
+the same transaction.
+
+Every operation authenticates one Token and yields an internal actor containing
+Instance, Subject, kind, and Token IDs. Raw credential material ends at the
+authentication boundary. Persistence revalidates the active Token, enabled
+Subject, selected Instance, and required ProjectGrant in the same transaction
+as every read or mutation, so a concurrent revocation, disablement, or grant
+removal fails closed.
+
+A current Claim remains an exclusive mutation lock. Administrator or Owner
+authority cannot override a foreign Claim. Revoking a Token or disabling its
+Subject stops new authenticated operations immediately but does not
+force-release a Claim or interrupt a process. Claim ownership belongs to the
+Subject, so another active Token for that same Subject may continue the exact
+current Attempt.
 
 ### Local bootstrap
 
 The first local `workaholic up`:
 
-* creates one real Human Subject named `Local operator`;
+* creates one real Human Subject with handle `local-operator` and display name
+  `Local operator`;
 * marks that Subject as the Instance administrator;
 * grants that Subject the Owner role on the bootstrapped Project;
-* selects that Subject as the sole embedded local actor.
+* creates a pending Human administrator Token;
+* stores its raw credential through the selected Human credential store; and
+* activates the Token only after credential storage succeeds.
 
-Phase 2 does not create a Token, use an operating-system credential store, or
-write `profiles.toml`. The embedded process selects the bootstrap Subject from
-the initialized profile store and still applies application-level
-authorization and Task attribution. Trusted profile configuration, selected
-data storage, and repository-controlled Workspace context form separate
-filesystem boundaries.
+Normal commands, including `up` against an initialized store, then require one
+valid Token. `auth recover-local` is the only tokenless recovery route. It is
+restricted to embedded mode under the trusted operating-system account,
+requires explicit confirmation of the Instance and bootstrap Subject, revokes
+that Subject's existing Tokens, and installs one fresh Human credential. It
+does not change Projects, Tasks, Claims, Attempts, grants, or Subject state.
 
-Phase 5 adds Tokens, secure credential storage, additional Human and Agent
-Subjects, identity-management commands, and general ProjectGrant management.
-It extends this attributed bootstrap; it does not replace an anonymous actor.
+Phase 1 through Phase 4 select the attributed bootstrap Subject without a
+Token. Phase 5 extends that record with credentials and does not replace it
+with an anonymous or placeholder actor.
+
+Historically, Phase 2 does not create a Token, use an operating-system
+credential store, or write credentials to `profiles.toml`; Phase 3 and Phase 4
+retain that delivery boundary.
+
+### Audit
+
+Task mutations continue to append TaskEvents with authenticated Subject,
+request, and optional Attempt attribution. Instance bootstrap, Project
+creation, Subject and administrator lifecycle, ProjectGrant changes, and Token
+issue/revocation append a separate ordered `AuditEvent` in the same transaction
+as their state change. Audit payloads may contain stable identifiers and
+non-secret change facts, but never raw Tokens, Token hashes, credential paths,
+environment values, or keyring locators.
+
+Tokenless bootstrap and local recovery are self-attributed to the bootstrap
+Human and use null actor Token identity. Every authenticated administrative
+event records its actor Token ID.
 
 ### Shared bootstrap
 
@@ -1095,6 +1175,7 @@ An empty server store requires a bootstrap credential supplied through trusted d
 workaholic auth create-human alice
 workaholic auth create-agent code-agent-3
 workaholic auth grant code-agent-3 agent --project ACME
+workaholic auth create-token code-agent-3 --token-file /secure/agent.token
 workaholic auth revoke-token tok_01K9...
 ```
 

@@ -171,16 +171,24 @@ must invent a security, credential, or concurrency boundary while coding.
   `^[1-9][0-9]*(s|m|h|d)$`. Renewal means issue a new Token; expiry is never
   extended in place.
 - Token creation requires `--token-file ABSOLUTE_PATH`. The target must not
-  exist, must be outside the discovered Workspace, and is created atomically
-  without following a symlink at mode `0600` under a non-group/world-writable
-  parent. Raw Tokens are never written to stdout, JSON, diagnostics, or a
-  caller-supplied normal positional argument.
+  exist, must be outside the discovered Workspace and any detected Git
+  worktree/repository, and is created atomically without following a symlink at
+  mode `0600` under a non-group/world-writable parent. Raw Tokens are never
+  written to stdout, JSON, diagnostics, or a caller-supplied normal positional
+  argument. A non-POSIX platform must verify equivalent current-user-only
+  access or fail closed.
 - Provisioning uses pending, active, expired, and revoked lifecycle
   projections. A pending Token cannot authenticate. The credential sink is
   written before activation; activation and its audit event are atomic. On
   failure, the pending Token is revoked and any just-created credential file
-  is removed by bounded compensation. A retry always receives a new Token ID
-  and secret.
+  is removed by bounded compensation. A retry after completed compensation
+  receives a new Token ID and secret.
+- The public Token-provisioning idempotency key is consumed only by activation.
+  After a crash, a same-key retry may validate an existing protected Token file
+  and resume its matching pending Token or replay activated metadata without
+  rewriting the file. A compensated failure may reuse the key for a new Token.
+  An absent output after committed activation cannot be reconstructed and must
+  be listed, revoked, and replaced.
 - Normal credential-source precedence is: non-empty `WORKAHOLIC_TOKEN`, then
   non-empty `WORKAHOLIC_TOKEN_FILE`, then the selected profile's Human
   credential store. Supplying both process variables is invalid. Empty values
@@ -188,9 +196,10 @@ must invent a security, credential, or concurrency boundary while coding.
   authentication, expiry, revocation, or Subject failure never falls through.
 - `WORKAHOLIC_TOKEN_FILE` must be an absolute path to a bounded readable UTF-8
   regular file. Symlinks are resolved to support orchestrator-mounted secrets;
-  the resolved target must be regular and not group/world writable. The file
-  contains exactly one canonical Token plus an optional final newline and is
-  never modified by authentication.
+  the resolved target must be regular, at most 512 bytes, and not group/world
+  writable. The file contains exactly one canonical Token plus an optional
+  final newline and is never modified by authentication. Non-POSIX access must
+  be equivalently account-restricted.
 - Human credential entries are scoped by trusted profile and include expected
   Instance and Subject IDs. Instance mismatch fails closed. The default
   backend selects an available operating-system keyring and falls back to
@@ -200,8 +209,12 @@ must invent a security, credential, or concurrency boundary while coding.
 - The fallback credential file lives in a dedicated `credentials` directory
   beneath the resolved Workaholic configuration directory. It is a bounded
   non-symlink UTF-8 TOML file created atomically with mode `0600`, and its
-  dedicated directory is created at mode `0700`. It may contain raw Human
-  Tokens but no task, URL, executable, or remote-profile data.
+  dedicated directory is created at mode `0700`. It is limited to 1,048,576
+  bytes and may contain raw Human Tokens but no task, URL, executable, or
+  remote-profile data. A platform that cannot verify equivalent account-only
+  access returns `CREDENTIAL_UNAVAILABLE`.
+- File-backed Human and Agent credentials are rejected when their resolved path
+  is inside a discovered Workspace or Git worktree/repository.
 - `auth login --token-file PATH|-` explicitly reads one Token, authenticates it
   against the selected profile, requires a Human Subject, and stores it without
   echoing it. `-` means explicit bounded stdin. `auth logout` removes only that
@@ -249,6 +262,11 @@ must invent a security, credential, or concurrency boundary while coding.
   revocation. Audit payloads contain identifiers and non-secret change facts,
   never a raw Token, Token hash, credential path, environment value, or keyring
   locator.
+- Tokenless bootstrap and recovery AuditEvents are self-attributed to the
+  bootstrap Human and have null actor Token. Every authenticated event records
+  its actor Token. Exact closed payloads are the identifier, version, role,
+  expiry, and changed-field sets fixed by ADR 0013 and the CLI/persistence
+  contracts; Phase 5 `changed_fields` contains only `display_name`.
 - Security-administration mutations accept idempotency keys. Their
   fingerprints bind operation, authenticated Subject, target Instance,
   Subject/Project/Token identities, requested role/state/version, and complete
@@ -256,8 +274,10 @@ must invent a security, credential, or concurrency boundary while coding.
   authorization: replay first validates the current actor and then returns the
   original closed outcome only for an equivalent request.
 - `auth events` is bounded, cursor-paginated, ordered by increasing cursor, and
-  restricted to Instance administrators. Subject and Token listings use stable
-  handle/creation ordering and never expose Token hashes or raw secrets.
+  restricted to Instance administrators. It reuses the TaskEvent-style
+  nonnegative `after`/`next_cursor` contract. Subject, grant, and Token listings
+  use actor/scope-bound canonical `v5.` cursors, stable handle/creation ordering,
+  and never expose Token hashes or raw secrets.
 - Authentication failures deliberately collapse missing Token, wrong digest,
   pending/expired/revoked Token, disabled Subject, and Instance mismatch into
   the same public failure. Authorization failures do not disclose Projects,
@@ -282,6 +302,7 @@ workaholic auth disable-subject SUBJECT
 workaholic auth grant-admin SUBJECT
 workaholic auth revoke-admin SUBJECT
 workaholic auth grant SUBJECT viewer|agent|operator|owner --project PROJECT
+workaholic auth list-grants --project PROJECT
 workaholic auth revoke-grant SUBJECT --project PROJECT
 workaholic auth create-token SUBJECT --token-file PATH [--expires-in DURATION]
 workaholic auth list-tokens [SUBJECT]
@@ -306,6 +327,7 @@ set:
 | `SUBJECT_HANDLE_CONFLICT` | 4 | false | `The Subject handle is already in use.` |
 | `TOKEN_NOT_FOUND` | 3 | false | `The Token was not found.` |
 | `GRANT_NOT_FOUND` | 3 | false | `The ProjectGrant was not found.` |
+| `IDENTITY_VERSION_CONFLICT` | 4 | false | `The identity or grant changed after the expected version.` |
 | `LAST_INSTANCE_ADMIN` | 4 | false | `The Instance must retain an enabled administrator.` |
 | `LAST_PROJECT_OWNER` | 4 | false | `The Project must retain an enabled Owner.` |
 | `CREDENTIAL_UNAVAILABLE` | 10 | false | `The credential store is unavailable.` |

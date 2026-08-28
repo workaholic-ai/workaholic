@@ -984,10 +984,15 @@ This is the first agent-usable Workaholic AI release.
 
 # Phase 5 — Identity, authentication, and authorization
 
+The exact security and concurrency decisions for this phase are recorded in
+[ADR 0013](adr/0013-phase-five-token-and-authorization-model.md).
+
 ## Goal
 
-Extend the attributable local bootstrap identity into the finalized human and
-agent credential-management model.
+Deliver authenticated local coordination. Every independently operating Human
+or Agent uses a distinct Subject and revocable Token; every Project operation
+uses the same least-privilege authorization policy that Phase 6 will expose
+remotely.
 
 ## Scope
 
@@ -1005,87 +1010,208 @@ full authorization policy
 Phase 1 already creates one real Human Subject, grants Instance-administrator
 status and the Owner role, and attributes Task mutations to that Subject.
 Phase 5 adds bearer Tokens, secure credential storage, additional identities,
-and general grant management. It does not replace anonymous bootstrap records.
+general grant management, and administrative AuditEvents. It extends the
+bootstrap Subject instead of replacing it with an anonymous record.
 
-Subject kinds:
+Subject kinds are `human` and `agent`. Each Subject has a unique immutable
+Instance-scoped handle matching `^[a-z][a-z0-9-]{1,62}$`, a mutable display
+name, immutable kind, enabled state, and positive optimistic version. Subjects
+are not deleted in v1.
+
+Project roles are cumulative in this exact order:
 
 ```text
-human
-agent
+viewer < agent < operator < owner
 ```
 
-Project roles:
+Viewer reads Project data. Agent adds the Agent Claim/Attempt path. Operator
+adds Task and Human operations. Owner adds ProjectGrant management. Instance
+administrator is separate: it manages Projects, Subjects, administrator state,
+and Tokens but does not grant ordinary Project data access.
 
-```text
-viewer
-agent
-operator
-owner
-```
+The Instance must retain an enabled administrator, and every Project must
+retain an enabled Owner. Grant and Subject changes enforce both invariants
+atomically.
 
-Tokens are high-entropy bearer values. Store only token hashes. Tokens belong to subjects, and subjects receive project grants.
+Tokens are high-entropy bearer values with canonical form
+`<token-id>.<secret>`, using 32 cryptographically random secret bytes encoded as
+unpadded URL-safe base64. Workaholic stores only lowercase SHA-256 of the full
+canonical Token. One Subject may have several independently expiring and
+revocable Tokens. Raw secrets are revealed only through explicit protected
+credential boundaries; Tokens are not deleted or renewed in place in v1.
+Token lifecycle projections are exactly `pending`, `active`, `expired`, and
+`revoked`; active validity uses `now < expires_at`.
+
+Phase 5 remains embedded and SQLite-only. It advances disposable SQLite schema
+version from `4` to exact schema version `5`. Version `4` is rejected unchanged.
+It does not add a server, network transport, remote profiles, `RemoteSession`,
+capability filtering, schema migration, SSO/OAuth, custom roles, or process
+interruption.
 
 ## Commands
 
-```bash
+```text
 workaholic auth whoami
-workaholic auth create-human alice
-workaholic auth create-agent code-agent-3
-workaholic auth grant code-agent-3 agent --project ACME
-workaholic auth create-token code-agent-3
-workaholic auth revoke-token tok_01...
-workaholic auth disable-subject code-agent-3
+workaholic auth login --token-file PATH|-
+workaholic auth logout
+workaholic auth recover-local --instance INSTANCE --subject local-operator
+workaholic auth create-human HANDLE [--display-name NAME]
+workaholic auth create-agent HANDLE [--display-name NAME]
+workaholic auth list-subjects
+workaholic auth update-subject SUBJECT --display-name NAME
+workaholic auth enable-subject SUBJECT
+workaholic auth disable-subject SUBJECT
+workaholic auth grant-admin SUBJECT
+workaholic auth revoke-admin SUBJECT
+workaholic auth grant SUBJECT viewer|agent|operator|owner --project PROJECT
+workaholic auth list-grants --project PROJECT
+workaholic auth revoke-grant SUBJECT --project PROJECT
+workaholic auth create-token SUBJECT --token-file ABSOLUTE_PATH
+workaholic auth list-tokens [SUBJECT]
+workaholic auth revoke-token TOKEN
+workaholic auth events
 ```
+
+Every authenticated mutation accepts an idempotency key. Subject and grant
+updates use explicit expected versions for automation. Interactive Humans may
+omit a version; the CLI reads once, submits once, and never refreshes and
+retries a conflict.
+
+## Token lifetime and provisioning
+
+Human Tokens default to `30d` and accept `1h` through `365d`. Agent Tokens
+default to `24h` and accept `5m` through `30d`. Durations use the existing
+single-unit grammar `^[1-9][0-9]*(s|m|h|d)$`. Validity uses authoritative time
+and `now < expires_at`.
+
+Provisioning first persists a pending non-authenticating Token hash, writes the
+raw Token to a new protected output, then activates it atomically. A failed
+sink or activation revokes the pending Token and performs bounded cleanup. The
+raw Token is never returned in normal stdout or JSON.
 
 ## Local credential behavior
 
-Humans:
+Credential source precedence is:
 
 ```text
-OS credential store where available
-protected user configuration fallback
+WORKAHOLIC_TOKEN
+WORKAHOLIC_TOKEN_FILE
+selected profile's Human credential store
 ```
 
-Agents:
+The two process variables are mutually exclusive. Invalid explicit input fails
+closed and never falls through. Mounted-secret symlinks resolve to a bounded
+regular target of at most 512 bytes that is not group/world writable.
+
+Human credentials are profile-scoped, bind the expected Instance and Subject,
+and use the operating-system keyring when available. The fallback is a bounded
+`credentials/credentials.toml` at mode `0600` under a dedicated mode-`0700`
+directory and is limited to 1,048,576 bytes. An operational keyring error never
+silently downgrades to file. Non-POSIX platforms must enforce equivalent
+current-user-only access or reject the fallback.
+
+Never store Tokens in:
 
 ```text
-WORKAHOLIC_TOKEN environment variable
-mounted secret file
-orchestrator secret injection
-```
-
-Never store tokens in:
-
-```text
-.workaholic.env
-task payloads
-events
-normal logs
+.workaholic.env or profiles.toml
+task or Result payloads
+TaskEvents or AuditEvents
+idempotency records
+normal logs or diagnostics
 visible process arguments
 ```
 
-## Authorization behavior
+The first `up` creates bootstrap Human handle `local-operator` and stores its
+credential before Token activation. Normal commands, including later `up`,
+authenticate explicitly.
+`auth recover-local` is the sole tokenless recovery path. It is embedded-only,
+requires exact Instance and bootstrap-Subject confirmation, revokes that
+Subject's existing Tokens, installs a new Human credential, and changes no
+Project, grant, Task, Claim, or Attempt state.
 
-The authenticated subject, not a supplied `actor_id`, owns an attempt.
+## Authorization and Claim behavior
 
-For example:
+Authentication produces the Instance, Subject, immutable kind, and Token
+identities. Every persistence read and mutation revalidates active Token,
+enabled Subject, selected Instance, and required ProjectGrant in the same
+transaction as the operation. Revocation, expiry, disablement, and grant removal
+therefore take effect on the next transaction.
+
+Project lists return only granted Projects. An Agent execution command requires
+Agent Subject kind and Agent-or-stronger role. A Human Claim command requires
+Human Subject kind and Operator-or-stronger role. Other Task mutations require
+Operator; ProjectGrant changes require Owner or Instance administrator.
+
+A current Claim remains an exclusive lock:
 
 ```text
-Agent token A cannot heartbeat Agent token B’s attempt.
-Viewer cannot create or claim tasks.
-Agent cannot approve its own review unless explicitly granted operator rights.
-Operator cannot change project ownership grants.
-Disabled subjects cannot authenticate.
-Revoked tokens stop working immediately.
+Agent A cannot heartbeat Agent B's Attempt.
+Owner or administrator authority cannot override a foreign Claim.
+Revoking a Token does not force-release the owning Subject's Claim.
+Disabling a Subject does not interrupt its external process.
+Another valid Token for the same Subject may continue the exact Attempt.
 ```
 
-Local mode still treats filesystem access as part of the security boundary, but the application layer must apply the same authorization rules used by the remote server.
+Capability filtering remains post-v1. A granted Agent pulling a Task is assumed
+capable of working on it.
+
+## Audit and failure behavior
+
+Task mutations continue to append TaskEvents with the real authenticated Human
+or Agent. Instance bootstrap, Project creation, Subject/administrator lifecycle,
+ProjectGrant changes, and Token issue/revocation append separate ordered
+AuditEvents. Audit payloads include stable identifiers and non-secret change
+facts, never raw Tokens, hashes, credential paths, process values, or keyring
+locators.
+
+Tokenless bootstrap and recovery audit records are self-attributed to the
+bootstrap Human with null actor Token; every authenticated event records its
+actor Token.
+
+Phase 5 adds these public failures:
+
+```text
+AUTHENTICATION_REQUIRED
+AUTHENTICATION_FAILED
+SUBJECT_NOT_FOUND
+SUBJECT_HANDLE_CONFLICT
+TOKEN_NOT_FOUND
+GRANT_NOT_FOUND
+IDENTITY_VERSION_CONFLICT
+LAST_INSTANCE_ADMIN
+LAST_PROJECT_OWNER
+CREDENTIAL_UNAVAILABLE
+```
+
+Invalid, expired, revoked, pending, disabled, wrong-digest, and wrong-Instance
+credentials collapse to non-disclosing authentication outcomes. Unauthorized
+target access uses `PERMISSION_DENIED` without disclosing data outside the
+actor's administrative or Project scope.
+
+## Testing
+
+Add cumulative domain, application, auth-adapter, persistence, Session, CLI,
+distribution, and golden tests. Use deterministic entropy and clocks below the
+process boundary and real independent processes for revoke/disable/grant versus
+operation races. Force the file credential backend in isolated test-owned
+configuration roots; never read the operator's keyring or inherited Tokens.
+
+The persistence and Session conformance matrix must cover every role, Subject
+kind, Project boundary, Token state, last-administrator/Owner safeguard,
+idempotency replay, AuditEvent, Claim ownership path, rollback, restart, and
+secret-redaction boundary.
 
 ## Exit gate
 
-A human operator creates two agent identities. Each agent sees only authorized projects, claims under its own identity, and cannot mutate another agent’s attempt.
+A Human operator creates two Agent identities and independent Tokens. Each Agent
+sees only authorized Projects, claims under its own identity, and cannot mutate
+the other's Attempt. Token revocation and Subject disablement fail immediately
+without force-releasing Claims; a second valid Token for the same Subject can
+continue the exact owned Attempt.
 
-Audit events identify the real subject behind every mutation.
+TaskEvents and AuditEvents identify the real Subject behind every mutation and
+contain no credential material. Source, installed wheel, clean checkout, and
+real-process races produce the same authorization behavior.
 
 ---
 

@@ -1,6 +1,6 @@
 # Workaholic AI Persistence Contract
 
-- Status: Accepted v1 contract through Phase 4 with Phase 4 SQLite implementation
+- Status: Accepted v1 contract through Phase 5 with Phase 4 SQLite implementation
 - Decision date: 2026-07-29
 - Contract scope: Observable semantics shared by JSON, SQLite, and PostgreSQL
 - Public API status: Internal architecture contract, not a third-party API
@@ -22,6 +22,7 @@ disposable profile data and Workspace contexts, remove only those verified
 alpha artifacts, and run `workaholic up` again. There is no in-place reset,
 automatic migration, backend conversion, import, or export command in Phase 4.
 Phase 4 never migrates, converts, or reinterprets version `3`.
+Version `3` is rejected unchanged by the implemented Phase 4 adapter.
 
 ## Normative language
 
@@ -217,6 +218,189 @@ one write transaction. Clients never supply actor kind, authoritative time,
 request identity, Result identity, event identity, Attempt identity, or event
 cursor through task or Result payloads.
 
+## Phase 5 SQLite contract
+
+Phase 5 replaces the disposable Phase 4 layout with clean-store SQLite schema
+version `5`. Exact version `5` is required before every normal read or mutation.
+Version `4`, malformed, missing, older, and newer stores return
+`SCHEMA_UNSUPPORTED` without modifying any byte or schema object. Phase 5 has no
+migration, conversion, import, export, or automatic reset path.
+
+One initialized version `5` store still represents one Instance. It extends the
+cumulative Task state with:
+
+- Human and Agent Subjects carrying an Instance-scoped immutable handle,
+  mutable display name, enabled and Instance-administrator state, positive
+  version, creator, and UTC creation/update timestamps;
+- one current cumulative Viewer, Agent, Operator, or Owner ProjectGrant per
+  Subject and Project, including positive version and grant attribution;
+- multiple pending, active, expired, or revoked Token records per Subject;
+- append-only administrative AuditEvents with one ordered Instance cursor; and
+- idempotency outcomes for Subject, administrator, Token, ProjectGrant,
+  Project, Task, Claim, Attempt, Result, and review mutations.
+
+Subject handles match `^[a-z][a-z0-9-]{1,62}$`, are unique per Instance, and
+cannot be updated, deleted, or reused. Subject kind is `human` or `agent` and
+cannot change. Display-name, enabled-state, and administrator mutations use an
+exact expected version and increment the Subject version once. The bootstrap
+Subject uses handle `local-operator`, display name `Local operator`, Human kind,
+and self-attribution for its creator field.
+
+Project roles are cumulative in the order
+`viewer < agent < operator < owner`. One stored ProjectGrant represents the
+maximum role and is replaced, not stacked. New grants start at version `1`;
+role replacement increments once; revocation removes the current grant. Grant
+replacement and revocation use exact expected versions. Cross-Instance grants
+are structurally invalid.
+
+The Instance must retain at least one enabled administrator, and every Project
+must retain at least one enabled Owner. Subject disablement, administrator
+revocation, Owner demotion, and Owner revocation evaluate every affected
+invariant and commit atomically. Disabled Subjects cannot receive a new Token
+or ProjectGrant. Subject and Token deletion are not v1 semantic operations.
+
+### Token storage and authentication
+
+Token IDs use prefix `tok_`. Canonical raw form is `<token-id>.<secret>`, where
+the secret is unpadded URL-safe base64 for exactly 32 cryptographically random
+bytes. Persistence accepts and stores only a lowercase SHA-256 digest of the
+complete canonical raw Token. It never receives or stores raw credential
+material. Authentication performs an indexed Token-ID lookup followed by
+constant-time digest verification.
+
+Each Token stores Instance, Subject, creator, creation, optional activation,
+expiry, optional revocation, and revoking actor. Lifecycle projections are
+exactly `pending`, `active`, `expired`, and `revoked`. A pending Token has null
+activation and cannot authenticate. An active Token has non-null activation,
+is not revoked, belongs to an enabled Subject, and satisfies authoritative
+transaction time `now < expires_at`. Expiry is projected by time and does not
+require a background write. Revocation is monotonic and does not delete the
+row.
+
+Human Tokens default to `30d` and accept `1h` through `365d`. Agent Tokens
+default to `24h` and accept `5m` through `30d`. Duration text uses exact grammar
+`^[1-9][0-9]*(s|m|h|d)$`; a Token is never extended in place.
+
+Token provisioning uses two semantic mutations. Pending issue commits the hash
+and metadata without making the Token valid. After a credential sink durably
+stores the raw Token, activation atomically marks it active and appends
+`token_issued`. A failed sink or activation revokes the pending Token; bounded
+client compensation removes only the newly created secret output. Retrying
+generates a different Token ID and secret.
+
+Pending provisioning is internally correlated to actor, target, and caller
+idempotency key, but does not commit the public idempotency outcome. Successful
+activation commits that outcome with `token_issued`. A compensated failure
+releases the key for a new Token. A retry presenting the same protected Token
+may resume its matching pending activation or replay the committed metadata;
+different Token identity, digest, target, expiry, or actor conflicts without a
+write. If the output is absent after committed activation, its raw Token cannot
+be reconstructed; an administrator must list and revoke it before issuing a
+replacement. Persistence never stores the credential output path.
+
+Authentication yields an internal `AuthenticatedActor` containing exact
+Instance, Subject, Subject kind, and Token IDs. Raw Token material does not
+enter application commands, Session results, repository mutation models,
+idempotency records, TaskEvents, AuditEvents, or normal errors.
+
+Every normal query revalidates the actor's enabled Subject, active Token at the
+authoritative time, selected Instance, and required ProjectGrant in one read
+transaction. Every mutation repeats those checks in the same write transaction
+as authorization, idempotency lookup, ownership checks, and state changes. A
+revocation, disablement, or grant change that commits before this check is
+therefore effective immediately.
+
+Authentication failures collapse missing Token, wrong digest,
+pending/expired/revoked Token, disabled Subject, and Instance mismatch into one
+non-disclosing outcome. Project lookup and permission failures do not disclose
+objects outside the actor's administrative or Project scope.
+
+### Phase 5 authorization semantics
+
+Viewer authorizes Project and Task reads. Agent adds Agent Claim and Attempt
+operations. Operator adds Task creation, Task/Result/review mutations, and Human
+Claim operations. Owner adds ProjectGrant administration. Agent execution also
+requires Agent Subject kind; Human Claim, renew, and release also require Human
+Subject kind. Instance-administrator status authorizes Instance administration
+but does not imply any Project data permission.
+
+Project lists include only granted Projects. Project creation requires an
+enabled authenticated Instance administrator and atomically creates the
+Project, its Owner grant for the creator, its AuditEvent, and optional
+idempotency outcome.
+
+A current Claim remains an exclusive lock checked after fresh authorization.
+A foreign Operator, Owner, or Instance administrator cannot override it.
+Revoking one Token or disabling the owner does not force-release the Claim or
+rewrite the Attempt; normal release, submission, cancellation, or Lease expiry
+is still required. Claim ownership belongs to Subject identity, so another
+active Token for the same Subject may continue the exact current Attempt.
+
+### Administrative AuditEvents
+
+Every accepted Instance bootstrap, Project creation, Subject lifecycle,
+administrator change, ProjectGrant change, and Token issue/revocation appends
+an AuditEvent in the same transaction as its state and idempotency outcome.
+Each AuditEvent contains:
+
+- globally unique `aev_` identity and monotonically increasing Instance cursor;
+- Instance, authenticated actor Subject, actor kind snapshot, and nullable
+  actor Token identity;
+- request identity, exact event type, authoritative UTC time, and a closed
+  bounded payload.
+
+Tokenless bootstrap and local recovery are self-attributed to the bootstrap
+Human and have null actor Token. Every authenticated event records its actor
+Token ID. Event types are exactly `instance_bootstrapped`, `project_created`,
+`subject_created`, `subject_updated`, `subject_enabled`, `subject_disabled`,
+`instance_admin_granted`, `instance_admin_revoked`,
+`project_grant_assigned`, `project_grant_revoked`, `token_issued`, and
+`token_revoked`.
+
+Audit payloads contain target identifiers and non-secret before/after facts.
+They must not contain raw Tokens, Token hashes, credential paths, process
+environment values, keyring locators, Task content, or backend details. Audit
+events are append-only, administrator-readable, ordered by cursor, and separate
+from TaskEvents.
+
+Event payloads are closed and exact. `instance_bootstrapped` contains
+`instance_id`, `subject_id`, `project_id`, `project_key`, and `grant_role`.
+`project_created` contains `project_id`, `project_key`, and
+`owner_subject_id`. `subject_created` contains `subject_id`, `handle`, `kind`,
+and `version`; `subject_updated` contains `subject_id`, sorted
+`changed_fields`, and `version`; enable/disable and administrator events contain
+`subject_id` and `version`. Grant assignment contains `project_id`,
+`subject_id`, `role`, and `version`; grant revocation contains those identities
+plus `previous_role` and `previous_version`. Token issue contains `token_id`,
+`subject_id`, and `expires_at`; Token revocation contains `token_id` and
+`subject_id`. Phase 5 `changed_fields` contains only `display_name`.
+
+### Phase 5 identity idempotency and pagination
+
+Administrative idempotency records remain scoped to authenticated Subject,
+logical operation, and caller key. Fingerprints bind target Instance,
+Subject/Project/Token identities, requested role/state/version, and complete
+non-secret input. Authentication and authorization are revalidated before an
+equivalent replay returns its stored result. Neither fingerprint nor outcome
+may contain raw Token, hash, credential path, environment value, or keyring
+locator.
+
+Subject lists order by `(handle, id)`. ProjectGrant lists order by
+`(subject handle, subject ID)`. Token lists order by `(created_at, id)`. These
+three lists use a `v5.` cursor followed by unpadded URL-safe base64 of canonical
+closed JSON containing `v`, `kind`, `instance_id`, `actor_subject_id`, nullable
+`scope_id`, and typed `last` ordering tuple. Kind and scope bind the cursor to
+Subjects/null, grants/Project, or Tokens/target Subject. Another Token for the
+same actor Subject may continue it. Malformed, padded, noncanonical,
+cross-Instance, cross-Subject, cross-kind, or cross-scope use is invalid.
+
+AuditEvents instead use their nonnegative Instance cursor directly. `after` is
+exclusive and defaults to `0`; `next_cursor` is the greatest returned cursor or
+the supplied `after` for an empty page. All identity and audit lists default to
+100, accept limits from 1 through 500, and return an empty successful page at
+exhaustion. Reads never activate, expire, revoke, or otherwise mutate identity
+state.
+
 ## Store opening and schema version
 
 Every store records a backend-independent schema version. Before the first
@@ -239,12 +423,13 @@ initialized Instance.
 One semantic mutation is one atomic backend transaction. A successful
 transaction commits all of:
 
+- fresh authentication and required authorization checks;
 - validated state changes;
 - optimistic version increments;
 - Claim, Attempt, and Lease changes where applicable;
-- required TaskEvents;
+- required TaskEvents or administrative AuditEvents;
 - ordered event cursor allocation;
-- idempotency record and outcome where applicable.
+- non-secret idempotency record and outcome where applicable.
 
 A rejected or failed mutation commits none of them. No adapter may report
 success before the durable outcome required by that backend is complete.
@@ -514,6 +699,12 @@ Claim through their existing events. In Phase 4, both command paths use the
 bootstrap Subject and TaskEvent actor kind remains `human`; a non-null Attempt
 ID is the Agent attribution.
 
+In Phase 5, TaskEvents record the real authenticated Human or Agent Subject and
+kind. The Token ID is revalidated for the operation but is not added to the
+TaskEvent public schema. Administrative mutations use the separate AuditEvent
+stream and include the non-secret Token ID there. Neither stream contains raw
+credential material or Token hashes.
+
 `read_task_events_after` is Task- and Project-authorized, accepts an optional
 nonnegative Instance cursor and a limit from 1 through 500, and returns a stable
 ascending page. Empty pages are successful. Reads never allocate a cursor or
@@ -536,6 +727,12 @@ logical outcome.
 
 Adapters must persist idempotency records in durable Instance state. An
 in-memory process cache is not sufficient.
+
+Authentication and authorization are prerequisites to idempotency lookup. A
+revoked Token, disabled Subject, or removed grant cannot replay a previously
+authorized operation. Phase 5 administrative fingerprints and outcomes contain
+only non-secret identities and requested state; they exclude raw Tokens, Token
+hashes, credential paths, process values, and keyring locators.
 
 Phase 4 Claim and execution fingerprints include the Project, Task selector
 when present, nullable Attempt, resolved Lease duration, expected version when
@@ -563,7 +760,11 @@ but cannot be required for correctness.
 Adapters return typed semantic outcomes rather than driver exceptions for
 expected conditions, including:
 
-- missing Instance, Project, Task, Claim, Attempt, or Subject;
+- missing Instance, Project, Task, Claim, Attempt, Subject, Token, or grant;
+- missing, invalid, pending, expired, or revoked authentication;
+- disabled Subject or cross-Instance credential;
+- last-enabled-administrator or last-enabled-Owner conflict;
+- stale Subject or ProjectGrant expected version;
 - conflicting Project key;
 - optimistic version conflict;
 - invalid lifecycle transition;
@@ -597,13 +798,14 @@ SQLite uses short-lived connections for CLI invocations. Compound operations,
 including task-number allocation, claims, events, and idempotency, use one write
 transaction with bounded lock handling.
 
-The Phase 4 embedded adapter accepts exact SQLite schema version `4`. It stores
-Claims with nullable unique Attempt identity and Attempts with terminal-state
-and timestamp constraints while preserving existing Result, TaskEvent, and
-idempotency relationships. Version `3`, malformed, missing, older, and newer
-versions return the existing unsupported-schema outcome without modifying the
-file. Phase 4 provides no migration, conversion, import, export, or silent
-reset.
+The Phase 5 embedded adapter accepts exact SQLite schema version `5`. It stores
+Instance-scoped Subjects and handles, cumulative ProjectGrants, hash-only Token
+records, administrative AuditEvents, and both Subject kinds in TaskEvents while
+preserving Phase 4 Claim/Attempt/Result relationships. Composite constraints
+prevent cross-Instance grants and Tokens. Version `4`, malformed, missing,
+older, and newer versions return the existing unsupported-schema outcome
+without modifying the file. Phase 5 provides no migration, conversion, import,
+export, or silent reset.
 
 ### PostgreSQL
 
@@ -637,7 +839,11 @@ must cover:
 - event ordering and bounded cursor reads;
 - rollback on validation and injected backend failures;
 - equivalent filters, ordering, and pagination;
-- authorization lookup behavior;
+- every Viewer/Agent/Operator/Owner and Instance-administrator permission;
+- Token issue, activation, expiry, revocation, and redaction;
+- Subject disablement and last-administrator/last-Owner invariants;
+- cross-Project isolation and transaction-time authorization races;
+- administrative AuditEvent attribution, ordering, and secret exclusion;
 - crash-safe JSON replacement and supported backend-specific recovery cases.
 
 Tests must assert domain outcomes, public error mapping, and committed state
@@ -665,6 +871,7 @@ Unsupported stores fail unchanged. See
 - [ADR 0010: Single-Process, Single-Instance Server](adr/0010-single-process-single-instance-server.md)
 - [ADR 0011: Phase 3 Task Mutation and Human Submission](adr/0011-phase-three-task-mutation-and-human-submission.md)
 - [ADR 0012: Phase 4 Local Claim and Execution Model](adr/0012-phase-four-local-claim-and-execution-model.md)
+- [ADR 0013: Phase 5 Token and Authorization Model](adr/0013-phase-five-token-and-authorization-model.md)
 - [Compatibility policy](compatibility-policy.md)
 - [Threat model](threat-model.md)
 - [Architecture](architecture.md)
