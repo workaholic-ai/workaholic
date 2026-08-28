@@ -76,15 +76,22 @@ def test_installed_metadata_matches_source_metadata() -> None:
     assert "# Workaholic AI" in packaged_metadata
 
 
-def test_phase_two_profile_overrides_are_safely_documented() -> None:
-    """The env template documents only trusted embedded profile selectors."""
+def test_phase_five_trusted_process_inputs_are_safely_documented() -> None:
+    """The env template distinguishes profile selectors and explicit secrets."""
     environment_example = (_PROJECT_ROOT / ".env.example").read_text(encoding="utf-8")
 
     assert "Do not copy this file to .workaholic.env" in environment_example
     assert "workaholic up creates" in environment_example
     assert "WORKAHOLIC_CONFIG_DIR=" in environment_example
     assert "WORKAHOLIC_PROFILE=" in environment_example
-    assert environment_example.endswith("WORKAHOLIC_DATA_DIR=\n")
+    for key in (
+        "WORKAHOLIC_TOKEN=",
+        "WORKAHOLIC_TOKEN_FILE=",
+        "WORKAHOLIC_CREDENTIAL_BACKEND=",
+    ):
+        assert key in environment_example
+    assert environment_example.endswith("WORKAHOLIC_CREDENTIAL_BACKEND=\n")
+    assert "never copy it into .workaholic.env" in environment_example
     for unsupported in (
         "Remote URLs",
         "credentials",

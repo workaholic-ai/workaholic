@@ -3,10 +3,19 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from enum import StrEnum
 
 from workaholic.auth._token_format import validate_token_text
 from workaholic.auth.errors import TokenFormatError
 from workaholic.domain import TokenId
+
+
+class CredentialBackend(StrEnum):
+    """Trusted Human credential-store backend selection."""
+
+    AUTO = "auto"
+    KEYRING = "keyring"
+    FILE = "file"
 
 
 class RawToken:

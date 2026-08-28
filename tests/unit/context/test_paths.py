@@ -15,7 +15,25 @@ from workaholic.context import (
     LocalDataPaths,
     resolve_local_config_paths,
     resolve_local_data_paths,
+    resolve_token_file_path,
 )
+
+
+def test_token_file_path_requires_absolute_trusted_process_input(
+    tmp_path: Path,
+) -> None:
+    """Token-file path validation is syntactic and does not resolve symlinks."""
+    mounted = tmp_path / "mounted-token"
+
+    assert resolve_token_file_path(str(mounted)) == mounted
+    assert not mounted.exists()
+
+
+@pytest.mark.parametrize("value", [None, "", "relative", "~/token", "bad\x00path", 7])
+def test_invalid_token_file_paths_are_rejected(value: object) -> None:
+    """Empty, relative, expandable, null, and untyped paths are invalid."""
+    with pytest.raises(ContextInvalidError):
+        resolve_token_file_path(value)
 
 
 def test_default_config_path_uses_platformdirs_without_creating_it(

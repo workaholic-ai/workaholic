@@ -5,7 +5,14 @@ from workaholic.auth.errors import (
     TokenFormatError,
     TokenGenerationError,
 )
-from workaholic.auth.models import ParsedToken, RawToken
+from workaholic.auth.models import CredentialBackend, ParsedToken, RawToken
+from workaholic.auth.sources import (
+    ExplicitCredential,
+    ExplicitCredentialKind,
+    read_token_file,
+    resolve_credential_backend,
+    resolve_explicit_credential,
+)
 from workaholic.auth.tokens import (
     generate_token,
     hash_token,
@@ -15,6 +22,9 @@ from workaholic.auth.tokens import (
 
 __all__ = [
     "AuthenticationPrimitiveError",
+    "CredentialBackend",
+    "ExplicitCredential",
+    "ExplicitCredentialKind",
     "ParsedToken",
     "RawToken",
     "TokenFormatError",
@@ -22,5 +32,8 @@ __all__ = [
     "generate_token",
     "hash_token",
     "parse_token",
+    "read_token_file",
+    "resolve_credential_backend",
+    "resolve_explicit_credential",
     "verify_token_digest",
 ]

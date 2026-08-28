@@ -27,6 +27,7 @@ from workaholic.context.models import (
 from workaholic.context.paths import (
     resolve_local_config_paths,
     resolve_local_data_paths,
+    resolve_token_file_path,
 )
 from workaholic.context.profiles import load_profile_registry
 
@@ -50,6 +51,7 @@ __all__ = [
     "read_current_workspace_context",
     "resolve_local_config_paths",
     "resolve_local_data_paths",
+    "resolve_token_file_path",
     "write_current_workspace_context",
     "write_workspace_context",
 ]
