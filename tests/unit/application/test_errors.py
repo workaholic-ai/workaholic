@@ -7,10 +7,17 @@ import pytest
 from workaholic.application import (
     ApplicationError,
     ApplicationErrorCode,
+    AuthenticationFailedError,
+    AuthenticationRequiredError,
+    CredentialUnavailableError,
     DependencyConflictError,
     DependencyCycleError,
     ExitCategory,
+    GrantNotFoundError,
+    IdentityVersionConflictError,
     InvalidTransitionError,
+    LastInstanceAdminError,
+    LastProjectOwnerError,
     LeaseLostError,
     NoTaskAvailableError,
     ProfileInvalidError,
@@ -18,7 +25,10 @@ from workaholic.application import (
     ProfileUnsupportedError,
     ProjectNotFoundError,
     ResultInvalidError,
+    SubjectHandleConflictError,
+    SubjectNotFoundError,
     TaskLockedError,
+    TokenNotFoundError,
     UnsatisfiableDependencyError,
     VersionConflictError,
     WorkspaceBindingConflictError,
@@ -53,6 +63,25 @@ _EXPECTED_ERROR_SEMANTICS = {
     ApplicationErrorCode.RESULT_INVALID: (ExitCategory.INPUT_USAGE, False),
     ApplicationErrorCode.TASK_LOCKED: (ExitCategory.CONFLICT, True),
     ApplicationErrorCode.LEASE_LOST: (ExitCategory.CONFLICT, False),
+    ApplicationErrorCode.AUTHENTICATION_REQUIRED: (
+        ExitCategory.AUTHORIZATION,
+        False,
+    ),
+    ApplicationErrorCode.AUTHENTICATION_FAILED: (
+        ExitCategory.AUTHORIZATION,
+        False,
+    ),
+    ApplicationErrorCode.SUBJECT_NOT_FOUND: (ExitCategory.MISSING, False),
+    ApplicationErrorCode.SUBJECT_HANDLE_CONFLICT: (ExitCategory.CONFLICT, False),
+    ApplicationErrorCode.TOKEN_NOT_FOUND: (ExitCategory.MISSING, False),
+    ApplicationErrorCode.GRANT_NOT_FOUND: (ExitCategory.MISSING, False),
+    ApplicationErrorCode.IDENTITY_VERSION_CONFLICT: (
+        ExitCategory.CONFLICT,
+        False,
+    ),
+    ApplicationErrorCode.LAST_INSTANCE_ADMIN: (ExitCategory.CONFLICT, False),
+    ApplicationErrorCode.LAST_PROJECT_OWNER: (ExitCategory.CONFLICT, False),
+    ApplicationErrorCode.CREDENTIAL_UNAVAILABLE: (ExitCategory.OPERATIONAL, False),
     ApplicationErrorCode.PERMISSION_DENIED: (ExitCategory.AUTHORIZATION, False),
     ApplicationErrorCode.SCHEMA_UNSUPPORTED: (ExitCategory.OPERATIONAL, False),
     ApplicationErrorCode.STORAGE_BUSY: (ExitCategory.OPERATIONAL, True),
@@ -182,6 +211,67 @@ def test_phase_four_errors_have_exact_safe_public_messages() -> None:
         assert error.code is code
         assert error.safe_message == message
         assert error.retryable is retryable
+
+
+def test_phase_five_errors_have_exact_safe_public_messages() -> None:
+    """Identity failures expose only their fixed non-secret Phase 5 messages."""
+    expected = (
+        (
+            AuthenticationRequiredError(),
+            ApplicationErrorCode.AUTHENTICATION_REQUIRED,
+            "Authentication is required.",
+        ),
+        (
+            AuthenticationFailedError(),
+            ApplicationErrorCode.AUTHENTICATION_FAILED,
+            "The supplied credential is not valid.",
+        ),
+        (
+            SubjectNotFoundError(),
+            ApplicationErrorCode.SUBJECT_NOT_FOUND,
+            "The Subject was not found.",
+        ),
+        (
+            SubjectHandleConflictError(),
+            ApplicationErrorCode.SUBJECT_HANDLE_CONFLICT,
+            "The Subject handle is already in use.",
+        ),
+        (
+            TokenNotFoundError(),
+            ApplicationErrorCode.TOKEN_NOT_FOUND,
+            "The Token was not found.",
+        ),
+        (
+            GrantNotFoundError(),
+            ApplicationErrorCode.GRANT_NOT_FOUND,
+            "The ProjectGrant was not found.",
+        ),
+        (
+            IdentityVersionConflictError(),
+            ApplicationErrorCode.IDENTITY_VERSION_CONFLICT,
+            "The identity or grant changed after the expected version.",
+        ),
+        (
+            LastInstanceAdminError(),
+            ApplicationErrorCode.LAST_INSTANCE_ADMIN,
+            "The Instance must retain an enabled administrator.",
+        ),
+        (
+            LastProjectOwnerError(),
+            ApplicationErrorCode.LAST_PROJECT_OWNER,
+            "The Project must retain an enabled Owner.",
+        ),
+        (
+            CredentialUnavailableError(),
+            ApplicationErrorCode.CREDENTIAL_UNAVAILABLE,
+            "The credential store is unavailable.",
+        ),
+    )
+
+    for error, code, message in expected:
+        assert error.code is code
+        assert error.safe_message == message
+        assert not error.retryable
 
 
 @pytest.mark.parametrize(

@@ -8,26 +8,42 @@ if TYPE_CHECKING:
     from datetime import datetime
 
     from workaholic.application.commands import (
+        ActivateTokenMutation,
         AddTaskDependencyMutation,
         ApproveResultMutation,
+        AssignProjectGrantMutation,
+        AuthenticateToken,
+        AuthorizeActor,
         BootstrapMutation,
         ClaimNextTaskMutation,
         ClaimTaskMutation,
+        CreateSubjectMutation,
+        GetCurrentIdentity,
         GetLocalStatus,
         GetProjectByKey,
         GetTask,
         GetTaskDetails,
+        IssueTokenMutation,
         ListInstanceTasks,
+        ListProjectGrants,
         ListProjects,
+        ListSubjects,
         ListTasks,
         ListTasksByView,
+        ListTokens,
         ProjectCreationMutation,
+        ReadAuditEvents,
         ReadTaskEvents,
+        RecoverLocalMutation,
         RejectResultMutation,
         ReleaseClaimMutation,
         RemoveTaskDependencyMutation,
         RenewClaimMutation,
         ReportTaskProgressMutation,
+        RevokeProjectGrantMutation,
+        RevokeTokenMutation,
+        SetInstanceAdminMutation,
+        SetSubjectEnabledMutation,
         SubmitAgentResultMutation,
         SubmitHumanResultMutation,
         TaskBlockMutation,
@@ -35,11 +51,18 @@ if TYPE_CHECKING:
         TaskCreationMutation,
         TaskUnblockMutation,
         TaskUpdateMutation,
+        UpdateSubjectMutation,
     )
     from workaholic.application.results import (
+        AuditEventPage,
         BootstrapResult,
+        CurrentIdentityResult,
         ProjectCreationResult,
+        ProjectGrantPage,
+        ProjectGrantResult,
         StatusResult,
+        SubjectPage,
+        SubjectResult,
         TaskClaimResult,
         TaskDetails,
         TaskEventPage,
@@ -47,18 +70,24 @@ if TYPE_CHECKING:
         TaskPage,
         TaskProgressResult,
         TaskSubmissionResult,
+        TokenPage,
+        TokenResult,
     )
     from workaholic.domain import (
         AttemptId,
+        AuditEventId,
+        AuthenticatedActor,
         InstanceId,
         Project,
         ProjectId,
         RequestId,
         ResultId,
+        Subject,
         SubjectId,
         Task,
         TaskEventId,
         TaskId,
+        TokenId,
     )
 
 
@@ -133,6 +162,46 @@ class IdentifierFactory(Protocol):
         ...
 
 
+class IdentityIdentifierFactory(Protocol):
+    """Generate only identities required by Phase 5 administration."""
+
+    def new_subject_id(self) -> SubjectId:
+        """Create a candidate Subject identifier.
+
+        Returns:
+            A new opaque SubjectId.
+
+        """
+        ...
+
+    def new_token_id(self) -> TokenId:
+        """Create a candidate Token identifier.
+
+        Returns:
+            A new opaque TokenId.
+
+        """
+        ...
+
+    def new_audit_event_id(self) -> AuditEventId:
+        """Create a candidate AuditEvent identifier.
+
+        Returns:
+            A new opaque AuditEventId.
+
+        """
+        ...
+
+    def new_request_id(self) -> RequestId:
+        """Create a candidate request identifier.
+
+        Returns:
+            A new opaque RequestId.
+
+        """
+        ...
+
+
 class ResultIdentifierFactory(Protocol):
     """Generate only the identities required by Human Result operations."""
 
@@ -175,6 +244,268 @@ class ExecutionIdentifierFactory(ResultIdentifierFactory, Protocol):
 
         """
         ...
+
+
+class AuthenticationRepository(Protocol):
+    """Authenticate parsed Token digests without receiving raw credentials."""
+
+    def authenticate_token(self, command: AuthenticateToken) -> AuthenticatedActor:
+        """Authenticate one Token at an explicit transaction time.
+
+        Args:
+            command: Typed Token ID, digest, expected Instance, and time.
+
+        Returns:
+            Secret-free authenticated actor context.
+
+        """
+        ...
+
+    def get_current_identity(
+        self,
+        command: GetCurrentIdentity,
+    ) -> CurrentIdentityResult:
+        """Revalidate and return one current authenticated identity.
+
+        Args:
+            command: Previously authenticated secret-free actor query.
+
+        Returns:
+            Current Subject and active Token metadata.
+
+        """
+        ...
+
+
+class AuthorizationRepository(Protocol):
+    """Resolve fresh authorization state at a transaction boundary."""
+
+    def authorize_actor(self, command: AuthorizeActor) -> Subject:
+        """Revalidate Token, Subject, Instance, kind, and required permission.
+
+        Args:
+            command: Actor, permission, optional Project, kind, and time.
+
+        Returns:
+            The freshly authorized Subject projection.
+
+        Notes:
+            Mutation repositories must invoke the same policy inside their own
+            write transaction; this read port is not a preauthorization token.
+
+        """
+        ...
+
+
+class SubjectRepository(Protocol):
+    """Persist the complete versioned Subject lifecycle."""
+
+    def create_subject(self, mutation: CreateSubjectMutation) -> SubjectResult:
+        """Create one enabled, non-administrative Subject atomically.
+
+        Args:
+            mutation: Authenticated creation mutation.
+
+        Returns:
+            The committed Subject.
+
+        """
+        ...
+
+    def list_subjects(self, command: ListSubjects) -> SubjectPage:
+        """List one stable page of Subjects.
+
+        Args:
+            command: Authenticated actor-bound list query.
+
+        Returns:
+            Handle-ordered Subject page.
+
+        """
+        ...
+
+    def update_subject(self, mutation: UpdateSubjectMutation) -> SubjectResult:
+        """Update one Subject display name at an exact version.
+
+        Args:
+            mutation: Authenticated optimistic mutation.
+
+        Returns:
+            The committed Subject.
+
+        """
+        ...
+
+    def set_subject_enabled(
+        self,
+        mutation: SetSubjectEnabledMutation,
+    ) -> SubjectResult:
+        """Enable or disable one Subject atomically.
+
+        Args:
+            mutation: Authenticated optimistic state mutation.
+
+        Returns:
+            The committed Subject.
+
+        """
+        ...
+
+    def set_instance_admin(
+        self,
+        mutation: SetInstanceAdminMutation,
+    ) -> SubjectResult:
+        """Grant or revoke Instance administration atomically.
+
+        Args:
+            mutation: Authenticated optimistic administrator mutation.
+
+        Returns:
+            The committed Subject.
+
+        """
+        ...
+
+
+class GrantRepository(Protocol):
+    """Persist cumulative ProjectGrant lifecycle operations."""
+
+    def assign_project_grant(
+        self,
+        mutation: AssignProjectGrantMutation,
+    ) -> ProjectGrantResult:
+        """Create or replace one ProjectGrant atomically.
+
+        Args:
+            mutation: Authenticated cumulative-role assignment.
+
+        Returns:
+            The committed grant snapshot.
+
+        """
+        ...
+
+    def list_project_grants(
+        self,
+        command: ListProjectGrants,
+    ) -> ProjectGrantPage:
+        """List one stable page of grants for a Project.
+
+        Args:
+            command: Authenticated Project-scoped list query.
+
+        Returns:
+            Current ProjectGrant page.
+
+        """
+        ...
+
+    def revoke_project_grant(
+        self,
+        mutation: RevokeProjectGrantMutation,
+    ) -> ProjectGrantResult:
+        """Revoke one exact current ProjectGrant atomically.
+
+        Args:
+            mutation: Authenticated optimistic revocation.
+
+        Returns:
+            The revoked grant snapshot.
+
+        """
+        ...
+
+
+class TokenRepository(Protocol):
+    """Persist Token lifecycle metadata without raw bearer material."""
+
+    def issue_pending_token(self, mutation: IssueTokenMutation) -> TokenResult:
+        """Persist one pending Token digest and metadata.
+
+        Args:
+            mutation: Authenticated pending-Token mutation.
+
+        Returns:
+            Non-secret pending Token metadata.
+
+        """
+        ...
+
+    def activate_token(self, mutation: ActivateTokenMutation) -> TokenResult:
+        """Activate one pending Token after its credential sink succeeds.
+
+        Args:
+            mutation: Authenticated activation mutation.
+
+        Returns:
+            Non-secret active Token metadata.
+
+        """
+        ...
+
+    def list_tokens(self, command: ListTokens) -> TokenPage:
+        """List one stable page of visible Token metadata.
+
+        Args:
+            command: Authenticated self or administrator list query.
+
+        Returns:
+            Non-secret Token page.
+
+        """
+        ...
+
+    def revoke_token(self, mutation: RevokeTokenMutation) -> TokenResult:
+        """Monotonically revoke one visible Token.
+
+        Args:
+            mutation: Authenticated revocation mutation.
+
+        Returns:
+            Non-secret revoked Token metadata.
+
+        """
+        ...
+
+    def recover_local(self, mutation: RecoverLocalMutation) -> CurrentIdentityResult:
+        """Perform the sole exact tokenless embedded recovery mutation.
+
+        Args:
+            mutation: Confirmed bootstrap Subject and replacement digest.
+
+        Returns:
+            Recovered bootstrap Human and active Token metadata.
+
+        """
+        ...
+
+
+class AuditRepository(Protocol):
+    """Read bounded append-only administrative audit history."""
+
+    def read_audit_events(self, command: ReadAuditEvents) -> AuditEventPage:
+        """Read one ascending administrator-authorized audit page.
+
+        Args:
+            command: Authenticated cursor query.
+
+        Returns:
+            Ascending AuditEvent page.
+
+        """
+        ...
+
+
+class IdentityRepository(
+    AuthenticationRepository,
+    AuthorizationRepository,
+    SubjectRepository,
+    GrantRepository,
+    TokenRepository,
+    AuditRepository,
+    Protocol,
+):
+    """Persist the complete Phase 5 identity and authorization surface."""
 
 
 class BootstrapRepository(Protocol):

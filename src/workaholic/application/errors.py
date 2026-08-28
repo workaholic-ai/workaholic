@@ -36,6 +36,16 @@ class ApplicationErrorCode(StrEnum):
     NO_TASK_AVAILABLE = "NO_TASK_AVAILABLE"
     TASK_LOCKED = "TASK_LOCKED"
     LEASE_LOST = "LEASE_LOST"
+    AUTHENTICATION_REQUIRED = "AUTHENTICATION_REQUIRED"
+    AUTHENTICATION_FAILED = "AUTHENTICATION_FAILED"
+    SUBJECT_NOT_FOUND = "SUBJECT_NOT_FOUND"
+    SUBJECT_HANDLE_CONFLICT = "SUBJECT_HANDLE_CONFLICT"
+    TOKEN_NOT_FOUND = "TOKEN_NOT_FOUND"  # noqa: S105 - error code, not a credential
+    GRANT_NOT_FOUND = "GRANT_NOT_FOUND"
+    IDENTITY_VERSION_CONFLICT = "IDENTITY_VERSION_CONFLICT"
+    LAST_INSTANCE_ADMIN = "LAST_INSTANCE_ADMIN"
+    LAST_PROJECT_OWNER = "LAST_PROJECT_OWNER"
+    CREDENTIAL_UNAVAILABLE = "CREDENTIAL_UNAVAILABLE"
     PERMISSION_DENIED = "PERMISSION_DENIED"
     SCHEMA_UNSUPPORTED = "SCHEMA_UNSUPPORTED"
     STORAGE_BUSY = "STORAGE_BUSY"
@@ -145,6 +155,46 @@ _ERROR_SPECS: Final = MappingProxyType(
         ),
         ApplicationErrorCode.LEASE_LOST: _ErrorSpec(
             ExitCategory.CONFLICT,
+            retryable=False,
+        ),
+        ApplicationErrorCode.AUTHENTICATION_REQUIRED: _ErrorSpec(
+            ExitCategory.AUTHORIZATION,
+            retryable=False,
+        ),
+        ApplicationErrorCode.AUTHENTICATION_FAILED: _ErrorSpec(
+            ExitCategory.AUTHORIZATION,
+            retryable=False,
+        ),
+        ApplicationErrorCode.SUBJECT_NOT_FOUND: _ErrorSpec(
+            ExitCategory.MISSING,
+            retryable=False,
+        ),
+        ApplicationErrorCode.SUBJECT_HANDLE_CONFLICT: _ErrorSpec(
+            ExitCategory.CONFLICT,
+            retryable=False,
+        ),
+        ApplicationErrorCode.TOKEN_NOT_FOUND: _ErrorSpec(
+            ExitCategory.MISSING,
+            retryable=False,
+        ),
+        ApplicationErrorCode.GRANT_NOT_FOUND: _ErrorSpec(
+            ExitCategory.MISSING,
+            retryable=False,
+        ),
+        ApplicationErrorCode.IDENTITY_VERSION_CONFLICT: _ErrorSpec(
+            ExitCategory.CONFLICT,
+            retryable=False,
+        ),
+        ApplicationErrorCode.LAST_INSTANCE_ADMIN: _ErrorSpec(
+            ExitCategory.CONFLICT,
+            retryable=False,
+        ),
+        ApplicationErrorCode.LAST_PROJECT_OWNER: _ErrorSpec(
+            ExitCategory.CONFLICT,
+            retryable=False,
+        ),
+        ApplicationErrorCode.CREDENTIAL_UNAVAILABLE: _ErrorSpec(
+            ExitCategory.OPERATIONAL,
             retryable=False,
         ),
         ApplicationErrorCode.PERMISSION_DENIED: _ErrorSpec(
@@ -464,6 +514,116 @@ class LeaseLostError(ApplicationError):
         super().__init__(
             ApplicationErrorCode.LEASE_LOST,
             "The Claim is no longer current.",
+        )
+
+
+class AuthenticationRequiredError(ApplicationError):
+    """Report that no credential source was available."""
+
+    def __init__(self) -> None:
+        """Initialize the exact missing-authentication failure."""
+        super().__init__(
+            ApplicationErrorCode.AUTHENTICATION_REQUIRED,
+            "Authentication is required.",
+        )
+
+
+class AuthenticationFailedError(ApplicationError):
+    """Collapse all invalid credential and Subject states safely."""
+
+    def __init__(self) -> None:
+        """Initialize the non-disclosing authentication failure."""
+        super().__init__(
+            ApplicationErrorCode.AUTHENTICATION_FAILED,
+            "The supplied credential is not valid.",
+        )
+
+
+class SubjectNotFoundError(ApplicationError):
+    """Report an administratively visible missing Subject."""
+
+    def __init__(self) -> None:
+        """Initialize the exact missing-Subject failure."""
+        super().__init__(
+            ApplicationErrorCode.SUBJECT_NOT_FOUND,
+            "The Subject was not found.",
+        )
+
+
+class SubjectHandleConflictError(ApplicationError):
+    """Report reuse of one immutable Instance-scoped Subject handle."""
+
+    def __init__(self) -> None:
+        """Initialize the exact Subject-handle conflict failure."""
+        super().__init__(
+            ApplicationErrorCode.SUBJECT_HANDLE_CONFLICT,
+            "The Subject handle is already in use.",
+        )
+
+
+class TokenNotFoundError(ApplicationError):
+    """Report an administratively visible missing Token metadata record."""
+
+    def __init__(self) -> None:
+        """Initialize the exact missing-Token failure."""
+        super().__init__(
+            ApplicationErrorCode.TOKEN_NOT_FOUND,
+            "The Token was not found.",
+        )
+
+
+class GrantNotFoundError(ApplicationError):
+    """Report an administratively visible missing ProjectGrant."""
+
+    def __init__(self) -> None:
+        """Initialize the exact missing-grant failure."""
+        super().__init__(
+            ApplicationErrorCode.GRANT_NOT_FOUND,
+            "The ProjectGrant was not found.",
+        )
+
+
+class IdentityVersionConflictError(ApplicationError):
+    """Report stale optimistic Subject or ProjectGrant metadata."""
+
+    def __init__(self) -> None:
+        """Initialize the exact identity-version conflict failure."""
+        super().__init__(
+            ApplicationErrorCode.IDENTITY_VERSION_CONFLICT,
+            "The identity or grant changed after the expected version.",
+        )
+
+
+class LastInstanceAdminError(ApplicationError):
+    """Reject a mutation that removes the final enabled administrator."""
+
+    def __init__(self) -> None:
+        """Initialize the exact last-administrator guard failure."""
+        super().__init__(
+            ApplicationErrorCode.LAST_INSTANCE_ADMIN,
+            "The Instance must retain an enabled administrator.",
+        )
+
+
+class LastProjectOwnerError(ApplicationError):
+    """Reject a mutation that removes the final enabled Project Owner."""
+
+    def __init__(self) -> None:
+        """Initialize the exact last-Owner guard failure."""
+        super().__init__(
+            ApplicationErrorCode.LAST_PROJECT_OWNER,
+            "The Project must retain an enabled Owner.",
+        )
+
+
+class CredentialUnavailableError(ApplicationError):
+    """Report a protected credential boundary that cannot be used safely."""
+
+    def __init__(self) -> None:
+        """Initialize the exact credential-store operational failure."""
+        super().__init__(
+            ApplicationErrorCode.CREDENTIAL_UNAVAILABLE,
+            "The credential store is unavailable.",
         )
 
 

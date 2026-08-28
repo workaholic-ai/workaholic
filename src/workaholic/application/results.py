@@ -21,8 +21,12 @@ from workaholic.domain import (
     PROGRESS_OBSERVATIONS_MAX_ITEMS,
     AttemptId,
     AttemptStatus,
+    AuditEvent,
+    AuditEventId,
+    AuditEventType,
     DomainValidationError,
     Instance,
+    InstanceId,
     JsonValue,
     ObservationKind,
     ProgressObservation,
@@ -46,6 +50,9 @@ from workaholic.domain import (
     TaskReadiness,
     TaskResult,
     TaskState,
+    TokenId,
+    TokenStatus,
+    TokenSummary,
     WorkspaceBinding,
     ready_task_ordering_key,
     validate_claim_attempt_consistency,
@@ -167,7 +174,9 @@ class ProjectCreationResult(_ResultModel):
 
         """
         if (
-            self.grant.project_id != self.project.id
+            self.grant.instance_id != self.project.instance_id
+            or self.grant.created_at != self.project.created_at
+            or self.grant.project_id != self.project.id
             or self.grant.role is not ProjectRole.OWNER
         ):
             message = "Project creation grant must own the created Project."
@@ -238,6 +247,343 @@ class ContextResult(_ResultModel):
             message = "Workspace root must remain within its context directory."
             raise ValueError(message)
         return self
+
+
+class CurrentIdentityResult(_ResultModel):
+    """Authenticated Subject and active non-secret Token metadata."""
+
+    subject: Subject
+    token: TokenSummary
+
+    @model_validator(mode="after")
+    def _validate_consistency(self) -> CurrentIdentityResult:
+        """Bind the active Token to the enabled Subject.
+
+        Returns:
+            The internally consistent identity result.
+
+        Raises:
+            ValueError: If Token ownership or active Subject state disagrees.
+
+        """
+        if (
+            self.token.subject_id != self.subject.id
+            or self.token.status is not TokenStatus.ACTIVE
+            or not self.subject.enabled
+        ):
+            message = "Current identity requires an active Token for the Subject."
+            raise ValueError(message)
+        return self
+
+
+class SubjectResult(_ResultModel):
+    """One closed Subject mutation outcome."""
+
+    subject: Subject
+
+
+class SubjectPage(_ResultModel):
+    """One stable handle-ordered page of Subjects."""
+
+    subjects: tuple[Subject, ...]
+    next_cursor: str | None
+
+    @field_validator("next_cursor", mode="before")
+    @classmethod
+    def _validate_next_cursor(cls, value: object) -> str | None:
+        """Validate a returned Phase 5 identity cursor.
+
+        Args:
+            value: Candidate cursor or null.
+
+        Returns:
+            The validated cursor or null.
+
+        """
+        return _validate_identity_next_cursor(value)
+
+    @model_validator(mode="after")
+    def _validate_order(self) -> SubjectPage:
+        """Require unique Subjects in strict `(handle, id)` order.
+
+        Returns:
+            The validated Subject page.
+
+        Raises:
+            ValueError: If order, identity, or Instance scope is inconsistent.
+
+        """
+        positions = tuple((item.handle, str(item.id)) for item in self.subjects)
+        if positions != tuple(sorted(positions)) or len(set(positions)) != len(
+            positions
+        ):
+            message = "Subject page must be strictly ordered by handle and ID."
+            raise ValueError(message)
+        if self.subjects and any(
+            item.instance_id != self.subjects[0].instance_id for item in self.subjects
+        ):
+            message = "Subject page entries must share one Instance."
+            raise ValueError(message)
+        return self
+
+
+class ProjectGrantResult(_ResultModel):
+    """One closed assigned or revoked ProjectGrant snapshot."""
+
+    grant: ProjectGrant
+
+
+class ProjectGrantPage(_ResultModel):
+    """One stable page of current grants for exactly one Project."""
+
+    grants: tuple[ProjectGrant, ...]
+    next_cursor: str | None
+
+    @field_validator("next_cursor", mode="before")
+    @classmethod
+    def _validate_next_cursor(cls, value: object) -> str | None:
+        """Validate a returned Phase 5 identity cursor.
+
+        Args:
+            value: Candidate cursor or null.
+
+        Returns:
+            The validated cursor or null.
+
+        """
+        return _validate_identity_next_cursor(value)
+
+    @model_validator(mode="after")
+    def _validate_scope(self) -> ProjectGrantPage:
+        """Require unique Subject grants in one Instance and Project.
+
+        Returns:
+            The validated grant page.
+
+        Raises:
+            ValueError: If scopes or Subject identities disagree.
+
+        """
+        if not self.grants:
+            return self
+        first = self.grants[0]
+        subject_ids = tuple(grant.subject_id for grant in self.grants)
+        if len(set(subject_ids)) != len(subject_ids) or any(
+            grant.instance_id != first.instance_id
+            or grant.project_id != first.project_id
+            for grant in self.grants
+        ):
+            message = "ProjectGrant page entries must be unique in one Project."
+            raise ValueError(message)
+        return self
+
+
+class TokenResult(_ResultModel):
+    """One closed non-secret Token lifecycle outcome."""
+
+    token: TokenSummary
+
+
+class TokenPage(_ResultModel):
+    """One stable creation-ordered page of non-secret Token metadata."""
+
+    tokens: tuple[TokenSummary, ...]
+    next_cursor: str | None
+
+    @field_validator("next_cursor", mode="before")
+    @classmethod
+    def _validate_next_cursor(cls, value: object) -> str | None:
+        """Validate a returned Phase 5 identity cursor.
+
+        Args:
+            value: Candidate cursor or null.
+
+        Returns:
+            The validated cursor or null.
+
+        """
+        return _validate_identity_next_cursor(value)
+
+    @model_validator(mode="after")
+    def _validate_order(self) -> TokenPage:
+        """Require unique Tokens in strict `(created_at, id)` order.
+
+        Returns:
+            The validated Token page.
+
+        Raises:
+            ValueError: If ordering or target Subject scope disagrees.
+
+        """
+        positions = tuple((item.created_at, str(item.id)) for item in self.tokens)
+        if positions != tuple(sorted(positions)) or len(set(positions)) != len(
+            positions
+        ):
+            message = "Token page must be strictly ordered by creation time and ID."
+            raise ValueError(message)
+        if self.tokens and any(
+            item.subject_id != self.tokens[0].subject_id for item in self.tokens
+        ):
+            message = "Token page entries must share one target Subject."
+            raise ValueError(message)
+        return self
+
+
+class AuditEventResult(_ResultModel):
+    """One closed serializable administrative AuditEvent."""
+
+    id: AuditEventId
+    cursor: int
+    instance_id: InstanceId
+    actor_subject_id: SubjectId
+    actor_kind: SubjectKind
+    actor_token_id: TokenId | None
+    request_id: RequestId
+    event_type: AuditEventType
+    occurred_at: datetime
+    payload: Mapping[str, JsonValue]
+
+    @field_serializer("payload")
+    def _serialize_payload(
+        self,
+        value: Mapping[str, JsonValue],
+    ) -> dict[str, object]:
+        """Serialize a detached JSON-compatible audit payload.
+
+        Args:
+            value: Recursively frozen domain payload.
+
+        Returns:
+            A mutable detached representation for serialization only.
+
+        """
+        return {key: _mutable_json_value(item) for key, item in value.items()}
+
+    @model_validator(mode="after")
+    def _validate_event(self) -> AuditEventResult:
+        """Reconstruct the domain event and retain its frozen payload.
+
+        Returns:
+            The validated flat audit event.
+
+        """
+        event = AuditEvent(
+            id=self.id,
+            cursor=self.cursor,
+            instance_id=self.instance_id,
+            actor_subject_id=self.actor_subject_id,
+            actor_kind=self.actor_kind,
+            actor_token_id=self.actor_token_id,
+            request_id=self.request_id,
+            event_type=self.event_type,
+            occurred_at=self.occurred_at,
+            payload=self.payload,
+        )
+        object.__setattr__(self, "payload", event.payload)
+        return self
+
+
+class AuditEventPage(_ResultModel):
+    """One polling-safe ascending administrative AuditEvent page."""
+
+    events: tuple[AuditEventResult, ...]
+    next_cursor: int
+
+    @field_validator("next_cursor", mode="before")
+    @classmethod
+    def _validate_next_cursor(cls, value: object) -> int:
+        """Validate a nonnegative Instance audit cursor.
+
+        Args:
+            value: Candidate cursor.
+
+        Returns:
+            The validated nonnegative integer.
+
+        Raises:
+            DomainValidationError: If the cursor is not a real nonnegative int.
+
+        """
+        if type(value) is not int or value < 0:
+            message = "AuditEvent next_cursor must be a nonnegative integer."
+            raise DomainValidationError(message)
+        return value
+
+    @model_validator(mode="after")
+    def _validate_order(self) -> AuditEventPage:
+        """Require strict ascending cursors within one Instance.
+
+        Returns:
+            The validated audit page.
+
+        Raises:
+            ValueError: If cursor order, Instance scope, or final cursor differs.
+
+        """
+        if not self.events:
+            return self
+        cursors = tuple(event.cursor for event in self.events)
+        if (
+            cursors != tuple(sorted(cursors))
+            or len(set(cursors)) != len(cursors)
+            or self.next_cursor != cursors[-1]
+            or any(
+                event.instance_id != self.events[0].instance_id for event in self.events
+            )
+        ):
+            message = "AuditEvent page order, scope, or next cursor is invalid."
+            raise ValueError(message)
+        return self
+
+
+class CredentialLogoutResult(_ResultModel):
+    """Closed local Human credential-removal result."""
+
+    profile: str
+    credential_stored: Literal[False] = False
+
+    @field_validator("profile", mode="before")
+    @classmethod
+    def _validate_profile(cls, value: object) -> str:
+        """Validate the trusted profile whose credential was removed.
+
+        Args:
+            value: Candidate profile name.
+
+        Returns:
+            The validated profile name.
+
+        """
+        return validate_profile_name(value)
+
+
+def _validate_identity_next_cursor(value: object) -> str | None:
+    """Validate one returned opaque Phase 5 continuation cursor.
+
+    Args:
+        value: Candidate cursor or null.
+
+    Returns:
+        The validated cursor or null.
+
+    Raises:
+        DomainValidationError: If the cursor is malformed or unbounded.
+
+    """
+    if value is None:
+        return None
+    if (
+        not isinstance(value, str)
+        or not value.startswith("v5.")
+        or value != value.strip()
+        or len(value) > _CURSOR_MAX_LENGTH
+        or any(
+            character.isspace() or not character.isprintable() for character in value
+        )
+    ):
+        message = "Identity next_cursor must be a bounded v5 cursor or null."
+        raise DomainValidationError(message)
+    return value
 
 
 class TaskDetails(_ResultModel):
@@ -968,8 +1314,12 @@ def _validate_identity_consistency(
         ValueError: If any entity or authorization relationship is inconsistent.
 
     """
-    if project.instance_id != instance.id:
-        message = "Project does not belong to the selected Instance."
+    if (
+        project.instance_id != instance.id
+        or subject.instance_id != instance.id
+        or grant.instance_id != instance.id
+    ):
+        message = "Identity graph does not belong to the selected Instance."
         raise ValueError(message)
     subject_kind: object = subject.kind
     if (
