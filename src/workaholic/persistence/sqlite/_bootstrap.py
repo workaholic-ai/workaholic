@@ -29,6 +29,7 @@ from workaholic.persistence.sqlite._records import (
     parse_timestamp,
     project_from_row,
     require_boolean,
+    require_integer,
     require_text,
     serialize_timestamp,
 )
@@ -308,15 +309,22 @@ def _insert_bootstrap_graph(
     connection.execute(
         """
         INSERT INTO subjects (
-            id, kind, display_name, enabled, is_instance_admin
-        ) VALUES (?, ?, ?, ?, ?)
+            id, instance_id, kind, handle, display_name, enabled,
+            is_instance_admin, version, created_by, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             str(mutation.subject_id),
+            str(mutation.instance_id),
             SubjectKind.HUMAN.value,
+            _LOCAL_SUBJECT_HANDLE,
             _LOCAL_SUBJECT_DISPLAY_NAME,
             1,
             1,
+            1,
+            str(mutation.subject_id),
+            timestamp,
+            timestamp,
         ),
     )
     connection.execute(
@@ -336,13 +344,20 @@ def _insert_bootstrap_graph(
     )
     connection.execute(
         """
-        INSERT INTO project_grants (subject_id, project_id, role)
-        VALUES (?, ?, ?)
+        INSERT INTO project_grants (
+            instance_id, subject_id, project_id, role, version, granted_by,
+            created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
+            str(mutation.instance_id),
             str(mutation.subject_id),
             str(mutation.project_id),
             ProjectRole.OWNER.value,
+            1,
+            str(mutation.subject_id),
+            timestamp,
+            timestamp,
         ),
     )
 
@@ -385,7 +400,9 @@ def _load_bootstrap_graph(
 
     grant_rows = connection.execute(
         """
-        SELECT subject_id, project_id, role
+        SELECT
+            instance_id, subject_id, project_id, role, version, granted_by,
+            created_at, updated_at
         FROM project_grants
         WHERE project_id = ?
         ORDER BY subject_id
@@ -395,10 +412,12 @@ def _load_bootstrap_graph(
     ).fetchall()
     if len(grant_rows) != 1:
         raise PermissionDeniedError
-    subject_id = require_text(grant_rows[0][0])
+    subject_id = require_text(grant_rows[0][1])
     subject_rows = connection.execute(
         """
-        SELECT id, kind, display_name, enabled, is_instance_admin
+        SELECT
+            id, instance_id, kind, handle, display_name, enabled,
+            is_instance_admin, version, created_by, created_at, updated_at
         FROM subjects
         ORDER BY id
         LIMIT 2
@@ -407,10 +426,10 @@ def _load_bootstrap_graph(
     if len(subject_rows) != 1 or require_text(subject_rows[0][0]) != subject_id:
         raise PermissionDeniedError
     if (
-        require_text(subject_rows[0][1]) != SubjectKind.HUMAN.value
-        or require_boolean(subject_rows[0][3]) is not True
-        or require_boolean(subject_rows[0][4]) is not True
-        or require_text(grant_rows[0][2]) != ProjectRole.OWNER.value
+        require_text(subject_rows[0][2]) != SubjectKind.HUMAN.value
+        or require_boolean(subject_rows[0][5]) is not True
+        or require_boolean(subject_rows[0][6]) is not True
+        or require_text(grant_rows[0][3]) != ProjectRole.OWNER.value
     ):
         raise PermissionDeniedError
 
@@ -421,26 +440,26 @@ def _load_bootstrap_graph(
     project = project_from_row(project_rows[0])
     subject = Subject(
         id=SubjectId(subject_id),
-        instance_id=instance.id,
-        kind=SubjectKind(require_text(subject_rows[0][1])),
-        handle=_LOCAL_SUBJECT_HANDLE,
-        display_name=require_text(subject_rows[0][2]),
-        enabled=require_boolean(subject_rows[0][3]),
-        is_instance_admin=require_boolean(subject_rows[0][4]),
-        version=1,
-        created_by=SubjectId(subject_id),
-        created_at=instance.created_at,
-        updated_at=instance.created_at,
+        instance_id=InstanceId(require_text(subject_rows[0][1])),
+        kind=SubjectKind(require_text(subject_rows[0][2])),
+        handle=require_text(subject_rows[0][3]),
+        display_name=require_text(subject_rows[0][4]),
+        enabled=require_boolean(subject_rows[0][5]),
+        is_instance_admin=require_boolean(subject_rows[0][6]),
+        version=require_integer(subject_rows[0][7]),
+        created_by=SubjectId(require_text(subject_rows[0][8])),
+        created_at=parse_timestamp(subject_rows[0][9]),
+        updated_at=parse_timestamp(subject_rows[0][10]),
     )
     grant = ProjectGrant(
-        instance_id=instance.id,
-        subject_id=SubjectId(require_text(grant_rows[0][0])),
-        project_id=ProjectId(require_text(grant_rows[0][1])),
-        role=ProjectRole(require_text(grant_rows[0][2])),
-        version=1,
-        granted_by=SubjectId(subject_id),
-        created_at=instance.created_at,
-        updated_at=instance.created_at,
+        instance_id=InstanceId(require_text(grant_rows[0][0])),
+        subject_id=SubjectId(require_text(grant_rows[0][1])),
+        project_id=ProjectId(require_text(grant_rows[0][2])),
+        role=ProjectRole(require_text(grant_rows[0][3])),
+        version=require_integer(grant_rows[0][4]),
+        granted_by=SubjectId(require_text(grant_rows[0][5])),
+        created_at=parse_timestamp(grant_rows[0][6]),
+        updated_at=parse_timestamp(grant_rows[0][7]),
     )
     return BootstrapResult(
         instance=instance,

@@ -194,7 +194,9 @@ def test_first_bootstrap_creates_exact_local_identity_without_secrets_or_events(
                 "SELECT name FROM sqlite_schema WHERE type = 'table'"
             )
         }
-        assert not {"tokens", "credentials", "secrets"}.intersection(table_names)
+        assert "tokens" in table_names
+        assert not {"credentials", "secrets"}.intersection(table_names)
+        assert connection.execute("SELECT count(*) FROM tokens").fetchone() == (0,)
 
 
 def test_bootstrap_persists_and_reloads_normalized_project_name(
@@ -460,10 +462,24 @@ def test_ambiguous_identity_or_subject_state_is_never_selected(
             connection.execute(
                 """
                 INSERT INTO subjects (
-                    id, kind, display_name, enabled, is_instance_admin
-                ) VALUES (?, ?, ?, ?, ?)
+                    id, instance_id, kind, handle, display_name, enabled,
+                    is_instance_admin, version, created_by, created_at,
+                    updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
-                ("sub_extra", "human", "Extra operator", 1, 1),
+                (
+                    "sub_extra",
+                    "ins_first",
+                    "human",
+                    "extra-operator",
+                    "Extra operator",
+                    1,
+                    1,
+                    1,
+                    "sub_extra",
+                    _CANONICAL_NOW,
+                    _CANONICAL_NOW,
+                ),
             )
 
     expected_error = (

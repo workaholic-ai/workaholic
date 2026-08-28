@@ -469,17 +469,41 @@ def test_foreign_human_claim_locks_before_the_version_precondition(
         connection.execute(
             """
             INSERT INTO subjects (
-                id, kind, display_name, enabled, is_instance_admin
-            ) VALUES (?, 'human', 'Other owner', 1, 0)
+                id, instance_id, kind, handle, display_name, enabled,
+                is_instance_admin, version, created_by, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            (str(other),),
+            (
+                str(other),
+                "ins_claim_locks",
+                "human",
+                "other-owner",
+                "Other owner",
+                1,
+                0,
+                1,
+                str(_SUBJECT_ID),
+                serialize_timestamp(_CREATED_AT),
+                serialize_timestamp(_CREATED_AT),
+            ),
         )
         connection.execute(
             """
-            INSERT INTO project_grants (subject_id, project_id, role)
-            VALUES (?, ?, 'owner')
+            INSERT INTO project_grants (
+                instance_id, subject_id, project_id, role, version, granted_by,
+                created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            (str(other), str(target.project_id)),
+            (
+                "ins_claim_locks",
+                str(other),
+                str(target.project_id),
+                "owner",
+                1,
+                str(_SUBJECT_ID),
+                serialize_timestamp(_CREATED_AT),
+                serialize_timestamp(_CREATED_AT),
+            ),
         )
     _seed_owner(repository, target, "human", subject_id=other)
     before = _snapshot(repository.database_path)

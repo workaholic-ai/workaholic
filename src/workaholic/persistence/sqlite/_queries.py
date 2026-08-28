@@ -44,6 +44,7 @@ from workaholic.persistence.sqlite._records import (
     parse_timestamp,
     project_from_row,
     require_boolean,
+    require_integer,
     require_text,
 )
 from workaholic.persistence.sqlite._task_records import task_from_row
@@ -53,7 +54,6 @@ from workaholic.persistence.sqlite.errors import StorageUnavailableError
 if TYPE_CHECKING:
     import sqlite3
     from collections.abc import Mapping, Sequence
-    from datetime import datetime
     from pathlib import Path
 
     from workaholic.domain import Project
@@ -72,7 +72,7 @@ _CURSOR_KEYS: Final = frozenset(
 )
 _CURSOR_VERSION: Final = 2
 _MAX_SQLITE_INTEGER: Final = 9_223_372_036_854_775_807
-_SUBJECT_FIELD_COUNT: Final = 5
+_SUBJECT_FIELD_COUNT: Final = 11
 _PROJECT_ORDERED_TASK_FIELD_COUNT: Final = 19
 _ALL_PROJECT_POSITION_FIELD_COUNT: Final = 2
 _Selection = Literal["project", "all_projects"]
@@ -126,9 +126,11 @@ def get_local_status(
                 SELECT
                     i.id, i.created_at,
                     p.id, p.instance_id, p.key, p.name, p.created_at,
-                    s.id, s.kind, s.display_name, s.enabled,
-                    s.is_instance_admin,
-                    g.subject_id, g.project_id, g.role
+                    s.id, s.instance_id, s.kind, s.handle, s.display_name,
+                    s.enabled, s.is_instance_admin, s.version, s.created_by,
+                    s.created_at, s.updated_at,
+                    g.instance_id, g.subject_id, g.project_id, g.role,
+                    g.version, g.granted_by, g.created_at, g.updated_at
                 FROM instances AS i
                 JOIN projects AS p ON p.instance_id = i.id
                 LEFT JOIN subjects AS s ON s.id = ?
@@ -145,31 +147,34 @@ def get_local_status(
             if row is None:
                 raise NotInitializedError
             _require_owner_values(
-                kind=row[8],
-                enabled=row[10],
-                is_instance_admin=row[11],
-                role=row[14],
+                kind=row[9],
+                enabled=row[12],
+                is_instance_admin=row[13],
+                role=row[21],
             )
             instance = Instance(
                 id=InstanceId(require_text(row[0])),
                 created_at=parse_timestamp(row[1]),
             )
             project = project_from_row(row[2:7])
-            subject = _subject_from_values(
-                row[7:12],
-                instance_id=instance.id,
-                created_at=instance.created_at,
-            )
+            subject = _subject_from_values(row[7:18])
             grant = ProjectGrant(
-                instance_id=instance.id,
-                subject_id=SubjectId(require_text(row[12])),
-                project_id=ProjectId(require_text(row[13])),
-                role=ProjectRole(require_text(row[14])),
-                version=1,
-                granted_by=subject.id,
-                created_at=project.created_at,
-                updated_at=project.created_at,
+                instance_id=InstanceId(require_text(row[18])),
+                subject_id=SubjectId(require_text(row[19])),
+                project_id=ProjectId(require_text(row[20])),
+                role=ProjectRole(require_text(row[21])),
+                version=row[22],
+                granted_by=SubjectId(require_text(row[23])),
+                created_at=parse_timestamp(row[24]),
+                updated_at=parse_timestamp(row[25]),
             )
+            if (
+                subject.instance_id != instance.id
+                or grant.instance_id != instance.id
+                or grant.subject_id != subject.id
+                or grant.project_id != project.id
+            ):
+                raise StorageUnavailableError
             return StatusResult(
                 profile=candidate.profile,
                 instance=instance,
@@ -692,16 +697,11 @@ def _require_owner_values(
 
 def _subject_from_values(
     value: tuple[object, ...],
-    *,
-    instance_id: InstanceId,
-    created_at: datetime,
 ) -> Subject:
     """Deserialize one Subject row in the canonical selected-field order.
 
     Args:
         value: SQLite Subject values.
-        instance_id: Owning Instance identity.
-        created_at: Legacy schema creation timestamp used until schema 5.
 
     Returns:
         Validated Subject.
@@ -715,16 +715,16 @@ def _subject_from_values(
     subject_id = SubjectId(require_text(value[0]))
     return Subject(
         id=subject_id,
-        instance_id=instance_id,
-        kind=SubjectKind(require_text(value[1])),
-        handle="local-operator",
-        display_name=require_text(value[2]),
-        enabled=require_boolean(value[3]),
-        is_instance_admin=require_boolean(value[4]),
-        version=1,
-        created_by=subject_id,
-        created_at=created_at,
-        updated_at=created_at,
+        instance_id=InstanceId(require_text(value[1])),
+        kind=SubjectKind(require_text(value[2])),
+        handle=require_text(value[3]),
+        display_name=require_text(value[4]),
+        enabled=require_boolean(value[5]),
+        is_instance_admin=require_boolean(value[6]),
+        version=require_integer(value[7]),
+        created_by=SubjectId(require_text(value[8])),
+        created_at=parse_timestamp(value[9]),
+        updated_at=parse_timestamp(value[10]),
     )
 
 

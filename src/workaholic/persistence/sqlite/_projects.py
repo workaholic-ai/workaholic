@@ -15,6 +15,7 @@ from workaholic.application import (
     ProjectKeyConflictError,
 )
 from workaholic.domain import (
+    InstanceId,
     Project,
     ProjectGrant,
     ProjectId,
@@ -25,10 +26,12 @@ from workaholic.domain import (
 from workaholic.persistence.sqlite._records import (
     PROJECT_FIELD_SET,
     canonical_json,
+    parse_timestamp,
     project_from_mapping,
     project_from_row,
     project_to_mapping,
     require_boolean,
+    require_integer,
     require_text,
     serialize_timestamp,
 )
@@ -149,10 +152,21 @@ def _create_project_in_transaction(
     )
     connection.execute(
         """
-        INSERT INTO project_grants (subject_id, project_id, role)
-        VALUES (?, ?, ?)
+        INSERT INTO project_grants (
+            instance_id, subject_id, project_id, role, version, granted_by,
+            created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         """,
-        (str(grant.subject_id), str(grant.project_id), grant.role.value),
+        (
+            str(grant.instance_id),
+            str(grant.subject_id),
+            str(grant.project_id),
+            grant.role.value,
+            grant.version,
+            str(grant.granted_by),
+            serialize_timestamp(grant.created_at),
+            serialize_timestamp(grant.updated_at),
+        ),
     )
     result = ProjectCreationResult(project=project, grant=grant)
     _record_idempotent_project(
@@ -349,7 +363,9 @@ def _load_project_result(
     ).fetchall()
     grant_rows = connection.execute(
         """
-        SELECT subject_id, project_id, role
+        SELECT
+            instance_id, subject_id, project_id, role, version, granted_by,
+            created_at, updated_at
         FROM project_grants
         WHERE subject_id = ? AND project_id = ?
         LIMIT 2
@@ -362,16 +378,20 @@ def _load_project_result(
     if project != expected_project:
         raise StorageUnavailableError
     grant = ProjectGrant(
-        instance_id=expected_project.instance_id,
-        subject_id=SubjectId(require_text(grant_rows[0][0])),
-        project_id=ProjectId(require_text(grant_rows[0][1])),
-        role=ProjectRole(require_text(grant_rows[0][2])),
-        version=1,
-        granted_by=subject_id,
-        created_at=expected_project.created_at,
-        updated_at=expected_project.created_at,
+        instance_id=InstanceId(require_text(grant_rows[0][0])),
+        subject_id=SubjectId(require_text(grant_rows[0][1])),
+        project_id=ProjectId(require_text(grant_rows[0][2])),
+        role=ProjectRole(require_text(grant_rows[0][3])),
+        version=require_integer(grant_rows[0][4]),
+        granted_by=SubjectId(require_text(grant_rows[0][5])),
+        created_at=parse_timestamp(grant_rows[0][6]),
+        updated_at=parse_timestamp(grant_rows[0][7]),
     )
-    if grant.subject_id != subject_id or grant.project_id != project.id:
+    if (
+        grant.instance_id != project.instance_id
+        or grant.subject_id != subject_id
+        or grant.project_id != project.id
+    ):
         raise StorageUnavailableError
     return ProjectCreationResult(project=project, grant=grant)
 

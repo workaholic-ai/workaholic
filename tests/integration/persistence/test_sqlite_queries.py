@@ -209,10 +209,21 @@ def _add_second_project(repository: SQLiteRepository) -> ProjectId:
         )
         connection.execute(
             """
-            INSERT INTO project_grants (subject_id, project_id, role)
-            VALUES (?, ?, ?)
+            INSERT INTO project_grants (
+                instance_id, subject_id, project_id, role, version, granted_by,
+                created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            ("sub_local", str(project_id), "owner"),
+            (
+                "ins_local",
+                "sub_local",
+                str(project_id),
+                "owner",
+                1,
+                "sub_local",
+                _CANONICAL_NOW,
+                _CANONICAL_NOW,
+            ),
         )
     return project_id
 
@@ -347,15 +358,41 @@ def test_project_lookup_is_exact_authorized_and_non_mutating(
         connection.execute(
             """
             INSERT INTO subjects (
-                id, kind, display_name, enabled, is_instance_admin
-            ) VALUES ('sub_other', 'human', 'Other operator', 1, 1)
-            """
+                id, instance_id, kind, handle, display_name, enabled,
+                is_instance_admin, version, created_by, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "sub_other",
+                "ins_local",
+                "human",
+                "other-operator",
+                "Other operator",
+                1,
+                1,
+                1,
+                "sub_local",
+                _CANONICAL_NOW,
+                _CANONICAL_NOW,
+            ),
         )
         connection.execute(
             """
-            INSERT INTO project_grants (subject_id, project_id, role)
-            VALUES ('sub_other', 'prj_beta', 'owner')
-            """
+            INSERT INTO project_grants (
+                instance_id, subject_id, project_id, role, version, granted_by,
+                created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "ins_local",
+                "sub_other",
+                "prj_beta",
+                "owner",
+                1,
+                "sub_local",
+                _CANONICAL_NOW,
+                _CANONICAL_NOW,
+            ),
         )
     with pytest.raises(ProjectNotFoundError):
         _read_without_mutation(
@@ -398,9 +435,21 @@ def test_all_project_pagination_is_stable_gap_tolerant_and_complete(
         )
         connection.execute(
             """
-            INSERT INTO project_grants (subject_id, project_id, role)
-            VALUES ('sub_local', 'prj_empty', 'owner')
-            """
+            INSERT INTO project_grants (
+                instance_id, subject_id, project_id, role, version, granted_by,
+                created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "ins_local",
+                "sub_local",
+                "prj_empty",
+                "owner",
+                1,
+                "sub_local",
+                _CANONICAL_NOW,
+                _CANONICAL_NOW,
+            ),
         )
     acme_tasks = tuple(
         repository.create_task(_task_mutation(f"acme_{number}", seconds=number))
@@ -903,16 +952,53 @@ def test_cursors_reject_cross_binding_and_cross_selection_reuse(
         connection.execute(
             """
             INSERT INTO subjects (
-                id, kind, display_name, enabled, is_instance_admin
-            ) VALUES ('sub_other', 'human', 'Other operator', 1, 1)
-            """
+                id, instance_id, kind, handle, display_name, enabled,
+                is_instance_admin, version, created_by, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "sub_other",
+                "ins_local",
+                "human",
+                "other-operator",
+                "Other operator",
+                1,
+                1,
+                1,
+                "sub_local",
+                _CANONICAL_NOW,
+                _CANONICAL_NOW,
+            ),
         )
         connection.executemany(
             """
-            INSERT INTO project_grants (subject_id, project_id, role)
-            VALUES ('sub_other', ?, 'owner')
+            INSERT INTO project_grants (
+                instance_id, subject_id, project_id, role, version, granted_by,
+                created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            (("prj_acme",), ("prj_beta",)),
+            (
+                (
+                    "ins_local",
+                    "sub_other",
+                    "prj_acme",
+                    "owner",
+                    1,
+                    "sub_local",
+                    _CANONICAL_NOW,
+                    _CANONICAL_NOW,
+                ),
+                (
+                    "ins_local",
+                    "sub_other",
+                    "prj_beta",
+                    "owner",
+                    1,
+                    "sub_local",
+                    _CANONICAL_NOW,
+                    _CANONICAL_NOW,
+                ),
+            ),
         )
 
     invalid_operations: tuple[Callable[[], object], ...] = (
