@@ -42,6 +42,7 @@ if TYPE_CHECKING:
 
 _BOOTSTRAP_OPERATION: Final = "bootstrap.local_project"
 _BOOTSTRAP_SUBJECT_SCOPE: Final = "local-bootstrap"
+_LOCAL_SUBJECT_HANDLE: Final = "local-operator"
 _LOCAL_SUBJECT_DISPLAY_NAME: Final = "Local operator"
 _BOOTSTRAP_OUTCOME_KEYS: Final = frozenset(("instance_id", "project_id", "subject_id"))
 
@@ -420,15 +421,26 @@ def _load_bootstrap_graph(
     project = project_from_row(project_rows[0])
     subject = Subject(
         id=SubjectId(subject_id),
+        instance_id=instance.id,
         kind=SubjectKind(require_text(subject_rows[0][1])),
+        handle=_LOCAL_SUBJECT_HANDLE,
         display_name=require_text(subject_rows[0][2]),
         enabled=require_boolean(subject_rows[0][3]),
         is_instance_admin=require_boolean(subject_rows[0][4]),
+        version=1,
+        created_by=SubjectId(subject_id),
+        created_at=instance.created_at,
+        updated_at=instance.created_at,
     )
     grant = ProjectGrant(
+        instance_id=instance.id,
         subject_id=SubjectId(require_text(grant_rows[0][0])),
         project_id=ProjectId(require_text(grant_rows[0][1])),
         role=ProjectRole(require_text(grant_rows[0][2])),
+        version=1,
+        granted_by=SubjectId(subject_id),
+        created_at=instance.created_at,
+        updated_at=instance.created_at,
     )
     return BootstrapResult(
         instance=instance,

@@ -54,15 +54,26 @@ def _result() -> BootstrapResult:
     )
     subject = Subject(
         id=SubjectId("sub_local"),
+        instance_id=instance.id,
         kind=SubjectKind.HUMAN,
+        handle="local-operator",
         display_name="Local operator",
         enabled=True,
         is_instance_admin=True,
+        version=1,
+        created_by=SubjectId("sub_local"),
+        created_at=_NOW,
+        updated_at=_NOW,
     )
     grant = ProjectGrant(
+        instance_id=instance.id,
         subject_id=subject.id,
         project_id=project.id,
         role=ProjectRole.OWNER,
+        version=1,
+        granted_by=subject.id,
+        created_at=_NOW,
+        updated_at=_NOW,
     )
     return BootstrapResult(
         instance=instance,

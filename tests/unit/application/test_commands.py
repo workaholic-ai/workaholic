@@ -113,10 +113,16 @@ def _subject(
     """
     return Subject(
         id=SubjectId(value),
+        instance_id=InstanceId("ins_local"),
         kind=SubjectKind.HUMAN,
+        handle="local-operator",
         display_name="Local operator",
         enabled=enabled,
         is_instance_admin=is_instance_admin,
+        version=1,
+        created_by=SubjectId(value),
+        created_at=_NOW,
+        updated_at=_NOW,
     )
 
 
@@ -136,9 +142,14 @@ def _grant(
 
     """
     return ProjectGrant(
+        instance_id=InstanceId("ins_local"),
         subject_id=subject_id or SubjectId("sub_local"),
         project_id=project_id or ProjectId("prj_acme"),
         role=ProjectRole.OWNER,
+        version=1,
+        granted_by=SubjectId("sub_local"),
+        created_at=_NOW,
+        updated_at=_NOW,
     )
 
 

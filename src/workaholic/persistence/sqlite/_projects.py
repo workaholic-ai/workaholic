@@ -138,9 +138,14 @@ def _create_project_in_transaction(
         ),
     )
     grant = ProjectGrant(
+        instance_id=mutation.instance_id,
         subject_id=mutation.actor_subject_id,
         project_id=project.id,
         role=ProjectRole.OWNER,
+        version=1,
+        granted_by=mutation.actor_subject_id,
+        created_at=mutation.occurred_at,
+        updated_at=mutation.occurred_at,
     )
     connection.execute(
         """
@@ -357,9 +362,14 @@ def _load_project_result(
     if project != expected_project:
         raise StorageUnavailableError
     grant = ProjectGrant(
+        instance_id=expected_project.instance_id,
         subject_id=SubjectId(require_text(grant_rows[0][0])),
         project_id=ProjectId(require_text(grant_rows[0][1])),
         role=ProjectRole(require_text(grant_rows[0][2])),
+        version=1,
+        granted_by=subject_id,
+        created_at=expected_project.created_at,
+        updated_at=expected_project.created_at,
     )
     if grant.subject_id != subject_id or grant.project_id != project.id:
         raise StorageUnavailableError

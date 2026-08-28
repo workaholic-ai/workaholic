@@ -3,6 +3,58 @@
 from enum import StrEnum
 
 
+class SubjectKind(StrEnum):
+    """Kinds of independently operating identities."""
+
+    HUMAN = "human"
+    AGENT = "agent"
+
+
+class ProjectRole(StrEnum):
+    """Cumulative Project roles ordered from least to most privileged."""
+
+    VIEWER = "viewer"
+    AGENT = "agent"
+    OPERATOR = "operator"
+    OWNER = "owner"
+
+
+class Permission(StrEnum):
+    """Explicit permissions checked by domain authorization policy."""
+
+    VIEW_PROJECT = "project.view"
+    EXECUTE_AGENT = "project.execute_agent"
+    OPERATE_PROJECT = "project.operate"
+    MANAGE_PROJECT_GRANTS = "project.manage_grants"
+    MANAGE_INSTANCE = "instance.manage"
+
+
+class TokenStatus(StrEnum):
+    """Derived lifecycle status of one bearer Token."""
+
+    PENDING = "pending"
+    ACTIVE = "active"
+    EXPIRED = "expired"
+    REVOKED = "revoked"
+
+
+class AuditEventType(StrEnum):
+    """Append-only administrative event types."""
+
+    INSTANCE_BOOTSTRAPPED = "instance_bootstrapped"
+    PROJECT_CREATED = "project_created"
+    SUBJECT_CREATED = "subject_created"
+    SUBJECT_UPDATED = "subject_updated"
+    SUBJECT_ENABLED = "subject_enabled"
+    SUBJECT_DISABLED = "subject_disabled"
+    INSTANCE_ADMIN_GRANTED = "instance_admin_granted"
+    INSTANCE_ADMIN_REVOKED = "instance_admin_revoked"
+    PROJECT_GRANT_ASSIGNED = "project_grant_assigned"
+    PROJECT_GRANT_REVOKED = "project_grant_revoked"
+    TOKEN_ISSUED = "token_issued"  # noqa: S105 - event type, not a credential
+    TOKEN_REVOKED = "token_revoked"  # noqa: S105 - event type, not a credential
+
+
 class TaskState(StrEnum):
     """Persisted lifecycle states of a Task."""
 

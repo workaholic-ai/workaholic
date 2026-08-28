@@ -55,9 +55,14 @@ def _result() -> ProjectCreationResult:
     return ProjectCreationResult(
         project=project,
         grant=ProjectGrant(
+            instance_id=project.instance_id,
             subject_id=SubjectId("sub_local"),
             project_id=project.id,
             role=ProjectRole.OWNER,
+            version=1,
+            granted_by=SubjectId("sub_local"),
+            created_at=_NOW,
+            updated_at=_NOW,
         ),
     )
 

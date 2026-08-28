@@ -102,6 +102,26 @@ class SubjectId:
 
 
 @dataclass(frozen=True, slots=True)
+class TokenId:
+    """Opaque identity of one revocable bearer Token."""
+
+    value: str
+
+    def __post_init__(self) -> None:
+        """Validate the Token identifier at construction."""
+        _validate_identifier(self.value, prefix="tok_", label="Token ID")
+
+    def __str__(self) -> str:
+        """Return the serialized identifier.
+
+        Returns:
+            The opaque prefixed identifier.
+
+        """
+        return self.value
+
+
+@dataclass(frozen=True, slots=True)
 class TaskId:
     """Opaque canonical identity of one Task."""
 
@@ -130,6 +150,26 @@ class TaskEventId:
     def __post_init__(self) -> None:
         """Validate the TaskEvent identifier at construction."""
         _validate_identifier(self.value, prefix="evt_", label="TaskEvent ID")
+
+    def __str__(self) -> str:
+        """Return the serialized identifier.
+
+        Returns:
+            The opaque prefixed identifier.
+
+        """
+        return self.value
+
+
+@dataclass(frozen=True, slots=True)
+class AuditEventId:
+    """Opaque identity of one administrative AuditEvent."""
+
+    value: str
+
+    def __post_init__(self) -> None:
+        """Validate the AuditEvent identifier at construction."""
+        _validate_identifier(self.value, prefix="aev_", label="AuditEvent ID")
 
     def __str__(self) -> str:
         """Return the serialized identifier.

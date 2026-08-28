@@ -110,10 +110,16 @@ def subject() -> Subject:
     """
     return Subject(
         id=SubjectId("sub_local"),
+        instance_id=InstanceId("ins_local"),
         kind=SubjectKind.HUMAN,
+        handle="local-operator",
         display_name="Local operator",
         enabled=True,
         is_instance_admin=True,
+        version=1,
+        created_by=SubjectId("sub_local"),
+        created_at=_NOW,
+        updated_at=_NOW,
     )
 
 
@@ -155,9 +161,14 @@ def grant(selected_project: Project | None = None) -> ProjectGrant:
     """
     authorized_project = project() if selected_project is None else selected_project
     return ProjectGrant(
+        instance_id=authorized_project.instance_id,
         subject_id=subject().id,
         project_id=authorized_project.id,
         role=ProjectRole.OWNER,
+        version=1,
+        granted_by=subject().id,
+        created_at=authorized_project.created_at,
+        updated_at=authorized_project.created_at,
     )
 
 

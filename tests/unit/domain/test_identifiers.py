@@ -9,6 +9,7 @@ import pytest
 
 from workaholic.domain import (
     AttemptId,
+    AuditEventId,
     DomainValidationError,
     InstanceId,
     ProjectId,
@@ -17,10 +18,12 @@ from workaholic.domain import (
     SubjectId,
     TaskEventId,
     TaskId,
+    TokenId,
 )
 
 type _IdentifierType = (
     type[AttemptId]
+    | type[AuditEventId]
     | type[InstanceId]
     | type[ProjectId]
     | type[SubjectId]
@@ -28,10 +31,12 @@ type _IdentifierType = (
     | type[TaskEventId]
     | type[RequestId]
     | type[ResultId]
+    | type[TokenId]
 )
 
 _IDENTIFIER_CASES: tuple[tuple[_IdentifierType, str], ...] = (
     (AttemptId, "atm_"),
+    (AuditEventId, "aev_"),
     (InstanceId, "ins_"),
     (ProjectId, "prj_"),
     (SubjectId, "sub_"),
@@ -39,6 +44,7 @@ _IDENTIFIER_CASES: tuple[tuple[_IdentifierType, str], ...] = (
     (TaskEventId, "evt_"),
     (RequestId, "req_"),
     (ResultId, "res_"),
+    (TokenId, "tok_"),
 )
 
 

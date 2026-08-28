@@ -53,6 +53,7 @@ from workaholic.persistence.sqlite.errors import StorageUnavailableError
 if TYPE_CHECKING:
     import sqlite3
     from collections.abc import Mapping, Sequence
+    from datetime import datetime
     from pathlib import Path
 
     from workaholic.domain import Project
@@ -154,11 +155,20 @@ def get_local_status(
                 created_at=parse_timestamp(row[1]),
             )
             project = project_from_row(row[2:7])
-            subject = _subject_from_values(row[7:12])
+            subject = _subject_from_values(
+                row[7:12],
+                instance_id=instance.id,
+                created_at=instance.created_at,
+            )
             grant = ProjectGrant(
+                instance_id=instance.id,
                 subject_id=SubjectId(require_text(row[12])),
                 project_id=ProjectId(require_text(row[13])),
                 role=ProjectRole(require_text(row[14])),
+                version=1,
+                granted_by=subject.id,
+                created_at=project.created_at,
+                updated_at=project.created_at,
             )
             return StatusResult(
                 profile=candidate.profile,
@@ -680,11 +690,18 @@ def _require_owner_values(
         raise PermissionDeniedError
 
 
-def _subject_from_values(value: tuple[object, ...]) -> Subject:
+def _subject_from_values(
+    value: tuple[object, ...],
+    *,
+    instance_id: InstanceId,
+    created_at: datetime,
+) -> Subject:
     """Deserialize one Subject row in the canonical selected-field order.
 
     Args:
         value: SQLite Subject values.
+        instance_id: Owning Instance identity.
+        created_at: Legacy schema creation timestamp used until schema 5.
 
     Returns:
         Validated Subject.
@@ -695,12 +712,19 @@ def _subject_from_values(value: tuple[object, ...]) -> Subject:
     """
     if len(value) != _SUBJECT_FIELD_COUNT:
         raise StorageUnavailableError
+    subject_id = SubjectId(require_text(value[0]))
     return Subject(
-        id=SubjectId(require_text(value[0])),
+        id=subject_id,
+        instance_id=instance_id,
         kind=SubjectKind(require_text(value[1])),
+        handle="local-operator",
         display_name=require_text(value[2]),
         enabled=require_boolean(value[3]),
         is_instance_admin=require_boolean(value[4]),
+        version=1,
+        created_by=subject_id,
+        created_at=created_at,
+        updated_at=created_at,
     )
 
 

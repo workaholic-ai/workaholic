@@ -8,23 +8,36 @@ import unicodedata
 from collections.abc import Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from enum import StrEnum
 from pathlib import PureWindowsPath
-from typing import Protocol, runtime_checkable
+from typing import Protocol, cast, runtime_checkable
 from urllib.parse import urlsplit
 
 from workaholic.domain.enums import (
     ApprovalRequirement,
     AttemptStatus,
+    AuditEventType,
+    Permission,
+    ProjectRole,
     ReadinessReason,
+    SubjectKind,
     TaskOperationalView,
     TaskState,
     TaskTransition,
+    TokenStatus,
 )
 from workaholic.domain.errors import (
     DomainPermissionError,
     DomainValidationError,
 )
-from workaholic.domain.identifiers import AttemptId, ProjectId, SubjectId, TaskId
+from workaholic.domain.identifiers import (
+    AttemptId,
+    InstanceId,
+    ProjectId,
+    SubjectId,
+    TaskId,
+    TokenId,
+)
 
 PROJECT_KEY_PATTERN = re.compile(r"^[A-Z][A-Z0-9]{1,15}$")
 PROFILE_NAME_PATTERN = re.compile(r"^[a-z][a-z0-9_-]{0,31}$")
@@ -55,6 +68,7 @@ JSON_MAX_ARRAY_ITEMS = 500
 JSON_MAX_STRING_LENGTH = 16_384
 JSON_MAX_KEY_LENGTH = 128
 MEDIA_TYPE_MAX_LENGTH = 127
+SUBJECT_HANDLE_PATTERN = re.compile(r"^[a-z][a-z0-9-]{1,62}$")
 
 HUMAN_LEASE_DEFAULT = timedelta(hours=8)
 HUMAN_LEASE_MINIMUM = timedelta(minutes=1)
@@ -192,7 +206,7 @@ class _AttemptAccess(Protocol):
 
 @runtime_checkable
 class _SubjectAccess(Protocol):
-    """Minimal Subject view required by the Phase 1 authorization rule."""
+    """Minimal Subject view required by the legacy Owner wrapper."""
 
     @property
     def id(self) -> SubjectId:
@@ -222,6 +236,47 @@ class _ProjectGrantAccess(Protocol):
     @property
     def role(self) -> str:
         """Return the serialized Project role."""
+        ...
+
+
+@runtime_checkable
+class _IdentitySubjectAccess(Protocol):
+    """Complete Subject projection required by Phase 5 policy."""
+
+    id: SubjectId
+    instance_id: InstanceId
+    kind: SubjectKind
+    enabled: bool
+    is_instance_admin: bool
+
+
+@runtime_checkable
+class _IdentityGrantAccess(Protocol):
+    """Complete ProjectGrant projection required by Phase 5 policy."""
+
+    instance_id: InstanceId
+    subject_id: SubjectId
+    project_id: ProjectId
+    role: ProjectRole
+
+
+@runtime_checkable
+class _TokenLifecycleAccess(Protocol):
+    """Minimal Token projection required by lifecycle rules."""
+
+    @property
+    def activated_at(self) -> datetime | None:
+        """Return the activation time, or null while pending."""
+        ...
+
+    @property
+    def expires_at(self) -> datetime:
+        """Return the exclusive expiry boundary."""
+        ...
+
+    @property
+    def revoked_at(self) -> datetime | None:
+        """Return the revocation time when revoked."""
         ...
 
 
@@ -275,6 +330,26 @@ def normalize_project_name(value: object) -> str:
         message = "Project name must contain only printable characters."
         raise DomainValidationError(message)
     return normalized
+
+
+def validate_subject_handle(value: object) -> str:
+    """Validate one immutable Instance-scoped Subject handle.
+
+    Args:
+        value: Candidate handle. Handles are intentionally not normalized so
+            byte-wise different inputs cannot alias an identity.
+
+    Returns:
+        The exact validated handle.
+
+    Raises:
+        DomainValidationError: If the handle is not canonical lowercase ASCII.
+
+    """
+    if not isinstance(value, str) or SUBJECT_HANDLE_PATTERN.fullmatch(value) is None:
+        message = "Subject handle must match ^[a-z][a-z0-9-]{1,62}$ exactly."
+        raise DomainValidationError(message)
+    return value
 
 
 def validate_profile_name(value: object) -> str:
@@ -774,6 +849,156 @@ def validate_json_value(  # noqa: PLR0912
         return
     message = f"{label} must be a JSON value."
     raise DomainValidationError(message)
+
+
+def validate_audit_event_payload(  # noqa: PLR0912 - exact closed event variants
+    event_type: object,
+    payload: object,
+) -> None:
+    """Validate the exact non-secret payload for an administrative event.
+
+    Args:
+        event_type: Typed administrative event category.
+        payload: Candidate closed JSON object.
+
+    Raises:
+        DomainValidationError: If the category, fields, or values are invalid.
+
+    """
+    if not isinstance(event_type, AuditEventType):
+        message = "Audit event_type must be an AuditEventType."
+        raise DomainValidationError(message)
+    if not isinstance(payload, Mapping):
+        message = "AuditEvent payload must be a mapping."
+        raise DomainValidationError(message)
+    validate_json_value(payload, label="AuditEvent payload")
+    expected_fields = {
+        AuditEventType.INSTANCE_BOOTSTRAPPED: {
+            "instance_id",
+            "subject_id",
+            "project_id",
+            "project_key",
+            "grant_role",
+        },
+        AuditEventType.PROJECT_CREATED: {
+            "project_id",
+            "project_key",
+            "owner_subject_id",
+        },
+        AuditEventType.SUBJECT_CREATED: {
+            "subject_id",
+            "handle",
+            "kind",
+            "version",
+        },
+        AuditEventType.SUBJECT_UPDATED: {
+            "subject_id",
+            "changed_fields",
+            "version",
+        },
+        AuditEventType.SUBJECT_ENABLED: {"subject_id", "version"},
+        AuditEventType.SUBJECT_DISABLED: {"subject_id", "version"},
+        AuditEventType.INSTANCE_ADMIN_GRANTED: {"subject_id", "version"},
+        AuditEventType.INSTANCE_ADMIN_REVOKED: {"subject_id", "version"},
+        AuditEventType.PROJECT_GRANT_ASSIGNED: {
+            "project_id",
+            "subject_id",
+            "role",
+            "version",
+        },
+        AuditEventType.PROJECT_GRANT_REVOKED: {
+            "project_id",
+            "subject_id",
+            "previous_role",
+            "previous_version",
+        },
+        AuditEventType.TOKEN_ISSUED: {"token_id", "subject_id", "expires_at"},
+        AuditEventType.TOKEN_REVOKED: {"token_id", "subject_id"},
+    }[event_type]
+    if set(payload) != expected_fields:
+        message = f"{event_type.value} payload must contain its exact closed fields."
+        raise DomainValidationError(message)
+
+    identifier_fields: dict[str, type[InstanceId | SubjectId | ProjectId | TokenId]] = {
+        "instance_id": InstanceId,
+        "subject_id": SubjectId,
+        "owner_subject_id": SubjectId,
+        "project_id": ProjectId,
+        "token_id": TokenId,
+    }
+    for field_name, identifier_type in identifier_fields.items():
+        if field_name not in payload:
+            continue
+        candidate_identifier = payload[field_name]
+        if not isinstance(candidate_identifier, str):
+            message = f"AuditEvent payload {field_name} is invalid."
+            raise DomainValidationError(message)
+        try:
+            identifier_type(candidate_identifier)
+        except (DomainValidationError, TypeError) as error:
+            message = f"AuditEvent payload {field_name} is invalid."
+            raise DomainValidationError(message) from error
+
+    if "project_key" in payload:
+        validate_project_key(payload["project_key"])
+    if "handle" in payload:
+        validate_subject_handle(payload["handle"])
+    if "kind" in payload:
+        _validate_string_enum(payload["kind"], SubjectKind, label="Audit kind")
+    for role_field in ("grant_role", "role", "previous_role"):
+        if role_field in payload:
+            _validate_string_enum(
+                payload[role_field],
+                ProjectRole,
+                label=f"Audit {role_field}",
+            )
+    for version_field in ("version", "previous_version"):
+        if version_field in payload:
+            validate_positive_integer(
+                payload[version_field],
+                label=f"Audit {version_field}",
+            )
+    if "expires_at" in payload:
+        parse_rfc3339_utc_timestamp(
+            payload["expires_at"],
+            label="Audit expires_at",
+        )
+    if "changed_fields" in payload:
+        changed_fields = payload["changed_fields"]
+        if (
+            not isinstance(changed_fields, Sequence)
+            or isinstance(changed_fields, (str, bytes, bytearray))
+            or tuple(changed_fields) != ("display_name",)
+        ):
+            message = "Audit changed_fields must be the sorted array ['display_name']."
+            raise DomainValidationError(message)
+
+
+def _validate_string_enum[EnumType: StrEnum](
+    value: object, enum_type: type[EnumType], *, label: str
+) -> EnumType:
+    """Validate a JSON string against one explicit string enumeration.
+
+    Args:
+        value: Candidate serialized value.
+        enum_type: Required string enumeration class.
+        label: Human-readable safe error label.
+
+    Returns:
+        The parsed enumeration member.
+
+    Raises:
+        DomainValidationError: If ``value`` is not an exact enumeration value.
+
+    """
+    if not isinstance(value, str):
+        message = f"{label} must be a string."
+        raise DomainValidationError(message)
+    try:
+        return enum_type(value)
+    except ValueError as error:
+        message = f"{label} is invalid."
+        raise DomainValidationError(message) from error
 
 
 def transition_task_state(
@@ -1629,6 +1854,261 @@ def _path_exists(
         visited.add(current)
         pending.extend(graph.get(current, ()))
     return False
+
+
+def project_role_implies(role: object, permission: object) -> bool:
+    """Return whether one cumulative Project role includes a permission.
+
+    Args:
+        role: Current Project role.
+        permission: Permission being checked.
+
+    Returns:
+        Whether ``role`` includes the requested Project permission. Instance
+        administration is deliberately never implied by a Project role.
+
+    Raises:
+        DomainValidationError: If either input is not its exact enum type.
+
+    """
+    if not isinstance(role, ProjectRole):
+        message = "Project role must be a ProjectRole."
+        raise DomainValidationError(message)
+    if not isinstance(permission, Permission):
+        message = "Permission must be a Permission."
+        raise DomainValidationError(message)
+    role_level = {
+        ProjectRole.VIEWER: 0,
+        ProjectRole.AGENT: 1,
+        ProjectRole.OPERATOR: 2,
+        ProjectRole.OWNER: 3,
+    }[role]
+    required_level = {
+        Permission.VIEW_PROJECT: 0,
+        Permission.EXECUTE_AGENT: 1,
+        Permission.OPERATE_PROJECT: 2,
+        Permission.MANAGE_PROJECT_GRANTS: 3,
+    }.get(permission)
+    return required_level is not None and role_level >= required_level
+
+
+def require_permission(
+    *,
+    subject: object,
+    grant: object | None,
+    permission: object,
+    target_instance_id: object,
+    target_project_id: object | None = None,
+) -> None:
+    """Require one enabled Subject to hold an explicit current permission.
+
+    Args:
+        subject: Authoritative Subject projection.
+        grant: Authoritative grant, or null for Instance administration.
+        permission: Required permission.
+        target_instance_id: Instance being accessed.
+        target_project_id: Project being accessed for Project permissions.
+
+    Raises:
+        DomainValidationError: If a rule input has an invalid runtime type.
+        DomainPermissionError: If the Subject lacks the permission.
+
+    """
+    if not isinstance(subject, _IdentitySubjectAccess):
+        message = "Authorization requires a Subject value."
+        raise DomainValidationError(message)
+    if not isinstance(permission, Permission):
+        message = "Permission must be a Permission."
+        raise DomainValidationError(message)
+    if not isinstance(target_instance_id, InstanceId):
+        message = "Authorization target_instance_id must be an InstanceId."
+        raise DomainValidationError(message)
+    subject_enabled: object = subject.enabled
+    subject_is_admin: object = subject.is_instance_admin
+    if type(subject_enabled) is not bool or type(subject_is_admin) is not bool:
+        message = "Subject authorization state must use booleans."
+        raise DomainValidationError(message)
+    if subject.instance_id != target_instance_id or not subject.enabled:
+        message = "The active Subject does not have the required permission."
+        raise DomainPermissionError(message)
+    if permission is Permission.MANAGE_INSTANCE:
+        if not subject.is_instance_admin:
+            message = "The active Subject does not have the required permission."
+            raise DomainPermissionError(message)
+        return
+    if not isinstance(target_project_id, ProjectId):
+        message = "Project authorization requires a target ProjectId."
+        raise DomainValidationError(message)
+    if not isinstance(grant, _IdentityGrantAccess):
+        message = "The active Subject does not have the required permission."
+        raise DomainPermissionError(message)
+    if (
+        grant.instance_id != target_instance_id
+        or grant.subject_id != subject.id
+        or grant.project_id != target_project_id
+        or not project_role_implies(grant.role, permission)
+    ):
+        message = "The active Subject does not have the required permission."
+        raise DomainPermissionError(message)
+
+
+def require_subject_kind(subject: object, required_kind: object) -> None:
+    """Require an enabled Subject to use an operation's Human or Agent path.
+
+    Args:
+        subject: Authoritative Subject projection.
+        required_kind: Required immutable Subject kind.
+
+    Raises:
+        DomainValidationError: If either input has an invalid runtime type.
+        DomainPermissionError: If the Subject has a different kind.
+
+    """
+    if not isinstance(subject, _IdentitySubjectAccess):
+        message = "Subject-kind authorization requires a Subject value."
+        raise DomainValidationError(message)
+    if not isinstance(required_kind, SubjectKind):
+        message = "Required Subject kind must be a SubjectKind."
+        raise DomainValidationError(message)
+    if not subject.enabled or subject.kind is not required_kind:
+        message = "The active Subject cannot use this operation path."
+        raise DomainPermissionError(message)
+
+
+def derive_token_status(token: object, *, now: object) -> TokenStatus:
+    """Project a Token lifecycle status at an explicit authoritative time.
+
+    Args:
+        token: Token projection without raw credential material.
+        now: Aware UTC timestamp used for the half-open expiry check.
+
+    Returns:
+        Revoked, pending, expired, or active status in precedence order.
+
+    Raises:
+        DomainValidationError: If the Token projection or time is invalid.
+
+    """
+    if not isinstance(token, _TokenLifecycleAccess):
+        message = "Token status requires a Token lifecycle value."
+        raise DomainValidationError(message)
+    if not isinstance(now, datetime):
+        message = "Token status time must be a datetime."
+        raise DomainValidationError(message)
+    validate_utc_timestamp(now, label="Token status time")
+    validate_utc_timestamp(token.expires_at, label="Token expires_at")
+    if token.activated_at is not None:
+        validate_utc_timestamp(token.activated_at, label="Token activated_at")
+    if token.revoked_at is not None:
+        validate_utc_timestamp(token.revoked_at, label="Token revoked_at")
+        return TokenStatus.REVOKED
+    if token.activated_at is None:
+        return TokenStatus.PENDING
+    if now >= token.expires_at:
+        return TokenStatus.EXPIRED
+    return TokenStatus.ACTIVE
+
+
+def require_enabled_instance_administrator(
+    subjects: Iterable[object],
+    *,
+    instance_id: object,
+) -> None:
+    """Require a prospective Instance state to retain an enabled administrator.
+
+    Args:
+        subjects: Complete prospective Subject set for the Instance.
+        instance_id: Instance whose invariant is being checked.
+
+    Raises:
+        DomainValidationError: If inputs are incomplete, malformed, or violate
+            the final-enabled-administrator invariant.
+
+    """
+    if not isinstance(instance_id, InstanceId):
+        message = "Administrator guard instance_id must be an InstanceId."
+        raise DomainValidationError(message)
+    try:
+        candidates = tuple(subjects)
+    except TypeError as error:
+        message = "Administrator guard subjects must be iterable."
+        raise DomainValidationError(message) from error
+    if not all(isinstance(subject, _IdentitySubjectAccess) for subject in candidates):
+        message = "Administrator guard requires Subject values."
+        raise DomainValidationError(message)
+    validated_subjects = cast("tuple[_IdentitySubjectAccess, ...]", candidates)
+    scoped = tuple(
+        subject for subject in validated_subjects if subject.instance_id == instance_id
+    )
+    if not scoped or not any(
+        subject.enabled and subject.is_instance_admin for subject in scoped
+    ):
+        message = "The Instance must retain an enabled administrator."
+        raise DomainValidationError(message)
+
+
+def require_enabled_project_owner(
+    subjects: Iterable[object],
+    grants: Iterable[object],
+    *,
+    instance_id: object,
+    project_id: object,
+) -> None:
+    """Require a prospective Project state to retain an enabled Owner.
+
+    Args:
+        subjects: Complete prospective Subject set for the Instance.
+        grants: Complete prospective grant set for the Project.
+        instance_id: Owning Instance identity.
+        project_id: Project whose invariant is being checked.
+
+    Raises:
+        DomainValidationError: If inputs are malformed or no enabled Owner
+            remains.
+
+    """
+    if not isinstance(instance_id, InstanceId):
+        message = "Owner guard instance_id must be an InstanceId."
+        raise DomainValidationError(message)
+    if not isinstance(project_id, ProjectId):
+        message = "Owner guard project_id must be a ProjectId."
+        raise DomainValidationError(message)
+    try:
+        candidate_subjects = tuple(subjects)
+        candidate_grants = tuple(grants)
+    except TypeError as error:
+        message = "Owner guard inputs must be iterable."
+        raise DomainValidationError(message) from error
+    if not all(
+        isinstance(subject, _IdentitySubjectAccess) for subject in candidate_subjects
+    ):
+        message = "Owner guard requires Subject values."
+        raise DomainValidationError(message)
+    if not all(isinstance(grant, _IdentityGrantAccess) for grant in candidate_grants):
+        message = "Owner guard requires ProjectGrant values."
+        raise DomainValidationError(message)
+    validated_subjects = cast(
+        "tuple[_IdentitySubjectAccess, ...]",
+        candidate_subjects,
+    )
+    validated_grants = cast(
+        "tuple[_IdentityGrantAccess, ...]",
+        candidate_grants,
+    )
+    enabled_subject_ids = {
+        subject.id
+        for subject in validated_subjects
+        if subject.instance_id == instance_id and subject.enabled
+    }
+    if not any(
+        grant.instance_id == instance_id
+        and grant.project_id == project_id
+        and grant.role is ProjectRole.OWNER
+        and grant.subject_id in enabled_subject_ids
+        for grant in validated_grants
+    ):
+        message = "The Project must retain an enabled Owner."
+        raise DomainValidationError(message)
 
 
 def require_phase_one_owner(
