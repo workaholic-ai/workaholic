@@ -161,6 +161,7 @@ class GetLocalStatus(_CommandModel):
     instance_id: InstanceId
     project_id: ProjectId
     subject_id: SubjectId
+    actor: AuthenticatedActor | None = Field(default=None, exclude=True, repr=False)
 
     @field_validator("profile", mode="before")
     @classmethod
@@ -182,6 +183,7 @@ class ListProjects(_CommandModel):
 
     instance_id: InstanceId
     subject_id: SubjectId
+    actor: AuthenticatedActor | None = Field(default=None, exclude=True, repr=False)
 
 
 class GetProjectByKey(_CommandModel):
@@ -190,6 +192,7 @@ class GetProjectByKey(_CommandModel):
     instance_id: InstanceId
     subject_id: SubjectId
     project_key: str
+    actor: AuthenticatedActor | None = Field(default=None, exclude=True, repr=False)
 
     @field_validator("project_key", mode="before")
     @classmethod
@@ -434,6 +437,7 @@ class ListTasks(_CommandModel):
     profile: str = "local"
     project_id: ProjectId
     subject_id: SubjectId
+    actor: AuthenticatedActor | None = Field(default=None, exclude=True, repr=False)
     cursor: str | None = None
     limit: int = Field(default=_DEFAULT_PAGE_SIZE, ge=1, le=_MAX_PAGE_SIZE)
 
@@ -477,6 +481,7 @@ class ListInstanceTasks(_CommandModel):
     profile: str = "local"
     instance_id: InstanceId
     subject_id: SubjectId
+    actor: AuthenticatedActor | None = Field(default=None, exclude=True, repr=False)
     cursor: str | None = None
     limit: int = Field(default=_DEFAULT_PAGE_SIZE, ge=1, le=_MAX_PAGE_SIZE)
 
@@ -520,6 +525,7 @@ class GetTask(_CommandModel):
     project_id: ProjectId
     subject_id: SubjectId
     task: TaskId | str
+    actor: AuthenticatedActor | None = Field(default=None, exclude=True, repr=False)
 
     @field_validator("task", mode="before")
     @classmethod
@@ -1296,6 +1302,7 @@ class GetTaskDetails(_CommandModel):
     project_id: ProjectId
     subject_id: SubjectId
     task: TaskId | str
+    actor: AuthenticatedActor | None = Field(default=None, exclude=True, repr=False)
 
     @field_validator("task", mode="before")
     @classmethod
@@ -1317,6 +1324,7 @@ class ListTasksByView(_CommandModel):
 
     profile: str = "local"
     subject_id: SubjectId
+    actor: AuthenticatedActor | None = Field(default=None, exclude=True, repr=False)
     project_id: ProjectId | None = None
     instance_id: InstanceId | None = None
     view: TaskListView = TaskListView.ALL
@@ -1401,6 +1409,7 @@ class ReadTaskEvents(_CommandModel):
     project_id: ProjectId
     subject_id: SubjectId
     task: TaskId | str
+    actor: AuthenticatedActor | None = Field(default=None, exclude=True, repr=False)
     after: int = Field(default=0, ge=0)
     limit: int = Field(default=_DEFAULT_PAGE_SIZE, ge=1, le=_MAX_PAGE_SIZE)
 

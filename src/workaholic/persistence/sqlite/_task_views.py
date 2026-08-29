@@ -21,7 +21,6 @@ from workaholic.application import (
 from workaholic.domain import (
     TASK_PRIORITY_MAX,
     DomainValidationError,
-    ProjectRole,
     Task,
     TaskId,
     TaskReadiness,
@@ -40,6 +39,7 @@ from workaholic.persistence.sqlite._queries import (
     _require_active_subject,
     _require_authorized_project,
     _require_instance,
+    _require_query_actor,
     _require_task_project_key,
     _task_from_project_ordered_row,
 )
@@ -121,10 +121,21 @@ def get_task_details(
     try:
         current_time = validate_utc_timestamp(now, label="Readiness time")
         with open_read_connection(database_path) as connection:
+            _require_query_actor(
+                connection,
+                actor=candidate.actor,
+                instance_id=(
+                    None if candidate.actor is None else candidate.actor.instance_id
+                ),
+                subject_id=candidate.subject_id,
+                occurred_at=current_time,
+            )
             project = _require_authorized_project(
                 connection,
                 project_id=candidate.project_id,
                 subject_id=candidate.subject_id,
+                actor=candidate.actor,
+                occurred_at=current_time,
             )
             task = _load_scoped_task(
                 connection,
@@ -185,7 +196,7 @@ def list_tasks_by_view(
     try:
         current_time = validate_utc_timestamp(now, label="Readiness time")
         with open_read_connection(database_path) as connection:
-            binding = _view_cursor_binding(connection, candidate)
+            binding = _view_cursor_binding(connection, candidate, now=current_time)
             position = _decode_view_cursor(
                 candidate.cursor,
                 binding=binding,
@@ -386,22 +397,34 @@ def _load_current_result(
 def _view_cursor_binding(
     connection: sqlite3.Connection,
     command: ListTasksByView,
+    *,
+    now: datetime,
 ) -> _CursorBinding:
     """Authorize and build the immutable binding for a view query.
 
     Args:
         connection: Active read snapshot.
         command: Validated view query.
+        now: Authoritative Token validation time.
 
     Returns:
         Exact identity and selection cursor binding.
 
     """
     if command.project_id is not None:
+        _require_query_actor(
+            connection,
+            actor=command.actor,
+            instance_id=(None if command.actor is None else command.actor.instance_id),
+            subject_id=command.subject_id,
+            occurred_at=now,
+        )
         project = _require_authorized_project(
             connection,
             project_id=command.project_id,
             subject_id=command.subject_id,
+            actor=command.actor,
+            occurred_at=now,
         )
         return _CursorBinding(
             profile=command.profile,
@@ -413,7 +436,15 @@ def _view_cursor_binding(
     if command.instance_id is None:
         raise InvalidInputError
     _require_instance(connection, command.instance_id)
-    _require_active_subject(connection, command.subject_id)
+    _require_query_actor(
+        connection,
+        actor=command.actor,
+        instance_id=command.instance_id,
+        subject_id=command.subject_id,
+        occurred_at=now,
+    )
+    if command.actor is None:
+        _require_active_subject(connection, command.subject_id)
     return _CursorBinding(
         profile=command.profile,
         instance_id=command.instance_id,
@@ -472,13 +503,12 @@ def _select_view_rows(
         FROM tasks AS t
         JOIN projects AS p ON p.id = t.project_id
         JOIN project_grants AS g ON g.project_id = p.id
-        WHERE {scope_sql} AND g.role = ? {view_sql} {after_sql}
+        WHERE {scope_sql} {view_sql} {after_sql}
         ORDER BY {order_sql}
         LIMIT ?
         """,  # noqa: S608 - fragments are selected from closed module functions.
         (
             *parameters,
-            ProjectRole.OWNER.value,
             *view_parameters,
             *after_parameters,
             command.limit + 1,

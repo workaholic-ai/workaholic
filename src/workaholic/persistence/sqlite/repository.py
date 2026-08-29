@@ -692,7 +692,11 @@ class SQLiteRepository:
             Current local status.
 
         """
-        return sqlite_queries.get_local_status(self._database_path, command)
+        return sqlite_queries.get_local_status(
+            self._database_path,
+            command,
+            now=self._clock.now(),
+        )
 
     def list_projects(self, command: ListProjects) -> tuple[Project, ...]:
         """List authorized Projects by immutable key.
@@ -704,7 +708,11 @@ class SQLiteRepository:
             Authorized Projects ordered by key ascending.
 
         """
-        return sqlite_queries.list_projects(self._database_path, command)
+        return sqlite_queries.list_projects(
+            self._database_path,
+            command,
+            now=self._clock.now(),
+        )
 
     def get_project_by_key(self, command: GetProjectByKey) -> Project:
         """Read one authorized Project by immutable key.
@@ -716,7 +724,11 @@ class SQLiteRepository:
             Matching authorized Project.
 
         """
-        return sqlite_queries.get_project_by_key(self._database_path, command)
+        return sqlite_queries.get_project_by_key(
+            self._database_path,
+            command,
+            now=self._clock.now(),
+        )
 
     def list_tasks(self, command: ListTasks) -> TaskPage:
         """Read one deterministic Project-bound Task page.
@@ -728,7 +740,11 @@ class SQLiteRepository:
             Tasks ordered by Project-local number.
 
         """
-        return sqlite_queries.list_tasks(self._database_path, command)
+        return sqlite_queries.list_tasks(
+            self._database_path,
+            command,
+            now=self._clock.now(),
+        )
 
     def list_tasks_for_instance(self, command: ListInstanceTasks) -> TaskPage:
         """Read one Task page across authorized Projects in an Instance.
@@ -743,6 +759,7 @@ class SQLiteRepository:
         return sqlite_queries.list_tasks_for_instance(
             self._database_path,
             command,
+            now=self._clock.now(),
         )
 
     def get_task(self, command: GetTask) -> Task:
@@ -755,7 +772,11 @@ class SQLiteRepository:
             Matching immutable Task.
 
         """
-        return sqlite_queries.get_task(self._database_path, command)
+        return sqlite_queries.get_task(
+            self._database_path,
+            command,
+            now=self._clock.now(),
+        )
 
     def get_task_details(self, command: GetTaskDetails) -> TaskDetails:
         """Read complete Task details with authoritative derived readiness.
@@ -799,4 +820,8 @@ class SQLiteRepository:
             Polling-safe attributable events in cursor order.
 
         """
-        return sqlite_queries.read_task_events_after(self._database_path, command)
+        return sqlite_queries.read_task_events_after(
+            self._database_path,
+            command,
+            now=self._clock.now(),
+        )

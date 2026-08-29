@@ -147,7 +147,7 @@ class StatusResult(_ResultModel):
             ValueError: If the result combines unrelated or unauthorized entities.
 
         """
-        _validate_identity_consistency(
+        _validate_status_identity_consistency(
             instance=self.instance,
             project=self.project,
             subject=self.subject,
@@ -1335,4 +1335,35 @@ def _validate_identity_consistency(
         or grant.role is not ProjectRole.OWNER
     ):
         message = "Embedded context requires the selected Human to own the Project."
+        raise ValueError(message)
+
+
+def _validate_status_identity_consistency(
+    *,
+    instance: Instance,
+    project: Project,
+    subject: Subject,
+    grant: ProjectGrant,
+) -> None:
+    """Validate a Phase 5 authenticated Viewer-or-stronger status graph.
+
+    Args:
+        instance: Selected local Instance.
+        project: Selected granted Project.
+        subject: Current authenticated Subject.
+        grant: Subject's current ProjectGrant.
+
+    Raises:
+        ValueError: If entities cross scope or the Subject is disabled.
+
+    """
+    if (
+        project.instance_id != instance.id
+        or subject.instance_id != instance.id
+        or grant.instance_id != instance.id
+        or grant.subject_id != subject.id
+        or grant.project_id != project.id
+        or not subject.enabled
+    ):
+        message = "Status identity graph is not an enabled granted Project context."
         raise ValueError(message)

@@ -18,13 +18,17 @@ from workaholic.persistence.sqlite._event_records import (
     TaskEventRecord,
     task_event_record_from_row,
 )
-from workaholic.persistence.sqlite._queries import _require_authorized_project
+from workaholic.persistence.sqlite._queries import (
+    _require_authorized_project,
+    _require_query_actor,
+)
 from workaholic.persistence.sqlite._records import require_integer, require_text
 from workaholic.persistence.sqlite.connection import open_read_connection
 from workaholic.persistence.sqlite.errors import StorageUnavailableError
 
 if TYPE_CHECKING:
     import sqlite3
+    from datetime import datetime
     from pathlib import Path
 
     from workaholic.domain import Project, ProjectId
@@ -35,12 +39,15 @@ _MAX_SQLITE_INTEGER = 9_223_372_036_854_775_807
 def read_task_events_after(
     database_path: Path,
     command: ReadTaskEvents,
+    *,
+    now: datetime | None = None,
 ) -> TaskEventPage:
     """Read one stable authorized TaskEvent page after an Instance cursor.
 
     Args:
         database_path: Absolute path to the validated SQLite store.
         command: Validated Task, Project, actor, cursor, and limit query.
+        now: Authoritative Token validation time for authenticated reads.
 
     Returns:
         Strictly ascending events and the greatest observed cursor.
@@ -57,10 +64,21 @@ def read_task_events_after(
         raise InvalidInputError
     try:
         with open_read_connection(database_path) as connection:
+            _require_query_actor(
+                connection,
+                actor=candidate.actor,
+                instance_id=(
+                    None if candidate.actor is None else candidate.actor.instance_id
+                ),
+                subject_id=candidate.subject_id,
+                occurred_at=now,
+            )
             project = _require_authorized_project(
                 connection,
                 project_id=candidate.project_id,
                 subject_id=candidate.subject_id,
+                actor=candidate.actor,
+                occurred_at=now,
             )
             task_uid = _resolve_task_uid(
                 connection,
