@@ -11,6 +11,8 @@ from pydantic import ValidationError
 
 from workaholic.auth import RawToken, parse_token, read_token_file
 from workaholic.auth.errors import TokenFormatError
+from workaholic.cli.auth_admin import register_identity_admin_commands
+from workaholic.cli.auth_tokens import register_token_admin_commands
 from workaholic.cli.errors import (
     write_failure,
     write_invalid_input,
@@ -160,6 +162,15 @@ def register_auth_commands(  # noqa: PLR0915 - explicit CLI command registration
             _write_identity(result, json_mode=json_mode)
         except Exception as error:  # noqa: BLE001 - redact every boundary failure.
             write_failure(error, json_mode=json_mode)
+
+    register_identity_admin_commands(
+        application,
+        session_provider=session_provider,
+    )
+    register_token_admin_commands(
+        application,
+        session_provider=session_provider,
+    )
 
 
 def _write_identity(result: CurrentIdentityResult, *, json_mode: bool) -> None:

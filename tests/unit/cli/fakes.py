@@ -10,12 +10,18 @@ from typing import TYPE_CHECKING
 from tests.unit.session.fakes import UnavailablePhaseFourSession
 
 from workaholic.application import (
+    AuditEventPage,
+    AuditEventResult,
     BootstrapResult,
     ContextResult,
     CredentialLogoutResult,
     CurrentIdentityResult,
     ProjectCreationResult,
+    ProjectGrantPage,
+    ProjectGrantResult,
     StatusResult,
+    SubjectPage,
+    SubjectResult,
     TaskClaimResult,
     TaskDetails,
     TaskEventPage,
@@ -25,11 +31,15 @@ from workaholic.application import (
     TaskPage,
     TaskProgressResult,
     TaskSubmissionResult,
+    TokenPage,
+    TokenResult,
 )
 from workaholic.domain import (
     ApprovalRequirement,
     AttemptId,
     AttemptStatus,
+    AuditEventId,
+    AuditEventType,
     Instance,
     InstanceId,
     Project,
@@ -66,7 +76,11 @@ if TYPE_CHECKING:
         AgentReleaseRequest,
         AgentSubmitRequest,
         AgentTaskClaimRequest,
+        AuditEventsRequest,
         ContextRequest,
+        GrantAssignRequest,
+        GrantListRequest,
+        GrantRevokeRequest,
         HumanClaimReleaseRequest,
         HumanClaimRenewRequest,
         HumanTaskClaimRequest,
@@ -77,6 +91,11 @@ if TYPE_CHECKING:
         ProjectListRequest,
         RecoverLocalRequest,
         StatusRequest,
+        SubjectAdminRequest,
+        SubjectCreateRequest,
+        SubjectEnabledRequest,
+        SubjectListRequest,
+        SubjectUpdateRequest,
         TaskAddDependencyRequest,
         TaskApproveRequest,
         TaskBlockRequest,
@@ -92,6 +111,9 @@ if TYPE_CHECKING:
         TaskSubmitRequest,
         TaskUnblockRequest,
         TaskUpdateRequest,
+        TokenCreateRequest,
+        TokenListRequest,
+        TokenRevokeRequest,
         UpRequest,
         WhoAmIRequest,
         WorkaholicSession,
@@ -243,6 +265,33 @@ def current_identity_result() -> CurrentIdentityResult:
             revoked_by=None,
         ),
     )
+
+
+def project_grant_result() -> ProjectGrantResult:
+    """Build the deterministic current ProjectGrant result."""
+    return ProjectGrantResult(grant=grant())
+
+
+def audit_event_page() -> AuditEventPage:
+    """Build one deterministic attributable administrative event page."""
+    event = AuditEventResult(
+        id=AuditEventId("aev_cli"),
+        cursor=42,
+        instance_id=instance().id,
+        actor_subject_id=subject().id,
+        actor_kind=SubjectKind.HUMAN,
+        actor_token_id=TokenId("tok_cli"),
+        request_id=RequestId("req_audit"),
+        event_type=AuditEventType.PROJECT_GRANT_ASSIGNED,
+        occurred_at=_NOW,
+        payload={
+            "project_id": str(project().id),
+            "subject_id": str(subject().id),
+            "role": ProjectRole.OWNER.value,
+            "version": 1,
+        },
+    )
+    return AuditEventPage(events=(event,), next_cursor=event.cursor)
 
 
 def context_result(
@@ -634,6 +683,22 @@ class RecordingSession(UnavailablePhaseFourSession):
         self.context_result = context_result()
         self.current_identity_result = current_identity_result()
         self.credential_logout_result = CredentialLogoutResult(profile="local")
+        self.subject_result = SubjectResult(subject=subject())
+        self.subject_page_result = SubjectPage(
+            subjects=(subject(),),
+            next_cursor=None,
+        )
+        self.project_grant_result = project_grant_result()
+        self.project_grant_page_result = ProjectGrantPage(
+            grants=(grant(),),
+            next_cursor=None,
+        )
+        self.token_result = TokenResult(token=self.current_identity_result.token)
+        self.token_page_result = TokenPage(
+            tokens=(self.current_identity_result.token,),
+            next_cursor=None,
+        )
+        self.audit_event_page_result = audit_event_page()
         self.projects_result: tuple[Project, ...] = (project(),)
         self.project_creation_result = project_creation_result()
         self.project_binding_result = context_result()
@@ -724,6 +789,18 @@ class RecordingSession(UnavailablePhaseFourSession):
         self.login_requests: list[LoginRequest] = []
         self.logout_requests: list[LogoutRequest] = []
         self.recover_local_requests: list[RecoverLocalRequest] = []
+        self.subject_create_requests: list[SubjectCreateRequest] = []
+        self.subject_list_requests: list[SubjectListRequest] = []
+        self.subject_update_requests: list[SubjectUpdateRequest] = []
+        self.subject_enabled_requests: list[SubjectEnabledRequest] = []
+        self.subject_admin_requests: list[SubjectAdminRequest] = []
+        self.grant_assign_requests: list[GrantAssignRequest] = []
+        self.grant_list_requests: list[GrantListRequest] = []
+        self.grant_revoke_requests: list[GrantRevokeRequest] = []
+        self.token_create_requests: list[TokenCreateRequest] = []
+        self.token_list_requests: list[TokenListRequest] = []
+        self.token_revoke_requests: list[TokenRevokeRequest] = []
+        self.audit_event_requests: list[AuditEventsRequest] = []
         self.project_list_requests: list[ProjectListRequest] = []
         self.project_create_requests: list[ProjectCreateRequest] = []
         self.project_bind_requests: list[ProjectBindRequest] = []
@@ -792,6 +869,78 @@ class RecordingSession(UnavailablePhaseFourSession):
         self.recover_local_requests.append(request)
         self._raise_failure("recover_local")
         return self.current_identity_result
+
+    def create_subject(self, request: SubjectCreateRequest) -> SubjectResult:
+        """Record and answer one Subject creation."""
+        self.subject_create_requests.append(request)
+        self._raise_failure("create_subject")
+        return self.subject_result
+
+    def list_subjects(self, request: SubjectListRequest) -> SubjectPage:
+        """Record and answer one Subject page query."""
+        self.subject_list_requests.append(request)
+        self._raise_failure("list_subjects")
+        return self.subject_page_result
+
+    def update_subject(self, request: SubjectUpdateRequest) -> SubjectResult:
+        """Record and answer one Subject display-name update."""
+        self.subject_update_requests.append(request)
+        self._raise_failure("update_subject")
+        return self.subject_result
+
+    def set_subject_enabled(self, request: SubjectEnabledRequest) -> SubjectResult:
+        """Record and answer one Subject enabled-state change."""
+        self.subject_enabled_requests.append(request)
+        self._raise_failure("set_subject_enabled")
+        return self.subject_result
+
+    def set_instance_admin(self, request: SubjectAdminRequest) -> SubjectResult:
+        """Record and answer one Instance-administrator state change."""
+        self.subject_admin_requests.append(request)
+        self._raise_failure("set_instance_admin")
+        return self.subject_result
+
+    def assign_grant(self, request: GrantAssignRequest) -> ProjectGrantResult:
+        """Record and answer one ProjectGrant assignment."""
+        self.grant_assign_requests.append(request)
+        self._raise_failure("assign_grant")
+        return self.project_grant_result
+
+    def list_grants(self, request: GrantListRequest) -> ProjectGrantPage:
+        """Record and answer one ProjectGrant page query."""
+        self.grant_list_requests.append(request)
+        self._raise_failure("list_grants")
+        return self.project_grant_page_result
+
+    def revoke_grant(self, request: GrantRevokeRequest) -> ProjectGrantResult:
+        """Record and answer one ProjectGrant revocation."""
+        self.grant_revoke_requests.append(request)
+        self._raise_failure("revoke_grant")
+        return self.project_grant_result
+
+    def create_token(self, request: TokenCreateRequest) -> TokenResult:
+        """Record and answer one protected Token provisioning."""
+        self.token_create_requests.append(request)
+        self._raise_failure("create_token")
+        return self.token_result
+
+    def list_tokens(self, request: TokenListRequest) -> TokenPage:
+        """Record and answer one Token metadata page query."""
+        self.token_list_requests.append(request)
+        self._raise_failure("list_tokens")
+        return self.token_page_result
+
+    def revoke_token(self, request: TokenRevokeRequest) -> TokenResult:
+        """Record and answer one Token revocation."""
+        self.token_revoke_requests.append(request)
+        self._raise_failure("revoke_token")
+        return self.token_result
+
+    def read_audit_events(self, request: AuditEventsRequest) -> AuditEventPage:
+        """Record and answer one administrative AuditEvent page query."""
+        self.audit_event_requests.append(request)
+        self._raise_failure("read_audit_events")
+        return self.audit_event_page_result
 
     def list_projects(
         self,

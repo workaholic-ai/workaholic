@@ -26,10 +26,16 @@ if TYPE_CHECKING:
         WorkspaceBinding,
     )
     from workaholic.session import (
+        AuditEventPage,
+        AuditEventResult,
         ContextResult,
         CredentialLogoutResult,
         CurrentIdentityResult,
+        ProjectGrantPage,
+        ProjectGrantResult,
         StatusResult,
+        SubjectPage,
+        SubjectResult,
         TaskClaimResult,
         TaskDetails,
         TaskEventPage,
@@ -38,6 +44,8 @@ if TYPE_CHECKING:
         TaskPage,
         TaskProgressResult,
         TaskSubmissionResult,
+        TokenPage,
+        TokenResult,
     )
 
 _CONTEXT_FILENAME = ".workaholic.env"
@@ -217,6 +225,161 @@ def credential_logout_data(
     return {
         "profile": result.profile,
         "credential_stored": result.credential_stored,
+    }
+
+
+def subject_result_data(result: SubjectResult) -> dict[str, JsonValue]:
+    """Serialize one Subject administration outcome.
+
+    Args:
+        result: Validated Subject result.
+
+    Returns:
+        Complete public Subject object.
+
+    """
+    return identity_subject_data(result.subject)
+
+
+def subject_page_data(result: SubjectPage) -> dict[str, JsonValue]:
+    """Serialize one handle-ordered Subject page.
+
+    Args:
+        result: Validated Subject page.
+
+    Returns:
+        Closed Subject pagination data.
+
+    """
+    return {
+        "subjects": [identity_subject_data(item) for item in result.subjects],
+        "next_cursor": result.next_cursor,
+    }
+
+
+def identity_grant_data(grant: ProjectGrant) -> dict[str, JsonValue]:
+    """Serialize one complete public Phase 5 ProjectGrant.
+
+    Args:
+        grant: Validated current or revoked grant snapshot.
+
+    Returns:
+        Closed public ProjectGrant object.
+
+    """
+    return {
+        "subject_id": str(grant.subject_id),
+        "project_id": str(grant.project_id),
+        "role": grant.role.value,
+        "version": grant.version,
+        "granted_by": str(grant.granted_by),
+        "created_at": normalize_json_value(grant.created_at),
+        "updated_at": normalize_json_value(grant.updated_at),
+    }
+
+
+def project_grant_result_data(
+    result: ProjectGrantResult,
+) -> dict[str, JsonValue]:
+    """Serialize one ProjectGrant mutation result.
+
+    Args:
+        result: Validated ProjectGrant result.
+
+    Returns:
+        Complete public ProjectGrant object.
+
+    """
+    return identity_grant_data(result.grant)
+
+
+def project_grant_page_data(result: ProjectGrantPage) -> dict[str, JsonValue]:
+    """Serialize one Project-scoped grant page.
+
+    Args:
+        result: Validated grant page.
+
+    Returns:
+        Closed ProjectGrant pagination data.
+
+    """
+    return {
+        "grants": [identity_grant_data(item) for item in result.grants],
+        "next_cursor": result.next_cursor,
+    }
+
+
+def token_result_data(result: TokenResult) -> dict[str, JsonValue]:
+    """Serialize one non-secret Token lifecycle outcome.
+
+    Args:
+        result: Validated Token result.
+
+    Returns:
+        Complete public Token metadata without credential material.
+
+    """
+    return token_summary_data(result.token)
+
+
+def token_page_data(result: TokenPage) -> dict[str, JsonValue]:
+    """Serialize one creation-ordered non-secret Token page.
+
+    Args:
+        result: Validated Token page.
+
+    Returns:
+        Closed Token pagination data.
+
+    """
+    return {
+        "tokens": [token_summary_data(item) for item in result.tokens],
+        "next_cursor": result.next_cursor,
+    }
+
+
+def audit_event_data(event: AuditEventResult) -> dict[str, JsonValue]:
+    """Serialize one attributable administrative AuditEvent.
+
+    Args:
+        event: Validated administrative event.
+
+    Returns:
+        Closed public AuditEvent object.
+
+    """
+    payload = normalize_json_value(event.payload)
+    if not isinstance(payload, dict):
+        raise TypeError
+    return {
+        "cursor": event.cursor,
+        "id": str(event.id),
+        "instance_id": str(event.instance_id),
+        "actor_subject_id": str(event.actor_subject_id),
+        "actor_kind": event.actor_kind.value,
+        "actor_token_id": (
+            None if event.actor_token_id is None else str(event.actor_token_id)
+        ),
+        "request_id": str(event.request_id),
+        "event_type": event.event_type.value,
+        "occurred_at": normalize_json_value(event.occurred_at),
+        "payload": payload,
+    }
+
+
+def audit_event_page_data(result: AuditEventPage) -> dict[str, JsonValue]:
+    """Serialize one ascending administrative AuditEvent page.
+
+    Args:
+        result: Validated administrative event page.
+
+    Returns:
+        Closed polling page with its durable cursor.
+
+    """
+    return {
+        "events": [audit_event_data(event) for event in result.events],
+        "next_cursor": result.next_cursor,
     }
 
 
