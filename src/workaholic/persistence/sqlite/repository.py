@@ -8,6 +8,9 @@ from typing import TYPE_CHECKING
 
 from workaholic.persistence.sqlite import _queries as sqlite_queries
 from workaholic.persistence.sqlite import _task_views as sqlite_task_views
+from workaholic.persistence.sqlite._audit_events import (
+    read_audit_events as _read_audit_events,
+)
 from workaholic.persistence.sqlite._authentication import (
     authenticate_token as _authenticate_token,
 )
@@ -91,6 +94,7 @@ if TYPE_CHECKING:
         AddTaskDependencyMutation,
         ApproveResultMutation,
         AssignProjectGrantMutation,
+        AuditEventPage,
         AuthenticateToken,
         AuthorizeActor,
         BootstrapMutation,
@@ -117,6 +121,7 @@ if TYPE_CHECKING:
         ProjectCreationResult,
         ProjectGrantPage,
         ProjectGrantResult,
+        ReadAuditEvents,
         ReadTaskEvents,
         RejectResultMutation,
         ReleaseClaimMutation,
@@ -599,6 +604,22 @@ class SQLiteRepository:
 
         """
         return _revoke_token(self._database_path, mutation)
+
+    def read_audit_events(self, command: ReadAuditEvents) -> AuditEventPage:
+        """Read one bounded ascending administrator-authorized audit page.
+
+        Args:
+            command: Authenticated Instance audit cursor query.
+
+        Returns:
+            Strictly ascending administrative events and next cursor.
+
+        """
+        return _read_audit_events(
+            self._database_path,
+            command,
+            now=self._clock.now(),
+        )
 
     def authorize_actor(self, command: AuthorizeActor) -> Subject:
         """Resolve one fresh authorization projection transactionally.

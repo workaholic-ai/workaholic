@@ -22,7 +22,12 @@ from workaholic.application import (
     ProjectGrantResult,
     RevokeProjectGrantMutation,
 )
-from workaholic.domain import Project, ProjectGrant, Subject, SubjectId
+from workaholic.domain import AuditEventType, Project, ProjectGrant, Subject, SubjectId
+from workaholic.persistence.sqlite._audit_events import (
+    AuditEventDraft,
+    append_audit_event,
+    authenticated_audit_actor,
+)
 from workaholic.persistence.sqlite._authorization import (
     load_project_grant,
     require_grant_administrator,
@@ -143,6 +148,21 @@ def assign_project_grant(
             current=current,
         )
         _persist_assignment(connection, grant=grant, current=current)
+        append_audit_event(
+            connection,
+            AuditEventDraft(
+                actor=authenticated_audit_actor(candidate.actor),
+                request_id=candidate.request_id,
+                event_type=AuditEventType.PROJECT_GRANT_ASSIGNED,
+                occurred_at=candidate.occurred_at,
+                payload={
+                    "project_id": str(grant.project_id),
+                    "role": grant.role.value,
+                    "subject_id": str(grant.subject_id),
+                    "version": grant.version,
+                },
+            ),
+        )
         _record_replay(
             connection,
             request=request,
@@ -293,6 +313,21 @@ def revoke_project_grant(
         )
         if cursor.rowcount != 1:
             raise IdentityVersionConflictError
+        append_audit_event(
+            connection,
+            AuditEventDraft(
+                actor=authenticated_audit_actor(candidate.actor),
+                request_id=candidate.request_id,
+                event_type=AuditEventType.PROJECT_GRANT_REVOKED,
+                occurred_at=candidate.occurred_at,
+                payload={
+                    "previous_role": current.role.value,
+                    "previous_version": current.version,
+                    "project_id": str(current.project_id),
+                    "subject_id": str(current.subject_id),
+                },
+            ),
+        )
         _record_replay(
             connection,
             request=request,

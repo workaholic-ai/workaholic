@@ -106,6 +106,7 @@ def test_sqlite_repository_exposes_current_identity_lifecycle_ports(
         "assign_project_grant",
         "list_project_grants",
         "revoke_project_grant",
+        "read_audit_events",
     ):
         assert callable(getattr(repository, method_name))
 

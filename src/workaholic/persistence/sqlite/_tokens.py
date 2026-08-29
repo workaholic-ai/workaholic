@@ -23,6 +23,7 @@ from workaholic.application import (
     TokenResult,
 )
 from workaholic.domain import (
+    AuditEventType,
     InstanceId,
     Subject,
     SubjectId,
@@ -30,6 +31,11 @@ from workaholic.domain import (
     TokenId,
     TokenStatus,
     TokenSummary,
+)
+from workaholic.persistence.sqlite._audit_events import (
+    AuditEventDraft,
+    append_audit_event,
+    authenticated_audit_actor,
 )
 from workaholic.persistence.sqlite._authentication import require_authenticated_actor
 from workaholic.persistence.sqlite._authorization import (
@@ -215,6 +221,20 @@ def activate_token(
         if cursor.rowcount != 1:
             raise InvalidTransitionError
         summary = token_to_summary(active, now=candidate.occurred_at)
+        append_audit_event(
+            connection,
+            AuditEventDraft(
+                actor=authenticated_audit_actor(candidate.actor),
+                request_id=candidate.request_id,
+                event_type=AuditEventType.TOKEN_ISSUED,
+                occurred_at=candidate.occurred_at,
+                payload={
+                    "token_id": str(active.id),
+                    "subject_id": str(active.subject_id),
+                    "expires_at": serialize_timestamp(active.expires_at),
+                },
+            ),
+        )
         _record_replay(
             connection,
             request=request,
@@ -364,6 +384,19 @@ def revoke_token(
             )
             if cursor.rowcount != 1:
                 raise StorageUnavailableError
+            append_audit_event(
+                connection,
+                AuditEventDraft(
+                    actor=authenticated_audit_actor(candidate.actor),
+                    request_id=candidate.request_id,
+                    event_type=AuditEventType.TOKEN_REVOKED,
+                    occurred_at=candidate.occurred_at,
+                    payload={
+                        "token_id": str(token.id),
+                        "subject_id": str(token.subject_id),
+                    },
+                ),
+            )
         summary = token_to_summary(token, now=candidate.occurred_at)
         if summary.status is not TokenStatus.REVOKED:
             raise StorageUnavailableError

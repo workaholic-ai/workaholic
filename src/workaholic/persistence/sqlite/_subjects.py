@@ -23,7 +23,12 @@ from workaholic.application import (
     SubjectResult,
     UpdateSubjectMutation,
 )
-from workaholic.domain import Subject, SubjectId
+from workaholic.domain import AuditEventType, JsonValue, Subject, SubjectId
+from workaholic.persistence.sqlite._audit_events import (
+    AuditEventDraft,
+    append_audit_event,
+    authenticated_audit_actor,
+)
 from workaholic.persistence.sqlite._authorization import (
     require_administrator_remains,
     require_instance_administrator,
@@ -147,6 +152,21 @@ def create_subject(
             updated_at=candidate.occurred_at,
         )
         _insert_subject(connection, subject)
+        append_audit_event(
+            connection,
+            AuditEventDraft(
+                actor=authenticated_audit_actor(candidate.actor),
+                request_id=candidate.request_id,
+                event_type=AuditEventType.SUBJECT_CREATED,
+                occurred_at=candidate.occurred_at,
+                payload={
+                    "handle": subject.handle,
+                    "kind": subject.kind.value,
+                    "subject_id": str(subject.id),
+                    "version": subject.version,
+                },
+            ),
+        )
         _record_replay(
             connection,
             request=replay_request,
@@ -385,6 +405,10 @@ def _mutate_existing(
         )
         if cursor.rowcount != 1:
             raise IdentityVersionConflictError
+        append_audit_event(
+            connection,
+            _change_audit_draft(mutation=mutation, change=change, subject=updated),
+        )
         _record_replay(
             connection,
             request=replay_request,
@@ -430,6 +454,38 @@ def _build_change(
         display_name=current.display_name,
         enabled=current.enabled,
         is_instance_admin=is_instance_admin,
+    )
+
+
+def _change_audit_draft(
+    *,
+    mutation: UpdateSubjectMutation
+    | SetSubjectEnabledMutation
+    | SetInstanceAdminMutation,
+    change: _SubjectChange,
+    subject: Subject,
+) -> AuditEventDraft:
+    """Build the exact closed audit event for one Subject state change."""
+    event_types = {
+        _UPDATE_OPERATION: AuditEventType.SUBJECT_UPDATED,
+        _ENABLE_OPERATION: AuditEventType.SUBJECT_ENABLED,
+        _DISABLE_OPERATION: AuditEventType.SUBJECT_DISABLED,
+        _ADMIN_GRANT_OPERATION: AuditEventType.INSTANCE_ADMIN_GRANTED,
+        _ADMIN_REVOKE_OPERATION: AuditEventType.INSTANCE_ADMIN_REVOKED,
+    }
+    event_type = event_types[change.operation]
+    payload: dict[str, JsonValue] = {
+        "subject_id": str(subject.id),
+        "version": subject.version,
+    }
+    if event_type is AuditEventType.SUBJECT_UPDATED:
+        payload["changed_fields"] = ("display_name",)
+    return AuditEventDraft(
+        actor=authenticated_audit_actor(mutation.actor),
+        request_id=mutation.request_id,
+        event_type=event_type,
+        occurred_at=mutation.occurred_at,
+        payload=payload,
     )
 
 

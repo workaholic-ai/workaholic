@@ -15,6 +15,7 @@ from workaholic.application import (
     ProjectKeyConflictError,
 )
 from workaholic.domain import (
+    AuditEventType,
     InstanceId,
     Project,
     ProjectGrant,
@@ -22,6 +23,11 @@ from workaholic.domain import (
     ProjectRole,
     SubjectId,
     SubjectKind,
+)
+from workaholic.persistence.sqlite._audit_events import (
+    AuditActor,
+    AuditEventDraft,
+    append_audit_event,
 )
 from workaholic.persistence.sqlite._records import (
     PROJECT_FIELD_SET,
@@ -169,6 +175,25 @@ def _create_project_in_transaction(
         ),
     )
     result = ProjectCreationResult(project=project, grant=grant)
+    append_audit_event(
+        connection,
+        AuditEventDraft(
+            actor=AuditActor(
+                instance_id=mutation.instance_id,
+                subject_id=mutation.actor_subject_id,
+                kind=SubjectKind.HUMAN,
+                token_id=None,
+            ),
+            request_id=mutation.request_id,
+            event_type=AuditEventType.PROJECT_CREATED,
+            occurred_at=mutation.occurred_at,
+            payload={
+                "project_id": str(project.id),
+                "project_key": project.key,
+                "owner_subject_id": str(grant.subject_id),
+            },
+        ),
+    )
     _record_idempotent_project(
         connection,
         mutation=mutation,

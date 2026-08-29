@@ -8,6 +8,10 @@ from typing import TYPE_CHECKING, Final, cast
 
 from workaholic.domain import (
     AttemptId,
+    AuditEvent,
+    AuditEventId,
+    AuditEventType,
+    InstanceId,
     ProjectId,
     RequestId,
     SubjectId,
@@ -16,6 +20,7 @@ from workaholic.domain import (
     TaskEventId,
     TaskEventType,
     TaskId,
+    TokenId,
 )
 from workaholic.persistence.sqlite._records import (
     EVENT_PAYLOAD_JSON_MAX_LENGTH,
@@ -61,6 +66,59 @@ TASK_EVENT_MAPPING_FIELDS: Final = (
     "payload",
 )
 TASK_EVENT_MAPPING_FIELD_SET: Final = frozenset(TASK_EVENT_MAPPING_FIELDS)
+AUDIT_EVENT_FIELDS: Final = (
+    "cursor",
+    "id",
+    "instance_id",
+    "actor_subject_id",
+    "actor_kind",
+    "actor_token_id",
+    "request_id",
+    "event_type",
+    "occurred_at",
+    "payload_json",
+)
+
+
+def audit_event_from_row(value: Sequence[object]) -> AuditEvent:
+    """Deserialize one exact AuditEvent row.
+
+    Args:
+        value: SQLite values in ``AUDIT_EVENT_FIELDS`` order.
+
+    Returns:
+        Validated immutable administrative event.
+
+    Raises:
+        StorageUnavailableError: If row shape or values are malformed.
+
+    """
+    candidate: object = value
+    if not isinstance(candidate, Sequence) or isinstance(candidate, (str, bytes)):
+        raise StorageUnavailableError
+    if len(candidate) != len(AUDIT_EVENT_FIELDS):
+        raise StorageUnavailableError
+    try:
+        payload = parse_json_object(
+            candidate[9],
+            maximum=EVENT_PAYLOAD_JSON_MAX_LENGTH,
+        )
+        return AuditEvent(
+            id=AuditEventId(require_text(candidate[1])),
+            cursor=require_integer(candidate[0]),
+            instance_id=InstanceId(require_text(candidate[2])),
+            actor_subject_id=SubjectId(require_text(candidate[3])),
+            actor_kind=SubjectKind(require_text(candidate[4])),
+            actor_token_id=(
+                None if candidate[5] is None else TokenId(require_text(candidate[5]))
+            ),
+            request_id=RequestId(require_text(candidate[6])),
+            event_type=AuditEventType(require_text(candidate[7])),
+            occurred_at=parse_timestamp(candidate[8]),
+            payload=cast("Mapping[str, JsonValue]", payload),
+        )
+    except (IndexError, TypeError, ValueError) as error:
+        raise StorageUnavailableError from error
 
 
 @dataclass(frozen=True, slots=True)

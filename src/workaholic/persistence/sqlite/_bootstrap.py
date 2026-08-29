@@ -14,6 +14,7 @@ from workaholic.application import (
     ProjectKeyConflictError,
 )
 from workaholic.domain import (
+    AuditEventType,
     Instance,
     InstanceId,
     ProjectGrant,
@@ -23,6 +24,11 @@ from workaholic.domain import (
     SubjectId,
     SubjectKind,
     WorkspaceBinding,
+)
+from workaholic.persistence.sqlite._audit_events import (
+    AuditActor,
+    AuditEventDraft,
+    append_audit_event,
 )
 from workaholic.persistence.sqlite._records import (
     canonical_json,
@@ -141,6 +147,27 @@ def _bootstrap_in_transaction(
         result = _load_bootstrap_graph(
             connection,
             expected_project_id=str(mutation.project_id),
+        )
+        append_audit_event(
+            connection,
+            AuditEventDraft(
+                actor=AuditActor(
+                    instance_id=result.instance.id,
+                    subject_id=result.subject.id,
+                    kind=result.subject.kind,
+                    token_id=None,
+                ),
+                request_id=mutation.request_id,
+                event_type=AuditEventType.INSTANCE_BOOTSTRAPPED,
+                occurred_at=mutation.occurred_at,
+                payload={
+                    "instance_id": str(result.instance.id),
+                    "subject_id": str(result.subject.id),
+                    "project_id": str(result.project.id),
+                    "project_key": result.project.key,
+                    "grant_role": result.grant.role.value,
+                },
+            ),
         )
 
     if mutation.idempotency_key is not None:
