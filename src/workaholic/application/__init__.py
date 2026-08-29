@@ -1,5 +1,7 @@
 """Use-case contracts independent of transports and concrete storage."""
 
+from workaholic.application.audit import AuditApplication
+from workaholic.application.authentication import AuthenticationApplication
 from workaholic.application.bootstrap import BootstrapApplication
 from workaholic.application.commands import (
     ActivateTokenMutation,
@@ -97,6 +99,7 @@ from workaholic.application.errors import (
     VersionConflictError,
     WorkspaceBindingConflictError,
 )
+from workaholic.application.grants import GrantApplication
 from workaholic.application.ports import (
     AuditRepository,
     AuthenticationRepository,
@@ -146,12 +149,14 @@ from workaholic.application.results import (
     TokenPage,
     TokenResult,
 )
+from workaholic.application.subjects import SubjectApplication
 from workaholic.application.task_claims import TaskClaimApplication
 from workaholic.application.task_dependencies import TaskDependencyApplication
 from workaholic.application.task_execution import TaskExecutionApplication
 from workaholic.application.task_lifecycle import TaskLifecycleApplication
 from workaholic.application.task_results import TaskResultApplication
 from workaholic.application.tasks import TaskApplication
+from workaholic.application.tokens import TokenApplication
 
 __all__ = [
     "ActivateTokenMutation",
@@ -162,10 +167,12 @@ __all__ = [
     "ApproveResultInput",
     "ApproveResultMutation",
     "AssignProjectGrantMutation",
+    "AuditApplication",
     "AuditEventPage",
     "AuditEventResult",
     "AuditRepository",
     "AuthenticateToken",
+    "AuthenticationApplication",
     "AuthenticationFailedError",
     "AuthenticationRepository",
     "AuthenticationRequiredError",
@@ -199,6 +206,7 @@ __all__ = [
     "GetProjectByKey",
     "GetTask",
     "GetTaskDetails",
+    "GrantApplication",
     "GrantNotFoundError",
     "GrantRepository",
     "IdempotencyConflictError",
@@ -252,6 +260,7 @@ __all__ = [
     "SetInstanceAdminMutation",
     "SetSubjectEnabledMutation",
     "StatusResult",
+    "SubjectApplication",
     "SubjectHandleConflictError",
     "SubjectNotFoundError",
     "SubjectPage",
@@ -287,6 +296,7 @@ __all__ = [
     "TaskUpdateMutation",
     "TaskUpdatePatch",
     "TaskViewQueryRepository",
+    "TokenApplication",
     "TokenNotFoundError",
     "TokenPage",
     "TokenRepository",
