@@ -49,10 +49,8 @@ class MarkerUse:
 
 _EXPECTED_JOURNEYS = {
     "test_agent_journey.py": JourneyExpectation(
-        test_name=(
-            "test_human_and_agent_claims_are_exclusive_across_fresh_cli_processes"
-        ),
-        enabling_phase=4,
+        test_name="test_distinct_human_and_agents_enforce_identity_across_cli_processes",
+        enabling_phase=5,
         skip_reason=None,
     ),
     "test_backend_conformance_journey.py": JourneyExpectation(

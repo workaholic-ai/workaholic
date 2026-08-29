@@ -337,6 +337,46 @@ def test_subprocess_runner_accepts_only_exact_owned_paths_and_valid_profile(
     assert result.returncode == 0
 
 
+def test_subprocess_runner_accepts_only_protected_owned_agent_tokens(
+    tmp_path: Path,
+) -> None:
+    """An Agent override must select a mode-0600 Token below golden config."""
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    config_directory = tmp_path / "config"
+    token_directory = config_directory / "tokens"
+    token_directory.mkdir(parents=True)
+    token_directory.chmod(0o700)
+    token_file = token_directory / "agent.token"
+    token_file.write_text("not-read-by-version-command\n", encoding="utf-8")
+    token_file.chmod(0o600)
+    runner = SubprocessGoldenJourneyRunner(
+        data_directory=tmp_path / "data",
+        config_directory=config_directory,
+    )
+
+    result = runner.cli(
+        ("--version",),
+        cwd=workspace,
+        environment={"WORKAHOLIC_TOKEN_FILE": str(token_file)},
+    )
+    assert result.returncode == 0
+
+    token_file.chmod(0o644)
+    with pytest.raises(ValueError, match="protected harness-owned"):
+        runner.cli(
+            ("--version",),
+            cwd=workspace,
+            environment={"WORKAHOLIC_TOKEN_FILE": str(token_file)},
+        )
+    with pytest.raises(ValueError, match="file credential backend"):
+        runner.cli(
+            ("--version",),
+            cwd=workspace,
+            environment={"WORKAHOLIC_CREDENTIAL_BACKEND": "keyring"},
+        )
+
+
 def test_subprocess_runner_races_fresh_processes_in_stable_order(
     tmp_path: Path,
 ) -> None:
@@ -410,6 +450,7 @@ def test_subprocess_runner_does_not_inherit_credentials_or_arbitrary_state(
     assert environment["NO_COLOR"] == "1"
     assert environment["WORKAHOLIC_DATA_DIR"] == str(tmp_path / "data")
     assert environment["WORKAHOLIC_CONFIG_DIR"] == str(tmp_path / "config")
+    assert environment["WORKAHOLIC_CREDENTIAL_BACKEND"] == "file"
     for forbidden in (
         "AWS_SECRET_ACCESS_KEY",
         "GITHUB_TOKEN",
@@ -419,21 +460,37 @@ def test_subprocess_runner_does_not_inherit_credentials_or_arbitrary_state(
         assert forbidden not in environment
 
 
-def test_future_golden_operations_remain_explicitly_unsupported(
+def test_local_instance_is_available_while_future_golden_operations_are_not(
     tmp_path: Path,
 ) -> None:
-    """Future orchestration and registry paths cannot fabricate behavior."""
+    """Phase 5 exposes local orchestration but not future transports."""
     runner = SubprocessGoldenJourneyRunner(
         data_directory=tmp_path / "data",
         config_directory=tmp_path / "config",
     )
 
-    with pytest.raises(NotImplementedError, match="Instance orchestration"):
+    local = runner.instance(
+        backend="sqlite",
+        project_key="ACME",
+        remote=False,
+        root=tmp_path / "instance",
+        subjects={"operator": "human", "agent-one": "agent"},
+    )
+    assert local is not None
+    with pytest.raises(NotImplementedError, match="non-SQLite"):
+        runner.instance(
+            backend="json",
+            project_key="ACME",
+            remote=False,
+            root=tmp_path / "json-instance",
+            subjects={"operator": "human"},
+        )
+    with pytest.raises(NotImplementedError, match="remote"):
         runner.instance(
             backend="sqlite",
             project_key="ACME",
-            remote=False,
-            root=tmp_path,
+            remote=True,
+            root=tmp_path / "remote-instance",
             subjects={"operator": "human"},
         )
     with pytest.raises(NotImplementedError, match="Published-package"):

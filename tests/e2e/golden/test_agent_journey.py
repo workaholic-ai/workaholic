@@ -1,9 +1,8 @@
-"""Golden specification for exclusive local Human and Agent execution."""
+"""Golden specification for distinct local Human and Agent identities."""
 
 from __future__ import annotations
 
 import json
-import time
 from typing import TYPE_CHECKING
 
 import pytest
@@ -17,7 +16,7 @@ from tests.golden import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Mapping, Sequence
     from pathlib import Path
     from subprocess import CompletedProcess
 
@@ -30,544 +29,557 @@ pytestmark = [
 
 
 # Keep the exit journey linear so every fresh process observes durable state.
-def test_human_and_agent_claims_are_exclusive_across_fresh_cli_processes(  # noqa: PLR0915
+def test_distinct_human_and_agents_enforce_identity_across_cli_processes(  # noqa: PLR0915
     golden_runner: GoldenJourneyRunner,
     tmp_path: Path,
 ) -> None:
-    """Human and Agent owners execute safely through one bootstrap Subject."""
-    workspace = tmp_path / "agent-workspace"
-    workspace.mkdir()
-    bootstrap = _json_success(
-        golden_runner,
-        ("up", "--project-key", "ACME", "--idempotency-key", "agent-up"),
-        workspace=workspace,
-        context="bootstrap",
-    )
-    subject = require_object(bootstrap["subject"], context="bootstrap Subject")
-    subject_id = require_string(subject["id"], context="bootstrap Subject ID")
-    assert subject["kind"] == "human"
+    """A Human provisions two least-privilege Agents that execute independently."""
+    instance_root = tmp_path / "phase-five-instance"
+    with golden_runner.instance(
+        backend="sqlite",
+        project_key="ACME",
+        remote=False,
+        root=instance_root,
+        subjects={
+            "operator": "human",
+            "agent-one": "agent",
+            "agent-two": "agent",
+        },
+    ) as instance:
+        workspace = instance_root / "workspace"
+        human_environment = instance.environment_for("operator")
+        agent_environments = (
+            instance.environment_for("agent-one"),
+            instance.environment_for("agent-two"),
+        )
 
-    human_task = _add_task(
-        golden_runner,
-        workspace=workspace,
-        title="Human-owned delivery",
-        idempotency_key="human-task",
-    )
-    human_claim = _json_success(
-        golden_runner,
-        (
-            "task",
-            "claim",
-            "ACME-1",
-            "--lease",
-            "8h",
-            "--idempotency-key",
-            "human-claim",
-        ),
-        workspace=workspace,
-        context="Human Claim",
-    )
-    claimed_human_task = require_object(
-        human_claim["task"],
-        context="Human claimed Task",
-    )
-    claimed_human = require_object(human_claim["claim"], context="Human Claim")
-    assert human_claim["attempt"] is None
-    assert claimed_human["subject_id"] == subject_id
-    assert claimed_human["attempt_id"] is None
-    assert claimed_human_task["version"] == human_task["version"] == 1
-    _assert_events(
-        human_claim,
-        expected_types=("task_claimed",),
-        subject_id=subject_id,
-        attempt_id=None,
-    )
+        human_identity = _json_success(
+            golden_runner,
+            ("auth", "whoami"),
+            workspace=workspace,
+            environment=human_environment,
+            context="Human identity",
+        )
+        human_subject = require_object(
+            human_identity["subject"], context="Human Subject"
+        )
+        human_token = require_object(human_identity["token"], context="Human Token")
+        human_id = require_string(human_subject["id"], context="Human Subject ID")
+        human_token_id = require_string(human_token["id"], context="Human Token ID")
+        assert human_subject["kind"] == "human"
+        assert human_subject["is_instance_admin"] is True
 
-    human_renewal = _json_success(
-        golden_runner,
-        (
-            "task",
-            "renew",
-            "ACME-1",
-            "--lease",
-            "12h",
-            "--idempotency-key",
-            "human-renew",
-        ),
-        workspace=workspace,
-        context="Human renewal",
-    )
-    renewed_human = require_object(
-        human_renewal["claim"],
-        context="renewed Human Claim",
-    )
-    assert require_string(
-        renewed_human["lease_expires_at"],
-        context="renewed Human Lease expiry",
-    ) > require_string(
-        claimed_human["lease_expires_at"],
-        context="original Human Lease expiry",
-    )
-    assert (
-        require_object(
-            human_renewal["task"],
-            context="renewed Human Task",
-        )["version"]
-        == 1
-    )
-    assert human_renewal["attempt"] is None
+        agent_identities = tuple(
+            _json_success(
+                golden_runner,
+                ("auth", "whoami"),
+                workspace=workspace,
+                environment=environment,
+                context=f"Agent {index} identity",
+            )
+            for index, environment in enumerate(agent_environments, start=1)
+        )
+        agent_subjects = tuple(
+            require_object(identity["subject"], context="Agent Subject")
+            for identity in agent_identities
+        )
+        agent_tokens = tuple(
+            require_object(identity["token"], context="Agent Token")
+            for identity in agent_identities
+        )
+        discovered_agent_ids = tuple(
+            require_string(subject["id"], context="Agent Subject ID")
+            for subject in agent_subjects
+        )
+        assert len(discovered_agent_ids) == 2
+        agent_ids = (discovered_agent_ids[0], discovered_agent_ids[1])
+        assert agent_ids[0] != agent_ids[1] != human_id
+        assert all(subject["kind"] == "agent" for subject in agent_subjects)
+        assert all(subject["is_instance_admin"] is False for subject in agent_subjects)
+        assert agent_tokens[0]["id"] != agent_tokens[1]["id"]
 
-    human_update = _json_success(
-        golden_runner,
-        (
-            "task",
-            "update",
-            "ACME-1",
-            "--priority",
-            "80",
-            "--expected-version",
-            "1",
-            "--idempotency-key",
-            "human-update",
-        ),
-        workspace=workspace,
-        context="Human owned mutation",
-    )
-    assert (
-        require_object(human_update["task"], context="updated Human Task")["version"]
-        == 2
-    )
-    human_submission = _json_success(
-        golden_runner,
-        (
-            "task",
-            "submit",
-            "ACME-1",
-            "--comment",
-            "Implemented manually.",
-            "--expected-version",
-            "2",
-            "--result-file",
-            "-",
-            "--idempotency-key",
-            "human-submit",
-        ),
-        workspace=workspace,
-        input_text=_result_payload("Human implementation complete."),
-        context="Human submission",
-    )
-    submitted_human_result = require_object(
-        human_submission["result"],
-        context="Human Result",
-    )
-    assert submitted_human_result["attempt_id"] is None
-    assert submitted_human_result["submitted_by"] == subject_id
-    assert (
-        require_object(
-            human_submission["task"],
-            context="completed Human Task",
-        )["state"]
-        == "done"
-    )
+        _json_success(
+            golden_runner,
+            (
+                "project",
+                "create",
+                "--key",
+                "DOCS",
+                "--name",
+                "Documentation",
+                "--idempotency-key",
+                "golden-create-docs",
+            ),
+            workspace=workspace,
+            environment=human_environment,
+            context="DOCS Project",
+        )
+        _json_success(
+            golden_runner,
+            (
+                "auth",
+                "grant",
+                "agent-two",
+                "viewer",
+                "--project",
+                "DOCS",
+                "--idempotency-key",
+                "golden-docs-viewer",
+            ),
+            workspace=workspace,
+            environment=human_environment,
+            context="DOCS Viewer grant",
+        )
+        assert _project_keys(
+            _json_success(
+                golden_runner,
+                ("project", "list"),
+                workspace=workspace,
+                environment=agent_environments[0],
+                context="Agent one Projects",
+            )
+        ) == ["ACME"]
+        assert _project_keys(
+            _json_success(
+                golden_runner,
+                ("project", "list"),
+                workspace=workspace,
+                environment=agent_environments[1],
+                context="Agent two Projects",
+            )
+        ) == ["ACME", "DOCS"]
 
-    agent_task = _add_task(
-        golden_runner,
-        workspace=workspace,
-        title="Agent-owned delivery",
-        idempotency_key="agent-task",
-    )
-    agent_claim = _json_success(
-        golden_runner,
-        (
-            "task",
-            "claim",
-            "--lease",
-            "15m",
-            "--idempotency-key",
-            "agent-claim",
-        ),
-        workspace=workspace,
-        context="Agent Claim",
-    )
-    claimed_agent_task = require_object(
-        agent_claim["task"],
-        context="Agent claimed Task",
-    )
-    agent_claim_record = require_object(agent_claim["claim"], context="Agent Claim")
-    agent_attempt = require_object(agent_claim["attempt"], context="Agent Attempt")
-    attempt_id = require_string(agent_attempt["id"], context="Agent Attempt ID")
-    assert claimed_agent_task["uid"] == agent_task["uid"]
-    assert claimed_agent_task["version"] == 1
-    assert agent_claim_record["subject_id"] == subject_id
-    assert agent_claim_record["attempt_id"] == attempt_id
-    assert agent_attempt["subject_id"] == subject_id
-    assert agent_attempt["status"] == "active"
-    _assert_events(
-        agent_claim,
-        expected_types=("task_claimed",),
-        subject_id=subject_id,
-        attempt_id=attempt_id,
-    )
+        shared_task = _add_task(
+            golden_runner,
+            workspace=workspace,
+            environment=human_environment,
+            title="Shared authenticated delivery",
+            idempotency_key="golden-shared-task",
+        )
+        docs_task = _add_task(
+            golden_runner,
+            workspace=workspace,
+            environment=human_environment,
+            title="Viewer-visible documentation",
+            idempotency_key="golden-docs-task",
+            project="DOCS",
+        )
+        assert shared_task["key"] == "ACME-1"
+        assert docs_task["key"] == "DOCS-1"
 
-    heartbeat = _json_success(
-        golden_runner,
-        (
-            "task",
-            "heartbeat",
-            "ACME-2",
-            "--attempt",
-            attempt_id,
-            "--lease",
-            "30m",
-            "--idempotency-key",
-            "agent-heartbeat",
-        ),
-        workspace=workspace,
-        context="Agent heartbeat",
-    )
-    heartbeat_claim = require_object(
-        heartbeat["claim"],
-        context="heartbeat Claim",
-    )
-    assert require_string(
-        heartbeat_claim["lease_expires_at"],
-        context="heartbeat Lease expiry",
-    ) > require_string(
-        agent_claim_record["lease_expires_at"],
-        context="original Agent Lease expiry",
-    )
-    assert require_object(heartbeat["task"], context="heartbeat Task")["version"] == 1
-
-    progress_input = {
-        "message": "Implementing and verifying the change.",
-        "percent_complete": 70,
-        "observations": [
-            {
-                "kind": "risk",
-                "text": "The final integration check is still running.",
-            }
-        ],
-    }
-    progress = _json_success(
-        golden_runner,
-        (
-            "task",
-            "progress",
-            "ACME-2",
-            "--attempt",
-            attempt_id,
-            "--input-file",
-            "-",
-            "--idempotency-key",
-            "agent-progress",
-        ),
-        workspace=workspace,
-        input_text=json.dumps(progress_input, separators=(",", ":")),
-        context="Agent progress",
-    )
-    assert require_object(progress["task"], context="progress Task")["version"] == 1
-    assert (
-        require_object(progress["attempt"], context="progress Attempt")["id"]
-        == attempt_id
-    )
-    _assert_events(
-        progress,
-        expected_types=("progress_reported", "observation_added"),
-        subject_id=subject_id,
-        attempt_id=attempt_id,
-    )
-
-    locked = golden_runner.cli(
-        (
-            "task",
-            "update",
-            "ACME-2",
-            "--priority",
-            "90",
-            "--expected-version",
-            "1",
-            "--json",
-            "--non-interactive",
-        ),
-        cwd=workspace,
-    )
-    require_error(locked, expected_code="TASK_LOCKED")
-
-    agent_submission = _json_success(
-        golden_runner,
-        (
-            "task",
-            "submit",
-            "ACME-2",
-            "--attempt",
-            attempt_id,
-            "--expected-version",
-            "1",
-            "--result-file",
-            "-",
-            "--idempotency-key",
-            "agent-submit",
-        ),
-        workspace=workspace,
-        input_text=_result_payload("Agent implementation complete."),
-        context="Agent submission",
-    )
-    submitted_agent_task = require_object(
-        agent_submission["task"],
-        context="submitted Agent Task",
-    )
-    submitted_agent_result = require_object(
-        agent_submission["result"],
-        context="Agent Result",
-    )
-    terminal_attempt = require_object(
-        agent_submission["attempt"],
-        context="terminal Agent Attempt",
-    )
-    assert submitted_agent_task["state"] == "done"
-    assert submitted_agent_task["version"] == 2
-    assert submitted_agent_result["submitted_by"] == subject_id
-    assert submitted_agent_result["attempt_id"] == attempt_id
-    assert terminal_attempt["id"] == attempt_id
-    assert terminal_attempt["status"] == "submitted"
-    assert terminal_attempt["ended_at"] is not None
-    assert agent_submission["claim"] is None
-    _assert_events(
-        agent_submission,
-        expected_types=("result_submitted", "task_completed"),
-        subject_id=subject_id,
-        attempt_id=attempt_id,
-    )
-
-    require_error(
-        golden_runner.cli(
+        viewer_denial = golden_runner.cli(
             (
                 "task",
-                "heartbeat",
-                "ACME-2",
-                "--attempt",
-                attempt_id,
+                "claim",
+                "--project",
+                "DOCS",
                 "--json",
                 "--non-interactive",
             ),
             cwd=workspace,
-        ),
-        expected_code="LEASE_LOST",
-    )
+            environment=agent_environments[1],
+        )
+        require_error(viewer_denial, expected_code="PERMISSION_DENIED")
 
-    expiring_task = _add_task(
-        golden_runner,
-        workspace=workspace,
-        title="Lease-expiry delivery",
-        idempotency_key="expiry-task",
-    )
-    expiring_claim = _json_success(
-        golden_runner,
-        (
-            "task",
-            "claim",
-            "--lease",
-            "1s",
-            "--idempotency-key",
-            "expiring-claim",
-        ),
-        workspace=workspace,
-        context="expiring Agent Claim",
-    )
-    expiring_attempt = require_object(
-        expiring_claim["attempt"],
-        context="expiring Agent Attempt",
-    )
-    expired_attempt_id = require_string(
-        expiring_attempt["id"],
-        context="expiring Attempt ID",
-    )
-    assert (
-        require_object(expiring_claim["task"], context="expiring Task")["uid"]
-        == expiring_task["uid"]
-    )
-    time.sleep(1.1)
-    require_error(
-        golden_runner.cli(
-            (
-                "task",
-                "heartbeat",
-                "ACME-3",
-                "--attempt",
-                expired_attempt_id,
-                "--json",
-                "--non-interactive",
-            ),
-            cwd=workspace,
-        ),
-        expected_code="LEASE_LOST",
-    )
-    reclaimed = _json_success(
-        golden_runner,
-        (
-            "task",
-            "claim",
-            "--lease",
-            "15m",
-            "--idempotency-key",
-            "reclaimed-agent-claim",
-        ),
-        workspace=workspace,
-        context="reclaimed Agent Claim",
-    )
-    reclaimed_attempt = require_object(
-        reclaimed["attempt"],
-        context="reclaimed Agent Attempt",
-    )
-    reclaimed_attempt_id = require_string(
-        reclaimed_attempt["id"],
-        context="reclaimed Attempt ID",
-    )
-    assert reclaimed_attempt_id != expired_attempt_id
-    reclaimed_events = _assert_events(
-        reclaimed,
-        expected_types=("claim_expired", "task_claimed"),
-        subject_id=subject_id,
-        attempt_id=None,
-        mixed_attempt_ids=(expired_attempt_id, reclaimed_attempt_id),
-    )
-    assert reclaimed_events[0]["attempt_id"] == expired_attempt_id
-    assert reclaimed_events[1]["attempt_id"] == reclaimed_attempt_id
-    require_error(
-        golden_runner.cli(
+        race_results = golden_runner.cli_race(
+            tuple(
+                GoldenCliInvocation(
+                    arguments=(
+                        "task",
+                        "claim",
+                        "--project",
+                        "ACME",
+                        "--lease",
+                        "15m",
+                        "--idempotency-key",
+                        f"golden-race-{index}",
+                        "--json",
+                        "--non-interactive",
+                    ),
+                    cwd=workspace,
+                    environment=environment,
+                )
+                for index, environment in enumerate(agent_environments, start=1)
+            )
+        )
+        winner_index, claim = _assert_exclusive_agent_race(
+            race_results, agent_ids=agent_ids
+        )
+        loser_index = 1 - winner_index
+        winner_environment = agent_environments[winner_index]
+        loser_environment = agent_environments[loser_index]
+        winner_id = agent_ids[winner_index]
+        loser_id = agent_ids[loser_index]
+        claim_record = require_object(claim["claim"], context="winning Claim")
+        attempt = require_object(claim["attempt"], context="winning Attempt")
+        attempt_id = require_string(attempt["id"], context="winning Attempt ID")
+        assert claim_record["subject_id"] == winner_id
+        assert claim_record["attempt_id"] == attempt_id
+        assert attempt["subject_id"] == winner_id
+
+        foreign_progress = golden_runner.cli(
             (
                 "task",
                 "progress",
-                "ACME-3",
+                "ACME-1",
                 "--attempt",
-                expired_attempt_id,
+                attempt_id,
                 "--input-file",
                 "-",
                 "--json",
                 "--non-interactive",
             ),
             cwd=workspace,
-            input_text=json.dumps({"message": "Stale writer."}),
-        ),
-        expected_code="LEASE_LOST",
-    )
-
-    race_task = _add_task(
-        golden_runner,
-        workspace=workspace,
-        title="Contended delivery",
-        idempotency_key="race-task",
-    )
-    assert race_task["key"] == "ACME-4"
-    race_results = golden_runner.cli_race(
-        (
-            GoldenCliInvocation(
-                arguments=(
-                    "task",
-                    "claim",
-                    "ACME-4",
-                    "--lease",
-                    "8h",
-                    "--idempotency-key",
-                    "race-human",
-                    "--json",
-                    "--non-interactive",
-                ),
-                cwd=workspace,
-            ),
-            GoldenCliInvocation(
-                arguments=(
-                    "task",
-                    "claim",
-                    "--lease",
-                    "15m",
-                    "--idempotency-key",
-                    "race-agent-one",
-                    "--json",
-                    "--non-interactive",
-                ),
-                cwd=workspace,
-            ),
-            GoldenCliInvocation(
-                arguments=(
-                    "task",
-                    "claim",
-                    "--lease",
-                    "15m",
-                    "--idempotency-key",
-                    "race-agent-two",
-                    "--json",
-                    "--non-interactive",
-                ),
-                cwd=workspace,
-            ),
+            environment=loser_environment,
+            input_text=json.dumps({"message": "Foreign writer must fail."}),
         )
-    )
-    _assert_exclusive_race(race_results, subject_id=subject_id)
+        require_error(foreign_progress, expected_code="LEASE_LOST")
 
-    history = _json_success(
-        golden_runner,
-        ("task", "events", "ACME-2", "--limit", "100"),
-        workspace=workspace,
-        context="Agent Task history",
-    )
-    history_events = [
-        require_object(item, context="Agent TaskEvent")
-        for item in require_array(history["events"], context="Agent history")
-    ]
-    assert [event["type"] for event in history_events] == [
-        "task_created",
-        "task_claimed",
-        "claim_renewed",
-        "progress_reported",
-        "observation_added",
-        "result_submitted",
-        "task_completed",
-    ]
-    assert all(event["actor_subject_id"] == subject_id for event in history_events)
-    assert history_events[0]["attempt_id"] is None
-    assert all(event["attempt_id"] == attempt_id for event in history_events[1:])
+        heartbeat = _json_success(
+            golden_runner,
+            (
+                "task",
+                "heartbeat",
+                "ACME-1",
+                "--attempt",
+                attempt_id,
+                "--lease",
+                "30m",
+                "--idempotency-key",
+                "golden-heartbeat",
+            ),
+            workspace=workspace,
+            environment=winner_environment,
+            context="Agent heartbeat",
+        )
+        _assert_events(
+            heartbeat,
+            expected_types=("claim_renewed",),
+            subject_id=winner_id,
+            attempt_id=attempt_id,
+        )
+        progress = _json_success(
+            golden_runner,
+            (
+                "task",
+                "progress",
+                "ACME-1",
+                "--attempt",
+                attempt_id,
+                "--input-file",
+                "-",
+                "--idempotency-key",
+                "golden-progress",
+            ),
+            workspace=workspace,
+            environment=winner_environment,
+            input_text=json.dumps(
+                {
+                    "message": "Implementing with an authenticated Agent.",
+                    "percent_complete": 75,
+                },
+                separators=(",", ":"),
+            ),
+            context="Agent progress",
+        )
+        _assert_events(
+            progress,
+            expected_types=("progress_reported",),
+            subject_id=winner_id,
+            attempt_id=attempt_id,
+        )
+
+        alternate_path = instance.token_file_for("winner-alternate")
+        alternate = _json_success(
+            golden_runner,
+            (
+                "auth",
+                "create-token",
+                winner_id,
+                "--token-file",
+                str(alternate_path),
+                "--idempotency-key",
+                "golden-winner-alternate",
+            ),
+            workspace=workspace,
+            environment=human_environment,
+            context="alternate Agent Token",
+        )
+        alternate_token = require_string(alternate["id"], context="alternate Token ID")
+        alternate_environment = {"WORKAHOLIC_TOKEN_FILE": str(alternate_path)}
+        assert alternate_path.stat().st_mode & 0o777 == 0o600
+        alternate_identity = _json_success(
+            golden_runner,
+            ("auth", "whoami"),
+            workspace=workspace,
+            environment=alternate_environment,
+            context="alternate Token identity",
+        )
+        assert (
+            require_object(alternate_identity["subject"], context="alternate Subject")[
+                "id"
+            ]
+            == winner_id
+        )
+        assert (
+            require_object(alternate_identity["token"], context="alternate Token")["id"]
+            == alternate_token
+        )
+
+        original_winner_token = require_string(
+            agent_tokens[winner_index]["id"], context="original winner Token ID"
+        )
+        _json_success(
+            golden_runner,
+            (
+                "auth",
+                "revoke-token",
+                original_winner_token,
+                "--idempotency-key",
+                "golden-revoke-winner-token",
+            ),
+            workspace=workspace,
+            environment=human_environment,
+            context="winner Token revocation",
+        )
+        require_error(
+            golden_runner.cli(
+                ("auth", "whoami", "--json", "--non-interactive"),
+                cwd=workspace,
+                environment=winner_environment,
+            ),
+            expected_code="AUTHENTICATION_FAILED",
+        )
+        continuity = _json_success(
+            golden_runner,
+            (
+                "task",
+                "heartbeat",
+                "ACME-1",
+                "--attempt",
+                attempt_id,
+                "--lease",
+                "45m",
+                "--idempotency-key",
+                "golden-alternate-heartbeat",
+            ),
+            workspace=workspace,
+            environment=alternate_environment,
+            context="same-Subject Token continuity",
+        )
+        assert (
+            require_object(continuity["claim"], context="continued Claim")["attempt_id"]
+            == attempt_id
+        )
+
+        submission = _json_success(
+            golden_runner,
+            (
+                "task",
+                "submit",
+                "ACME-1",
+                "--attempt",
+                attempt_id,
+                "--expected-version",
+                "1",
+                "--result-file",
+                "-",
+                "--idempotency-key",
+                "golden-agent-submit",
+            ),
+            workspace=workspace,
+            environment=alternate_environment,
+            input_text=_result_payload("Authenticated Agent delivery complete."),
+            context="Agent submission",
+        )
+        assert (
+            require_object(submission["task"], context="submitted Task")["state"]
+            == "done"
+        )
+        assert (
+            require_object(submission["result"], context="Agent Result")["submitted_by"]
+            == winner_id
+        )
+        assert submission["claim"] is None
+
+        disabled_task = _add_task(
+            golden_runner,
+            workspace=workspace,
+            environment=human_environment,
+            title="Claim survives Subject disablement",
+            idempotency_key="golden-disable-task",
+        )
+        disabled_claim = _json_success(
+            golden_runner,
+            (
+                "task",
+                "claim",
+                "--project",
+                "ACME",
+                "--lease",
+                "15m",
+                "--idempotency-key",
+                "golden-disable-claim",
+            ),
+            workspace=workspace,
+            environment=loser_environment,
+            context="soon-disabled Agent Claim",
+        )
+        assert disabled_task["key"] == "ACME-2"
+        assert (
+            require_object(disabled_claim["claim"], context="soon-disabled Claim")[
+                "subject_id"
+            ]
+            == loser_id
+        )
+        _json_success(
+            golden_runner,
+            (
+                "auth",
+                "disable-subject",
+                loser_id,
+                "--expected-version",
+                "1",
+                "--idempotency-key",
+                "golden-disable-loser",
+            ),
+            workspace=workspace,
+            environment=human_environment,
+            context="losing Agent disablement",
+        )
+        require_error(
+            golden_runner.cli(
+                ("auth", "whoami", "--json", "--non-interactive"),
+                cwd=workspace,
+                environment=loser_environment,
+            ),
+            expected_code="AUTHENTICATION_FAILED",
+        )
+        retained = _json_success(
+            golden_runner,
+            ("task", "show", "ACME-2"),
+            workspace=workspace,
+            environment=human_environment,
+            context="retained disabled-Subject Claim",
+        )
+        retained_task = require_object(retained["task"], context="retained Task")
+        retained_views = require_object(
+            retained_task["views"], context="retained Task views"
+        )
+        assert retained_views["running"] is True
+        assert retained_views["ready"] is False
+
+        history = _json_success(
+            golden_runner,
+            ("task", "events", "ACME-1", "--limit", "100"),
+            workspace=workspace,
+            environment=human_environment,
+            context="authenticated Task history",
+        )
+        history_events = [
+            require_object(item, context="TaskEvent")
+            for item in require_array(history["events"], context="TaskEvents")
+        ]
+        assert history_events[0]["actor_subject_id"] == human_id
+        assert history_events[0]["actor_kind"] == "human"
+        assert all(
+            event["actor_subject_id"] == winner_id and event["actor_kind"] == "agent"
+            for event in history_events[1:]
+        )
+
+        audit = _json_success(
+            golden_runner,
+            ("auth", "events", "--limit", "100"),
+            workspace=workspace,
+            environment=human_environment,
+            context="administrative audit",
+        )
+        audit_events = [
+            require_object(item, context="AuditEvent")
+            for item in require_array(audit["events"], context="AuditEvents")
+        ]
+        assert audit_events[0]["event_type"] == "instance_bootstrapped"
+        assert audit_events[0]["actor_subject_id"] == human_id
+        assert all(event["actor_subject_id"] == human_id for event in audit_events)
+        tokenless_bootstrap = audit_events[:2]
+        assert [event["event_type"] for event in tokenless_bootstrap] == [
+            "instance_bootstrapped",
+            "token_issued",
+        ]
+        assert all(event["actor_token_id"] is None for event in tokenless_bootstrap)
+        assert all(
+            event["actor_token_id"] == human_token_id for event in audit_events[2:]
+        )
+        event_types = {event["event_type"] for event in audit_events}
+        assert {
+            "project_created",
+            "subject_created",
+            "project_grant_assigned",
+            "token_issued",
+            "token_revoked",
+            "subject_disabled",
+        }.issubset(event_types)
+        _assert_secret_free(history)
+        _assert_secret_free(audit)
 
 
-def _json_success(
+def _json_success(  # noqa: PLR0913 - complete fresh-process boundary.
     runner: GoldenJourneyRunner,
     arguments: Sequence[str],
     *,
     workspace: Path,
     context: str,
+    environment: Mapping[str, str] | None = None,
     input_text: str | None = None,
 ) -> JsonObject:
     """Run one fresh JSON CLI process and require an object payload."""
     result = runner.cli(
         (*arguments, "--json", "--non-interactive"),
         cwd=workspace,
+        environment=environment,
         input_text=input_text,
     )
     return require_object(require_success(result), context=context)
 
 
-def _add_task(
+def _add_task(  # noqa: PLR0913 - explicit task journey inputs.
     runner: GoldenJourneyRunner,
     *,
     workspace: Path,
+    environment: Mapping[str, str],
     title: str,
     idempotency_key: str,
+    project: str | None = None,
 ) -> JsonObject:
     """Create and return one Task through a fresh public CLI process."""
+    project_arguments = () if project is None else ("--project", project)
     data = _json_success(
         runner,
         (
             "task",
             "add",
             title,
+            *project_arguments,
             "--idempotency-key",
             idempotency_key,
         ),
         workspace=workspace,
+        environment=environment,
         context=f"{title} creation",
     )
     assert data.keys() == {"task"}
     return require_object(data["task"], context=title)
+
+
+def _project_keys(data: JsonObject) -> list[str]:
+    """Return stable visible Project keys from one list result."""
+    return [
+        require_string(
+            require_object(item, context="visible Project")["key"],
+            context="visible Project key",
+        )
+        for item in require_array(data["projects"], context="visible Projects")
+    ]
 
 
 def _result_payload(summary: str) -> str:
@@ -588,56 +600,48 @@ def _assert_events(
     *,
     expected_types: tuple[str, ...],
     subject_id: str,
-    attempt_id: str | None,
-    mixed_attempt_ids: tuple[str, ...] | None = None,
+    attempt_id: str,
 ) -> list[JsonObject]:
-    """Validate one attributable ordered Phase 4 event batch."""
+    """Validate one attributable ordered Agent TaskEvent batch."""
     events = [
-        require_object(item, context="Phase 4 TaskEvent")
-        for item in require_array(data["events"], context="Phase 4 events")
+        require_object(item, context="Agent TaskEvent")
+        for item in require_array(data["events"], context="Agent events")
     ]
     assert [event["type"] for event in events] == list(expected_types)
     assert all(event["actor_subject_id"] == subject_id for event in events)
-    if mixed_attempt_ids is None:
-        assert all(event["attempt_id"] == attempt_id for event in events)
-    else:
-        assert tuple(event["attempt_id"] for event in events) == mixed_attempt_ids
+    assert all(event["actor_kind"] == "agent" for event in events)
+    assert all(event["attempt_id"] == attempt_id for event in events)
     return events
 
 
-def _assert_exclusive_race(
+def _assert_exclusive_agent_race(
     results: tuple[CompletedProcess[str], ...],
     *,
-    subject_id: str,
-) -> None:
-    """Require one Human-or-Agent winner and only documented loser outcomes."""
+    agent_ids: tuple[str, str],
+) -> tuple[int, JsonObject]:
+    """Require exactly one distinct Agent winner and one documented loser."""
     winners = [index for index, result in enumerate(results) if result.returncode == 0]
     assert len(winners) == 1
     winner_index = winners[0]
     winner = require_object(
-        require_success(results[winner_index]),
-        context="Claim race winner",
+        require_success(results[winner_index]), context="Agent Claim race winner"
     )
     winner_task = require_object(winner["task"], context="race winner Task")
-    winner_claim = require_object(winner["claim"], context="race winner Claim")
-    assert winner_task["key"] == "ACME-4"
-    assert winner_task["version"] == 1
-    assert winner_claim["subject_id"] == subject_id
+    winner_attempt = require_object(winner["attempt"], context="race winner Attempt")
+    assert winner_task["key"] == "ACME-1"
+    assert winner_attempt["subject_id"] == agent_ids[winner_index]
+    loser = require_error(results[1 - winner_index], expected_code="NO_TASK_AVAILABLE")
+    assert loser["retryable"] is True
+    return winner_index, winner
 
-    if winner_index == 0:
-        assert winner["attempt"] is None
-        assert winner_claim["attempt_id"] is None
-    else:
-        winner_attempt = require_object(
-            winner["attempt"],
-            context="race winner Attempt",
-        )
-        assert winner_claim["attempt_id"] == winner_attempt["id"]
-        assert winner_attempt["status"] == "active"
 
-    for index, result in enumerate(results):
-        if index == winner_index:
-            continue
-        expected_code = "TASK_LOCKED" if index == 0 else "NO_TASK_AVAILABLE"
-        error = require_error(result, expected_code=expected_code)
-        assert error["retryable"] is True
+def _assert_secret_free(data: JsonObject) -> None:
+    """Reject credential-bearing field names from a complete public payload."""
+    encoded = json.dumps(data, sort_keys=True)
+    for forbidden in (
+        "raw_token",
+        "token_hash",
+        "credential_path",
+        "WORKAHOLIC_TOKEN_FILE",
+    ):
+        assert forbidden not in encoded

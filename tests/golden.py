@@ -8,13 +8,17 @@ import subprocess
 import sys
 from collections.abc import Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from threading import Barrier
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Literal, Never, Protocol, TypeGuard
 
-from workaholic.domain import validate_profile_name
+from workaholic.domain import (
+    validate_profile_name,
+    validate_project_key,
+    validate_subject_handle,
+)
 
 if TYPE_CHECKING:
     from contextlib import AbstractContextManager
@@ -34,8 +38,10 @@ _MAX_CLI_RACE_PARTICIPANTS = 8
 _TRUSTED_CLI_ENVIRONMENT_KEYS = frozenset(
     {
         "WORKAHOLIC_CONFIG_DIR",
+        "WORKAHOLIC_CREDENTIAL_BACKEND",
         "WORKAHOLIC_DATA_DIR",
         "WORKAHOLIC_PROFILE",
+        "WORKAHOLIC_TOKEN_FILE",
     }
 )
 _SAFE_INHERITED_ENVIRONMENT_KEYS = frozenset(
@@ -68,6 +74,18 @@ class GoldenInstance(Protocol):
 
         Raises:
             KeyError: If the requested Subject was not provisioned.
+
+        """
+        ...
+
+    def token_file_for(self, label: str) -> Path:
+        """Return one protected-output path owned by this Instance.
+
+        Args:
+            label: Safe filename label for a new Token.
+
+        Returns:
+            Absolute path below the harness-owned Token directory.
 
         """
         ...
@@ -345,7 +363,7 @@ class SubprocessGoldenJourneyRunner:
         root: Path,
         subjects: Mapping[str, SubjectKind],
     ) -> AbstractContextManager[GoldenInstance]:
-        """Reject future Instance orchestration before its enabling phase.
+        """Prepare one authenticated local Instance orchestration context.
 
         Args:
             backend: Requested persistence backend.
@@ -354,13 +372,47 @@ class SubprocessGoldenJourneyRunner:
             root: Requested isolated resource root.
             subjects: Requested Subject inventory.
 
+        Returns:
+            Context manager that provisions and owns the local identities.
+
         Raises:
-            NotImplementedError: Always before Phase 5 identity orchestration.
+            NotImplementedError: If a future backend or remote transport is
+                requested.
+            TypeError: If the root or Subject inventory has an invalid shape.
+            ValueError: If a resource would escape the harness-owned root.
 
         """
-        del backend, project_key, remote, root, subjects
-        message = "Golden Instance orchestration is not implemented before Phase 5."
-        raise NotImplementedError(message)
+        if backend != "sqlite" or remote:
+            message = "Golden remote and non-SQLite orchestration starts after Phase 5."
+            raise NotImplementedError(message)
+        candidate_root: object = root
+        if not isinstance(candidate_root, Path) or not candidate_root.is_absolute():
+            message = "Golden Instance root must be an absolute Path."
+            raise TypeError(message)
+        owned_parent = self.config_directory.parent
+        if not candidate_root.is_relative_to(owned_parent):
+            message = "Golden Instance root must remain harness-owned."
+            raise ValueError(message)
+        validate_project_key(project_key)
+        candidate_subjects: object = subjects
+        if not isinstance(candidate_subjects, Mapping) or not all(
+            isinstance(name, str) and kind in ("human", "agent")
+            for name, kind in candidate_subjects.items()
+        ):
+            message = "Golden Subjects must map handles to Human or Agent kinds."
+            raise TypeError(message)
+        copied_subjects = dict(candidate_subjects)
+        for name in copied_subjects:
+            validate_subject_handle(name)
+        if tuple(copied_subjects.values()).count("human") != 1:
+            message = "A local Golden Instance requires exactly one Human operator."
+            raise ValueError(message)
+        return _LocalGoldenInstance(
+            runner=self,
+            project_key=project_key,
+            root=candidate_root,
+            subjects=MappingProxyType(copied_subjects),
+        )
 
     def published_package_spec(self) -> str:
         """Reject registry selection before release-candidate acceptance.
@@ -395,6 +447,150 @@ class SubprocessGoldenJourneyRunner:
         del package_spec, arguments, cwd, input_text
         message = "Golden uvx execution is not implemented before Phase 9."
         raise NotImplementedError(message)
+
+
+@dataclass(frozen=True, slots=True)
+class _LocalGoldenInstance:
+    """Provision a Human and explicit Agent credentials through the public CLI."""
+
+    runner: SubprocessGoldenJourneyRunner
+    project_key: str
+    root: Path
+    subjects: Mapping[str, SubjectKind]
+    _environments: dict[str, Mapping[str, str]] = field(
+        default_factory=dict,
+        init=False,
+        repr=False,
+        compare=False,
+    )
+
+    def __enter__(self) -> _LocalGoldenInstance:
+        """Bootstrap the Instance and provision every requested Subject.
+
+        Returns:
+            This ready orchestration context.
+
+        Raises:
+            AssertionError: If a public provisioning command fails.
+
+        """
+        self.root.mkdir(mode=0o700, parents=True)
+        workspace = self.root / "workspace"
+        workspace.mkdir()
+        token_directory = self.runner.config_directory / "tokens"
+        token_directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+        bootstrap = self.runner.cli(
+            (
+                "up",
+                "--project-key",
+                self.project_key,
+                "--idempotency-key",
+                "golden-instance-bootstrap",
+                "--json",
+                "--non-interactive",
+            ),
+            cwd=workspace,
+        )
+        require_success(bootstrap)
+
+        environments = object.__getattribute__(self, "_environments")
+        for name, kind in self.subjects.items():
+            if kind == "human":
+                environments[name] = MappingProxyType({})
+                continue
+            created = self.runner.cli(
+                (
+                    "auth",
+                    "create-agent",
+                    name,
+                    "--idempotency-key",
+                    f"golden-create-{name}",
+                    "--json",
+                    "--non-interactive",
+                ),
+                cwd=workspace,
+            )
+            require_success(created)
+            granted = self.runner.cli(
+                (
+                    "auth",
+                    "grant",
+                    name,
+                    "agent",
+                    "--project",
+                    self.project_key,
+                    "--idempotency-key",
+                    f"golden-grant-{name}",
+                    "--json",
+                    "--non-interactive",
+                ),
+                cwd=workspace,
+            )
+            require_success(granted)
+            token_file = (token_directory / f"{name}.token").resolve()
+            issued = self.runner.cli(
+                (
+                    "auth",
+                    "create-token",
+                    name,
+                    "--token-file",
+                    str(token_file),
+                    "--idempotency-key",
+                    f"golden-token-{name}",
+                    "--json",
+                    "--non-interactive",
+                ),
+                cwd=workspace,
+            )
+            require_success(issued)
+            environments[name] = MappingProxyType(
+                {"WORKAHOLIC_TOKEN_FILE": str(token_file)}
+            )
+        return self
+
+    def __exit__(
+        self,
+        exception_type: type[BaseException] | None,
+        exception: BaseException | None,
+        traceback: object,
+    ) -> None:
+        """Leave pytest-owned state for its normal isolated teardown."""
+        del exception_type, exception, traceback
+
+    def environment_for(self, subject_name: str) -> Mapping[str, str]:
+        """Return one immutable trusted credential selection.
+
+        Args:
+            subject_name: Provisioned Subject handle.
+
+        Returns:
+            Exact environment overrides for fresh CLI processes.
+
+        Raises:
+            KeyError: If the Subject was not provisioned or setup has not run.
+
+        """
+        return self._environments[subject_name]
+
+    def token_file_for(self, label: str) -> Path:
+        """Return one unused harness-owned Token output path.
+
+        Args:
+            label: Canonical safe filename label.
+
+        Returns:
+            Absolute non-existing path below the protected Token directory.
+
+        Raises:
+            ValueError: If the label is invalid or the path already exists.
+
+        """
+        validate_subject_handle(label)
+        output = (self.runner.config_directory / "tokens" / f"{label}.token").resolve()
+        if output.exists():
+            message = "Golden Token output path must not already exist."
+            raise ValueError(message)
+        return output
 
 
 def _validate_cli_arguments(value: object) -> tuple[str, ...]:
@@ -527,6 +723,8 @@ def _isolated_cli_environment(
             message = "Golden CLI profile override is invalid."
             raise ValueError(message) from error
 
+    token_file = _validate_credential_overrides(supplied, config_directory)
+
     environment = {
         key: value
         for key, value in os.environ.items()
@@ -536,12 +734,52 @@ def _isolated_cli_environment(
         {
             "NO_COLOR": "1",
             "WORKAHOLIC_CONFIG_DIR": expected_config_directory,
+            "WORKAHOLIC_CREDENTIAL_BACKEND": "file",
             "WORKAHOLIC_DATA_DIR": expected_data_directory,
         }
     )
     if selected_profile is not None:
         environment["WORKAHOLIC_PROFILE"] = selected_profile
+    if token_file is not None:
+        environment["WORKAHOLIC_TOKEN_FILE"] = str(token_file)
     return environment
+
+
+def _validate_credential_overrides(
+    supplied: Mapping[str, str],
+    config_directory: Path,
+) -> Path | None:
+    """Validate the forced file backend and optional mounted Agent Token.
+
+    Args:
+        supplied: Already shape-validated environment overrides.
+        config_directory: Harness-owned trusted configuration directory.
+
+    Returns:
+        Validated protected Token file or ``None`` for the Human credential.
+
+    Raises:
+        ValueError: If the backend or Token source escapes the harness contract.
+
+    """
+    if supplied.get("WORKAHOLIC_CREDENTIAL_BACKEND", "file") != "file":
+        message = "Golden CLI requires the isolated file credential backend."
+        raise ValueError(message)
+    token_file_text = supplied.get("WORKAHOLIC_TOKEN_FILE")
+    if token_file_text is None:
+        return None
+    token_file = Path(token_file_text)
+    token_directory = (config_directory / "tokens").resolve()
+    if (
+        not token_file.is_absolute()
+        or token_file.parent.resolve() != token_directory
+        or token_file.is_symlink()
+        or not token_file.is_file()
+        or token_file.stat().st_mode & 0o777 != 0o600
+    ):
+        message = "Golden CLI Token file must be a protected harness-owned file."
+        raise ValueError(message)
+    return token_file
 
 
 def _reject_nonstandard_number(value: str) -> Never:
