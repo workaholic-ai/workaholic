@@ -116,7 +116,11 @@ def create_subject(
         }
     )
     with open_write_transaction(database_path) as connection:
-        require_instance_administrator(connection, candidate.actor)
+        require_instance_administrator(
+            connection,
+            candidate.actor,
+            occurred_at=candidate.occurred_at,
+        )
         replay_request = _ReplayRequest(
             actor_subject_id=candidate.actor.subject_id,
             operation=_CREATE_OPERATION,
@@ -151,12 +155,18 @@ def create_subject(
         return SubjectResult(subject=subject)
 
 
-def list_subjects(database_path: Path, command: ListSubjects) -> SubjectPage:
+def list_subjects(
+    database_path: Path,
+    command: ListSubjects,
+    *,
+    now: datetime,
+) -> SubjectPage:
     """List one stable handle-ordered page of Instance Subjects.
 
     Args:
         database_path: Absolute path to the validated SQLite store.
         command: Authenticated actor-bound pagination query.
+        now: Authoritative transaction time for actor revalidation.
 
     Returns:
         One page with a selection-bound opaque continuation cursor.
@@ -171,7 +181,11 @@ def list_subjects(database_path: Path, command: ListSubjects) -> SubjectPage:
     if not isinstance(candidate, ListSubjects):
         raise StorageUnavailableError
     with open_read_connection(database_path) as connection:
-        require_instance_administrator(connection, candidate.actor)
+        require_instance_administrator(
+            connection,
+            candidate.actor,
+            occurred_at=now,
+        )
         after_handle, after_id = _decode_cursor(candidate)
         rows = connection.execute(
             f"""
@@ -295,7 +309,11 @@ def _mutate_existing(
 
     """
     with open_write_transaction(database_path) as connection:
-        require_instance_administrator(connection, mutation.actor)
+        require_instance_administrator(
+            connection,
+            mutation.actor,
+            occurred_at=mutation.occurred_at,
+        )
         current = resolve_subject(
             connection,
             instance_id=mutation.actor.instance_id,

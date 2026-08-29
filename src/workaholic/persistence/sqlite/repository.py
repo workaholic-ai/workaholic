@@ -8,6 +8,12 @@ from typing import TYPE_CHECKING
 
 from workaholic.persistence.sqlite import _queries as sqlite_queries
 from workaholic.persistence.sqlite import _task_views as sqlite_task_views
+from workaholic.persistence.sqlite._authentication import (
+    authenticate_token as _authenticate_token,
+)
+from workaholic.persistence.sqlite._authentication import (
+    get_current_identity as _get_current_identity,
+)
 from workaholic.persistence.sqlite._bootstrap import (
     bootstrap_local_project as _bootstrap_local_project,
 )
@@ -59,27 +65,39 @@ from workaholic.persistence.sqlite._task_results import (
     submit_human_result as _submit_human_result,
 )
 from workaholic.persistence.sqlite._tasks import create_task as _create_task
+from workaholic.persistence.sqlite._tokens import activate_token as _activate_token
+from workaholic.persistence.sqlite._tokens import (
+    issue_pending_token as _issue_pending_token,
+)
+from workaholic.persistence.sqlite._tokens import list_tokens as _list_tokens
+from workaholic.persistence.sqlite._tokens import revoke_token as _revoke_token
 from workaholic.persistence.sqlite.schema import initialize_empty_store
 
 if TYPE_CHECKING:
     from workaholic.application import (
+        ActivateTokenMutation,
         AddTaskDependencyMutation,
         ApproveResultMutation,
+        AuthenticateToken,
         BootstrapMutation,
         BootstrapResult,
         ClaimNextTaskMutation,
         ClaimTaskMutation,
         Clock,
         CreateSubjectMutation,
+        CurrentIdentityResult,
+        GetCurrentIdentity,
         GetLocalStatus,
         GetProjectByKey,
         GetTask,
         GetTaskDetails,
+        IssueTokenMutation,
         ListInstanceTasks,
         ListProjects,
         ListSubjects,
         ListTasks,
         ListTasksByView,
+        ListTokens,
         ProjectCreationMutation,
         ProjectCreationResult,
         ReadTaskEvents,
@@ -88,6 +106,7 @@ if TYPE_CHECKING:
         RemoveTaskDependencyMutation,
         RenewClaimMutation,
         ReportTaskProgressMutation,
+        RevokeTokenMutation,
         SetInstanceAdminMutation,
         SetSubjectEnabledMutation,
         StatusResult,
@@ -107,9 +126,11 @@ if TYPE_CHECKING:
         TaskSubmissionResult,
         TaskUnblockMutation,
         TaskUpdateMutation,
+        TokenPage,
+        TokenResult,
         UpdateSubjectMutation,
     )
-    from workaholic.domain import Project, Task
+    from workaholic.domain import AuthenticatedActor, Project, Task
 
 
 class _UtcSystemClock:
@@ -127,7 +148,7 @@ class SQLiteRepository:
         """Bind the adapter to one absolute local database path.
 
         Args:
-            database_path: Absolute path to a schema-version-4 SQLite store.
+            database_path: Absolute path to a schema-version-5 SQLite store.
             clock: Optional authoritative clock for time-derived read views.
 
         Raises:
@@ -427,7 +448,11 @@ class SQLiteRepository:
             Stable Subject page with an opaque continuation cursor.
 
         """
-        return _list_subjects(self._database_path, command)
+        return _list_subjects(
+            self._database_path,
+            command,
+            now=self._clock.now(),
+        )
 
     def update_subject(self, mutation: UpdateSubjectMutation) -> SubjectResult:
         """Update one Subject display name at its exact version.
@@ -470,6 +495,92 @@ class SQLiteRepository:
 
         """
         return _set_instance_admin(self._database_path, mutation)
+
+    def authenticate_token(
+        self,
+        command: AuthenticateToken,
+    ) -> AuthenticatedActor:
+        """Authenticate one canonical Token digest at an explicit time.
+
+        Args:
+            command: Parsed Token identity, digest, expected Instance, and time.
+
+        Returns:
+            Secret-free authenticated actor context.
+
+        """
+        return _authenticate_token(self._database_path, command)
+
+    def get_current_identity(
+        self,
+        command: GetCurrentIdentity,
+    ) -> CurrentIdentityResult:
+        """Revalidate and return current non-secret identity metadata.
+
+        Args:
+            command: Previously authenticated actor query.
+
+        Returns:
+            Current enabled Subject and active Token metadata.
+
+        """
+        return _get_current_identity(
+            self._database_path,
+            command,
+            now=self._clock.now(),
+        )
+
+    def issue_pending_token(self, mutation: IssueTokenMutation) -> TokenResult:
+        """Persist one pending non-authenticating Token digest.
+
+        Args:
+            mutation: Authenticated pending-Token metadata mutation.
+
+        Returns:
+            Non-secret pending Token metadata.
+
+        """
+        return _issue_pending_token(self._database_path, mutation)
+
+    def activate_token(self, mutation: ActivateTokenMutation) -> TokenResult:
+        """Activate one pending Token after its credential sink succeeds.
+
+        Args:
+            mutation: Authenticated activation mutation.
+
+        Returns:
+            Non-secret active Token metadata.
+
+        """
+        return _activate_token(self._database_path, mutation)
+
+    def list_tokens(self, command: ListTokens) -> TokenPage:
+        """List one stable page of visible non-secret Token metadata.
+
+        Args:
+            command: Authenticated self or administrator query.
+
+        Returns:
+            Creation-ordered Token metadata page.
+
+        """
+        return _list_tokens(
+            self._database_path,
+            command,
+            now=self._clock.now(),
+        )
+
+    def revoke_token(self, mutation: RevokeTokenMutation) -> TokenResult:
+        """Monotonically revoke one visible Token.
+
+        Args:
+            mutation: Authenticated Token revocation mutation.
+
+        Returns:
+            Non-secret revoked Token metadata.
+
+        """
+        return _revoke_token(self._database_path, mutation)
 
     def get_local_status(self, command: GetLocalStatus) -> StatusResult:
         """Read authorized local status without mutating storage.

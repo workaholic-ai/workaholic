@@ -85,17 +85,23 @@ def _insert_instance_and_subject(
     )
 
 
-def test_sqlite_repository_exposes_complete_subject_lifecycle_port(
+def test_sqlite_repository_exposes_current_identity_lifecycle_ports(
     tmp_path: Path,
 ) -> None:
-    """The concrete façade keeps every SubjectRepository entry point explicit."""
+    """The concrete façade keeps current identity entry points explicit."""
     repository = SQLiteRepository((tmp_path / "local.db").resolve())
     for method_name in (
+        "authenticate_token",
+        "get_current_identity",
         "create_subject",
         "list_subjects",
         "update_subject",
         "set_subject_enabled",
         "set_instance_admin",
+        "issue_pending_token",
+        "activate_token",
+        "list_tokens",
+        "revoke_token",
     ):
         assert callable(getattr(repository, method_name))
 

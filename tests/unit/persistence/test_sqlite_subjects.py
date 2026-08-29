@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import sqlite3
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
@@ -10,6 +11,7 @@ from typing import TYPE_CHECKING, Final, TypedDict
 import pytest
 
 from workaholic.application import (
+    AuthenticationFailedError,
     BootstrapMutation,
     CreateSubjectMutation,
     IdempotencyConflictError,
@@ -67,7 +69,42 @@ def _repository(tmp_path: Path) -> SQLiteRepository:
             project_name="Local",
         )
     )
+    _insert_active_token(repository, _OWNER_ID)
     return repository
+
+
+def _insert_active_token(
+    repository: SQLiteRepository,
+    subject_id: SubjectId,
+) -> None:
+    """Install one active Task 9 credential fixture for a persisted Subject."""
+    token_id = f"tok_{subject_id.value.removeprefix('sub_') or 'actor'}"
+    connection = sqlite3.connect(repository.database_path)
+    connection.execute("PRAGMA foreign_keys = ON")
+    try:
+        connection.execute(
+            """
+            INSERT INTO tokens (
+                id, instance_id, subject_id, token_hash, created_by,
+                created_at, activated_at, expires_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                token_id,
+                str(_INSTANCE_ID),
+                str(subject_id),
+                hashlib.sha256(token_id.encode("ascii")).hexdigest(),
+                str(_OWNER_ID),
+                _NOW.isoformat(timespec="microseconds").replace("+00:00", "Z"),
+                _NOW.isoformat(timespec="microseconds").replace("+00:00", "Z"),
+                (_NOW + timedelta(days=365))
+                .isoformat(timespec="microseconds")
+                .replace("+00:00", "Z"),
+            ),
+        )
+        connection.commit()
+    finally:
+        connection.close()
 
 
 def _actor(
@@ -174,7 +211,7 @@ def test_subject_resolution_uses_only_exact_id_or_handle(tmp_path: Path) -> None
                 display_name="No match",
             )
         )
-    with pytest.raises(PermissionDeniedError):
+    with pytest.raises(AuthenticationFailedError):
         repository.list_subjects(
             ListSubjects(actor=_actor(instance_id=InstanceId("ins_other")))
         )
@@ -316,6 +353,7 @@ def test_concurrent_admin_removal_cannot_eliminate_all_admins(tmp_path: Path) ->
             is_instance_admin=True,
         )
     ).subject
+    _insert_active_token(repository, second.id)
     second_actor = _actor(second.id)
 
     def remove_as_owner() -> str:
@@ -378,6 +416,7 @@ def test_subject_cursor_rejects_actor_reuse_and_tampering(tmp_path: Path) -> Non
             is_instance_admin=True,
         )
     ).subject
+    _insert_active_token(repository, second.id)
     page = repository.list_subjects(ListSubjects(actor=_actor(), limit=1))
     assert page.next_cursor is not None
     with pytest.raises(InvalidInputError):

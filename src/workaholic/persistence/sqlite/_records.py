@@ -15,6 +15,11 @@ from workaholic.domain import (
     Subject,
     SubjectId,
     SubjectKind,
+    Token,
+    TokenId,
+    TokenStatus,
+    TokenSummary,
+    derive_token_status,
     validate_json_value,
 )
 from workaholic.persistence.sqlite.errors import StorageUnavailableError
@@ -46,6 +51,180 @@ SUBJECT_FIELDS = (
     "updated_at",
 )
 SUBJECT_FIELD_SET = frozenset(SUBJECT_FIELDS)
+TOKEN_FIELDS = (
+    "id",
+    "instance_id",
+    "subject_id",
+    "token_hash",
+    "created_by",
+    "created_at",
+    "activated_at",
+    "expires_at",
+    "revoked_at",
+    "revoked_by",
+)
+TOKEN_SUMMARY_FIELDS = (
+    "id",
+    "subject_id",
+    "status",
+    "created_by",
+    "created_at",
+    "activated_at",
+    "expires_at",
+    "revoked_at",
+    "revoked_by",
+)
+TOKEN_SUMMARY_FIELD_SET = frozenset(TOKEN_SUMMARY_FIELDS)
+
+
+def token_from_row(value: Sequence[object]) -> Token:
+    """Deserialize one Token selected in ``TOKEN_FIELDS`` order.
+
+    Args:
+        value: SQLite row values in canonical Token field order.
+
+    Returns:
+        Validated immutable Token with its digest kept private.
+
+    Raises:
+        StorageUnavailableError: If the row shape or values are malformed.
+
+    """
+    candidate: object = value
+    if not isinstance(candidate, Sequence) or isinstance(candidate, (str, bytes)):
+        raise StorageUnavailableError
+    if len(candidate) != len(TOKEN_FIELDS):
+        raise StorageUnavailableError
+    try:
+        return Token(
+            id=TokenId(require_text(candidate[0])),
+            instance_id=InstanceId(require_text(candidate[1])),
+            subject_id=SubjectId(require_text(candidate[2])),
+            token_hash=require_text(candidate[3]),
+            created_by=SubjectId(require_text(candidate[4])),
+            created_at=parse_timestamp(candidate[5]),
+            activated_at=parse_optional_timestamp(candidate[6]),
+            expires_at=parse_timestamp(candidate[7]),
+            revoked_at=parse_optional_timestamp(candidate[8]),
+            revoked_by=(
+                None if candidate[9] is None else SubjectId(require_text(candidate[9]))
+            ),
+        )
+    except (IndexError, TypeError, ValueError) as error:
+        raise StorageUnavailableError from error
+
+
+def token_to_summary(value: Token, *, now: datetime) -> TokenSummary:
+    """Project one persisted Token into non-secret metadata at a fixed time.
+
+    Args:
+        value: Validated persisted Token.
+        now: Authoritative UTC projection time.
+
+    Returns:
+        Closed public Token lifecycle summary.
+
+    Raises:
+        StorageUnavailableError: If runtime inputs violate their contracts.
+
+    """
+    candidate_token: object = value
+    candidate_now: object = now
+    if not isinstance(candidate_token, Token) or not isinstance(
+        candidate_now,
+        datetime,
+    ):
+        raise StorageUnavailableError
+    try:
+        status = derive_token_status(candidate_token, now=candidate_now)
+        return TokenSummary(
+            id=candidate_token.id,
+            subject_id=candidate_token.subject_id,
+            status=status,
+            created_by=candidate_token.created_by,
+            created_at=candidate_token.created_at,
+            activated_at=candidate_token.activated_at,
+            expires_at=candidate_token.expires_at,
+            revoked_at=candidate_token.revoked_at,
+            revoked_by=candidate_token.revoked_by,
+        )
+    except (DomainValidationError, TypeError, ValueError) as error:
+        raise StorageUnavailableError from error
+
+
+def token_summary_to_mapping(value: TokenSummary) -> dict[str, object]:
+    """Serialize one non-secret Token summary into canonical durable fields.
+
+    Args:
+        value: Token metadata snapshot to serialize.
+
+    Returns:
+        New mapping without a raw Token or digest.
+
+    Raises:
+        StorageUnavailableError: If the runtime value is malformed.
+
+    """
+    candidate: object = value
+    if not isinstance(candidate, TokenSummary):
+        raise StorageUnavailableError
+    return {
+        "id": str(candidate.id),
+        "subject_id": str(candidate.subject_id),
+        "status": candidate.status.value,
+        "created_by": str(candidate.created_by),
+        "created_at": serialize_timestamp(candidate.created_at),
+        "activated_at": (
+            None
+            if candidate.activated_at is None
+            else serialize_timestamp(candidate.activated_at)
+        ),
+        "expires_at": serialize_timestamp(candidate.expires_at),
+        "revoked_at": (
+            None
+            if candidate.revoked_at is None
+            else serialize_timestamp(candidate.revoked_at)
+        ),
+        "revoked_by": (
+            None if candidate.revoked_by is None else str(candidate.revoked_by)
+        ),
+    }
+
+
+def token_summary_from_mapping(value: Mapping[str, object]) -> TokenSummary:
+    """Deserialize one exact non-secret Token summary mapping.
+
+    Args:
+        value: Candidate canonical metadata fields.
+
+    Returns:
+        Validated immutable Token summary.
+
+    Raises:
+        StorageUnavailableError: If the mapping is malformed or non-exact.
+
+    """
+    candidate: object = value
+    if not isinstance(candidate, Mapping) or set(candidate) != TOKEN_SUMMARY_FIELD_SET:
+        raise StorageUnavailableError
+    try:
+        return TokenSummary(
+            id=TokenId(require_text(candidate["id"])),
+            subject_id=SubjectId(require_text(candidate["subject_id"])),
+            status=TokenStatus(require_text(candidate["status"])),
+            created_by=SubjectId(require_text(candidate["created_by"])),
+            created_at=parse_timestamp(candidate["created_at"]),
+            activated_at=parse_optional_timestamp(candidate["activated_at"]),
+            expires_at=parse_timestamp(candidate["expires_at"]),
+            revoked_at=parse_optional_timestamp(candidate["revoked_at"]),
+            revoked_by=(
+                None
+                if candidate["revoked_by"] is None
+                else SubjectId(require_text(candidate["revoked_by"]))
+            ),
+        )
+    except (KeyError, TypeError, ValueError) as error:
+        raise StorageUnavailableError from error
 
 
 def subject_to_mapping(value: Subject) -> dict[str, object]:

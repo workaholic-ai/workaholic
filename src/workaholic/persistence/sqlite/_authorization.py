@@ -19,6 +19,7 @@ from workaholic.domain import (
     SubjectId,
     require_permission,
 )
+from workaholic.persistence.sqlite._authentication import require_authenticated_actor
 from workaholic.persistence.sqlite._records import (
     SUBJECT_FIELDS,
     require_integer,
@@ -28,22 +29,21 @@ from workaholic.persistence.sqlite.errors import StorageUnavailableError
 
 if TYPE_CHECKING:
     import sqlite3
+    from datetime import datetime
 
 
 def require_instance_administrator(
     connection: sqlite3.Connection,
     actor: AuthenticatedActor,
+    *,
+    occurred_at: datetime,
 ) -> Subject:
-    """Require the fixture actor to be a current enabled Instance administrator.
-
-    Task 8 intentionally has no persisted Token lifecycle yet. This helper
-    therefore revalidates all available non-secret actor fields against the
-    current Subject row inside the caller's transaction. Task 9 extends this
-    boundary with active-Token validation without changing Subject operations.
+    """Require a freshly authenticated enabled Instance administrator.
 
     Args:
         connection: Active schema-validated SQLite transaction.
-        actor: Secret-free fixture actor selected by the application boundary.
+        actor: Previously authenticated secret-free actor context.
+        occurred_at: Authoritative time for fresh Token validation.
 
     Returns:
         Current authoritative Subject projection.
@@ -53,31 +53,17 @@ def require_instance_administrator(
         StorageUnavailableError: If persisted identity state is malformed.
 
     """
-    candidate_actor: object = actor
-    if not isinstance(candidate_actor, AuthenticatedActor):
-        raise PermissionDeniedError
-    rows = connection.execute(
-        f"""
-        SELECT {", ".join(SUBJECT_FIELDS)}
-        FROM subjects
-        WHERE id = ? AND instance_id = ?
-        LIMIT 2
-        """,  # noqa: S608 - column names are a fixed module constant.
-        (str(candidate_actor.subject_id), str(candidate_actor.instance_id)),
-    ).fetchall()
-    if len(rows) > 1:
-        raise StorageUnavailableError
-    if not rows:
-        raise PermissionDeniedError
-    subject = subject_from_row(rows[0])
-    if subject.kind is not candidate_actor.subject_kind:
-        raise PermissionDeniedError
+    subject, _token = require_authenticated_actor(
+        connection,
+        actor,
+        occurred_at=occurred_at,
+    )
     try:
         require_permission(
             subject=subject,
             grant=None,
             permission=Permission.MANAGE_INSTANCE,
-            target_instance_id=candidate_actor.instance_id,
+            target_instance_id=actor.instance_id,
         )
     except (DomainPermissionError, DomainValidationError) as error:
         # Domain policy intentionally carries more detail than a public
