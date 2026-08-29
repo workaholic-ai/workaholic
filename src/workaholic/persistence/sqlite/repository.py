@@ -14,8 +14,20 @@ from workaholic.persistence.sqlite._authentication import (
 from workaholic.persistence.sqlite._authentication import (
     get_current_identity as _get_current_identity,
 )
+from workaholic.persistence.sqlite._authorization import (
+    authorize_actor as _authorize_actor,
+)
 from workaholic.persistence.sqlite._bootstrap import (
     bootstrap_local_project as _bootstrap_local_project,
+)
+from workaholic.persistence.sqlite._grants import (
+    assign_project_grant as _assign_project_grant,
+)
+from workaholic.persistence.sqlite._grants import (
+    list_project_grants as _list_project_grants,
+)
+from workaholic.persistence.sqlite._grants import (
+    revoke_project_grant as _revoke_project_grant,
 )
 from workaholic.persistence.sqlite._projects import create_project as _create_project
 from workaholic.persistence.sqlite._subjects import create_subject as _create_subject
@@ -78,7 +90,9 @@ if TYPE_CHECKING:
         ActivateTokenMutation,
         AddTaskDependencyMutation,
         ApproveResultMutation,
+        AssignProjectGrantMutation,
         AuthenticateToken,
+        AuthorizeActor,
         BootstrapMutation,
         BootstrapResult,
         ClaimNextTaskMutation,
@@ -93,6 +107,7 @@ if TYPE_CHECKING:
         GetTaskDetails,
         IssueTokenMutation,
         ListInstanceTasks,
+        ListProjectGrants,
         ListProjects,
         ListSubjects,
         ListTasks,
@@ -100,12 +115,15 @@ if TYPE_CHECKING:
         ListTokens,
         ProjectCreationMutation,
         ProjectCreationResult,
+        ProjectGrantPage,
+        ProjectGrantResult,
         ReadTaskEvents,
         RejectResultMutation,
         ReleaseClaimMutation,
         RemoveTaskDependencyMutation,
         RenewClaimMutation,
         ReportTaskProgressMutation,
+        RevokeProjectGrantMutation,
         RevokeTokenMutation,
         SetInstanceAdminMutation,
         SetSubjectEnabledMutation,
@@ -130,7 +148,7 @@ if TYPE_CHECKING:
         TokenResult,
         UpdateSubjectMutation,
     )
-    from workaholic.domain import AuthenticatedActor, Project, Task
+    from workaholic.domain import AuthenticatedActor, Project, Subject, Task
 
 
 class _UtcSystemClock:
@@ -581,6 +599,67 @@ class SQLiteRepository:
 
         """
         return _revoke_token(self._database_path, mutation)
+
+    def authorize_actor(self, command: AuthorizeActor) -> Subject:
+        """Resolve one fresh authorization projection transactionally.
+
+        Args:
+            command: Actor, permission, scope, kind, and authoritative time.
+
+        Returns:
+            Current authorized Subject projection.
+
+        """
+        return _authorize_actor(self._database_path, command)
+
+    def assign_project_grant(
+        self,
+        mutation: AssignProjectGrantMutation,
+    ) -> ProjectGrantResult:
+        """Create or replace one cumulative ProjectGrant atomically.
+
+        Args:
+            mutation: Authenticated create-or-replace grant mutation.
+
+        Returns:
+            Committed or idempotently replayed grant snapshot.
+
+        """
+        return _assign_project_grant(self._database_path, mutation)
+
+    def list_project_grants(
+        self,
+        command: ListProjectGrants,
+    ) -> ProjectGrantPage:
+        """List one stable page of grants for an exact Project.
+
+        Args:
+            command: Authenticated Project-scoped pagination query.
+
+        Returns:
+            Current grant page with an opaque continuation cursor.
+
+        """
+        return _list_project_grants(
+            self._database_path,
+            command,
+            now=self._clock.now(),
+        )
+
+    def revoke_project_grant(
+        self,
+        mutation: RevokeProjectGrantMutation,
+    ) -> ProjectGrantResult:
+        """Revoke one exact current ProjectGrant atomically.
+
+        Args:
+            mutation: Authenticated optimistic grant revocation.
+
+        Returns:
+            Revoked grant snapshot or exact idempotent replay.
+
+        """
+        return _revoke_project_grant(self._database_path, mutation)
 
     def get_local_status(self, command: GetLocalStatus) -> StatusResult:
         """Read authorized local status without mutating storage.

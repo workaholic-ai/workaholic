@@ -11,7 +11,9 @@ from workaholic.domain import (
     DomainValidationError,
     InstanceId,
     Project,
+    ProjectGrant,
     ProjectId,
+    ProjectRole,
     Subject,
     SubjectId,
     SubjectKind,
@@ -37,6 +39,17 @@ PROJECT_FIELDS = (
     "created_at",
 )
 PROJECT_FIELD_SET = frozenset(PROJECT_FIELDS)
+PROJECT_GRANT_FIELDS = (
+    "instance_id",
+    "subject_id",
+    "project_id",
+    "role",
+    "version",
+    "granted_by",
+    "created_at",
+    "updated_at",
+)
+PROJECT_GRANT_FIELD_SET = frozenset(PROJECT_GRANT_FIELDS)
 SUBJECT_FIELDS = (
     "id",
     "instance_id",
@@ -75,6 +88,93 @@ TOKEN_SUMMARY_FIELDS = (
     "revoked_by",
 )
 TOKEN_SUMMARY_FIELD_SET = frozenset(TOKEN_SUMMARY_FIELDS)
+
+
+def project_grant_to_mapping(value: ProjectGrant) -> dict[str, object]:
+    """Serialize one ProjectGrant into canonical durable fields.
+
+    Args:
+        value: Validated cumulative Project grant.
+
+    Returns:
+        New exact mapping suitable for safe idempotency outcomes.
+
+    Raises:
+        StorageUnavailableError: If the runtime value is malformed.
+
+    """
+    candidate: object = value
+    if not isinstance(candidate, ProjectGrant):
+        raise StorageUnavailableError
+    return {
+        "instance_id": str(candidate.instance_id),
+        "subject_id": str(candidate.subject_id),
+        "project_id": str(candidate.project_id),
+        "role": candidate.role.value,
+        "version": candidate.version,
+        "granted_by": str(candidate.granted_by),
+        "created_at": serialize_timestamp(candidate.created_at),
+        "updated_at": serialize_timestamp(candidate.updated_at),
+    }
+
+
+def project_grant_from_mapping(value: Mapping[str, object]) -> ProjectGrant:
+    """Deserialize one exact canonical ProjectGrant mapping.
+
+    Args:
+        value: Candidate grant fields.
+
+    Returns:
+        Validated immutable ProjectGrant.
+
+    Raises:
+        StorageUnavailableError: If the mapping is malformed or non-exact.
+
+    """
+    candidate: object = value
+    if not isinstance(candidate, Mapping) or set(candidate) != PROJECT_GRANT_FIELD_SET:
+        raise StorageUnavailableError
+    return _build_project_grant(
+        tuple(candidate[field] for field in PROJECT_GRANT_FIELDS)
+    )
+
+
+def project_grant_from_row(value: Sequence[object]) -> ProjectGrant:
+    """Deserialize one ProjectGrant selected in canonical field order.
+
+    Args:
+        value: SQLite row in ``PROJECT_GRANT_FIELDS`` order.
+
+    Returns:
+        Validated immutable ProjectGrant.
+
+    Raises:
+        StorageUnavailableError: If the row is malformed.
+
+    """
+    candidate: object = value
+    if not isinstance(candidate, Sequence) or isinstance(candidate, (str, bytes)):
+        raise StorageUnavailableError
+    if len(candidate) != len(PROJECT_GRANT_FIELDS):
+        raise StorageUnavailableError
+    return _build_project_grant(candidate)
+
+
+def _build_project_grant(value: Sequence[object]) -> ProjectGrant:
+    """Build one ProjectGrant from shape-checked persisted values."""
+    try:
+        return ProjectGrant(
+            instance_id=InstanceId(require_text(value[0])),
+            subject_id=SubjectId(require_text(value[1])),
+            project_id=ProjectId(require_text(value[2])),
+            role=ProjectRole(require_text(value[3])),
+            version=require_integer(value[4]),
+            granted_by=SubjectId(require_text(value[5])),
+            created_at=parse_timestamp(value[6]),
+            updated_at=parse_timestamp(value[7]),
+        )
+    except (IndexError, TypeError, ValueError) as error:
+        raise StorageUnavailableError from error
 
 
 def token_from_row(value: Sequence[object]) -> Token:

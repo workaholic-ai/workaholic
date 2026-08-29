@@ -92,6 +92,7 @@ def test_sqlite_repository_exposes_current_identity_lifecycle_ports(
     repository = SQLiteRepository((tmp_path / "local.db").resolve())
     for method_name in (
         "authenticate_token",
+        "authorize_actor",
         "get_current_identity",
         "create_subject",
         "list_subjects",
@@ -102,6 +103,9 @@ def test_sqlite_repository_exposes_current_identity_lifecycle_ports(
         "activate_token",
         "list_tokens",
         "revoke_token",
+        "assign_project_grant",
+        "list_project_grants",
+        "revoke_project_grant",
     ):
         assert callable(getattr(repository, method_name))
 

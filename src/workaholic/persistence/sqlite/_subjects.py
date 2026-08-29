@@ -27,6 +27,7 @@ from workaholic.domain import Subject, SubjectId
 from workaholic.persistence.sqlite._authorization import (
     require_administrator_remains,
     require_instance_administrator,
+    require_subject_change_preserves_owners,
     resolve_subject,
 )
 from workaholic.persistence.sqlite._records import (
@@ -350,6 +351,11 @@ def _mutate_existing(
             subject=current,
             enabled=change.enabled,
             is_instance_admin=change.is_instance_admin,
+        )
+        require_subject_change_preserves_owners(
+            connection,
+            subject=current,
+            enabled=change.enabled,
         )
         updated = replace(
             current,
