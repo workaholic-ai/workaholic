@@ -22,10 +22,13 @@ if TYPE_CHECKING:
         TaskEvent,
         TaskReadiness,
         TaskResult,
+        TokenSummary,
         WorkspaceBinding,
     )
     from workaholic.session import (
         ContextResult,
+        CredentialLogoutResult,
+        CurrentIdentityResult,
         StatusResult,
         TaskClaimResult,
         TaskDetails,
@@ -107,6 +110,113 @@ def subject_data(
         "display_name": subject.display_name,
         "is_instance_admin": subject.is_instance_admin,
         "project_role": grant.role.value,
+    }
+
+
+def identity_subject_data(subject: Subject) -> dict[str, JsonValue]:
+    """Serialize one complete public Phase 5 Subject.
+
+    Args:
+        subject: Validated authenticated or administratively visible Subject.
+
+    Returns:
+        Closed public Subject object without credential material.
+
+    """
+    return {
+        "id": str(subject.id),
+        "instance_id": str(subject.instance_id),
+        "kind": subject.kind.value,
+        "handle": subject.handle,
+        "display_name": subject.display_name,
+        "enabled": subject.enabled,
+        "is_instance_admin": subject.is_instance_admin,
+        "version": subject.version,
+        "created_by": str(subject.created_by),
+        "created_at": normalize_json_value(subject.created_at),
+        "updated_at": normalize_json_value(subject.updated_at),
+    }
+
+
+def token_summary_data(token: TokenSummary) -> dict[str, JsonValue]:
+    """Serialize one non-secret public Token lifecycle projection.
+
+    Args:
+        token: Validated Token metadata at authoritative time.
+
+    Returns:
+        Closed Token object without a raw Token or digest.
+
+    """
+    return {
+        "id": str(token.id),
+        "subject_id": str(token.subject_id),
+        "status": token.status.value,
+        "created_by": str(token.created_by),
+        "created_at": normalize_json_value(token.created_at),
+        "activated_at": (
+            None
+            if token.activated_at is None
+            else normalize_json_value(token.activated_at)
+        ),
+        "expires_at": normalize_json_value(token.expires_at),
+        "revoked_at": (
+            None if token.revoked_at is None else normalize_json_value(token.revoked_at)
+        ),
+        "revoked_by": None if token.revoked_by is None else str(token.revoked_by),
+    }
+
+
+def current_identity_data(result: CurrentIdentityResult) -> dict[str, JsonValue]:
+    """Serialize one authenticated Subject and active Token.
+
+    Args:
+        result: Validated current identity outcome.
+
+    Returns:
+        Exact Phase 5 ``whoami`` data shape.
+
+    """
+    return {
+        "subject": identity_subject_data(result.subject),
+        "token": token_summary_data(result.token),
+    }
+
+
+def current_identity_summary(result: CurrentIdentityResult) -> str:
+    """Render a concise non-secret current identity summary.
+
+    Args:
+        result: Validated current identity outcome.
+
+    Returns:
+        Stable Human-readable Subject and Token metadata.
+
+    """
+    return "\n".join(
+        (
+            f"Subject: {result.subject.handle} ({result.subject.id})",
+            f"Kind: {result.subject.kind.value}",
+            f"Token: {result.token.id}\tstatus={result.token.status.value}",
+        )
+    )
+
+
+def credential_logout_data(
+    result: CredentialLogoutResult,
+) -> dict[str, JsonValue]:
+    """Serialize one local Human credential-removal outcome.
+
+    Args:
+        result: Validated selected-profile logout result.
+
+    Returns:
+        Closed local credential state.
+
+    """
+    return {
+        "profile": result.profile,
+        "credential_stored": result.credential_stored,
     }
 
 

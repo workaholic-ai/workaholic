@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING, Annotated
 
 import typer
 
+from workaholic.cli.auth import register_auth_commands
 from workaholic.cli.context import register_context_command
 from workaholic.cli.project import register_project_commands
 from workaholic.cli.status import register_status_command
@@ -113,6 +114,18 @@ def create_app(session_provider: SessionProvider) -> typer.Typer:
         session_provider=session_provider,
     )
     application.add_typer(task_application, name="task")
+
+    auth_application = typer.Typer(
+        help="Authenticate and administer local identities.",
+        add_completion=False,
+        no_args_is_help=True,
+        pretty_exceptions_enable=False,
+    )
+    register_auth_commands(
+        auth_application,
+        session_provider=session_provider,
+    )
+    application.add_typer(auth_application, name="auth")
     return application
 
 

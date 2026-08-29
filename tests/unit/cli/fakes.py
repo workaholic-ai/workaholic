@@ -12,6 +12,8 @@ from tests.unit.session.fakes import UnavailablePhaseFourSession
 from workaholic.application import (
     BootstrapResult,
     ContextResult,
+    CredentialLogoutResult,
+    CurrentIdentityResult,
     ProjectCreationResult,
     StatusResult,
     TaskClaimResult,
@@ -51,6 +53,9 @@ from workaholic.domain import (
     TaskReadiness,
     TaskResult,
     TaskState,
+    TokenId,
+    TokenStatus,
+    TokenSummary,
     WorkspaceBinding,
 )
 
@@ -65,9 +70,12 @@ if TYPE_CHECKING:
         HumanClaimReleaseRequest,
         HumanClaimRenewRequest,
         HumanTaskClaimRequest,
+        LoginRequest,
+        LogoutRequest,
         ProjectBindRequest,
         ProjectCreateRequest,
         ProjectListRequest,
+        RecoverLocalRequest,
         StatusRequest,
         TaskAddDependencyRequest,
         TaskApproveRequest,
@@ -85,6 +93,7 @@ if TYPE_CHECKING:
         TaskUnblockRequest,
         TaskUpdateRequest,
         UpRequest,
+        WhoAmIRequest,
         WorkaholicSession,
     )
 
@@ -209,6 +218,30 @@ def status_result() -> StatusResult:
         project=selected_project,
         subject=subject(),
         grant=grant(selected_project),
+    )
+
+
+def current_identity_result() -> CurrentIdentityResult:
+    """Build the deterministic authenticated Human identity result.
+
+    Returns:
+        Enabled local Human paired with active non-secret Token metadata.
+
+    """
+    selected_subject = subject()
+    return CurrentIdentityResult(
+        subject=selected_subject,
+        token=TokenSummary(
+            id=TokenId("tok_cli"),
+            subject_id=selected_subject.id,
+            status=TokenStatus.ACTIVE,
+            created_by=selected_subject.id,
+            created_at=_NOW,
+            activated_at=_NOW,
+            expires_at=_NOW + timedelta(days=90),
+            revoked_at=None,
+            revoked_by=None,
+        ),
     )
 
 
@@ -599,6 +632,8 @@ class RecordingSession(UnavailablePhaseFourSession):
         self.up_result = bootstrap_result()
         self.status_result = status_result()
         self.context_result = context_result()
+        self.current_identity_result = current_identity_result()
+        self.credential_logout_result = CredentialLogoutResult(profile="local")
         self.projects_result: tuple[Project, ...] = (project(),)
         self.project_creation_result = project_creation_result()
         self.project_binding_result = context_result()
@@ -685,6 +720,10 @@ class RecordingSession(UnavailablePhaseFourSession):
         self.up_requests: list[UpRequest] = []
         self.status_requests: list[StatusRequest] = []
         self.context_requests: list[ContextRequest] = []
+        self.whoami_requests: list[WhoAmIRequest] = []
+        self.login_requests: list[LoginRequest] = []
+        self.logout_requests: list[LogoutRequest] = []
+        self.recover_local_requests: list[RecoverLocalRequest] = []
         self.project_list_requests: list[ProjectListRequest] = []
         self.project_create_requests: list[ProjectCreateRequest] = []
         self.project_bind_requests: list[ProjectBindRequest] = []
@@ -729,6 +768,30 @@ class RecordingSession(UnavailablePhaseFourSession):
         self.context_requests.append(request)
         self._raise_failure("context")
         return self.context_result
+
+    def whoami(self, request: WhoAmIRequest) -> CurrentIdentityResult:
+        """Record and answer one authenticated-identity query."""
+        self.whoami_requests.append(request)
+        self._raise_failure("whoami")
+        return self.current_identity_result
+
+    def login(self, request: LoginRequest) -> CurrentIdentityResult:
+        """Record and answer one local credential enrollment."""
+        self.login_requests.append(request)
+        self._raise_failure("login")
+        return self.current_identity_result
+
+    def logout(self, request: LogoutRequest) -> CredentialLogoutResult:
+        """Record and answer one idempotent local credential removal."""
+        self.logout_requests.append(request)
+        self._raise_failure("logout")
+        return self.credential_logout_result
+
+    def recover_local(self, request: RecoverLocalRequest) -> CurrentIdentityResult:
+        """Record and answer one confirmed bootstrap-Human recovery."""
+        self.recover_local_requests.append(request)
+        self._raise_failure("recover_local")
+        return self.current_identity_result
 
     def list_projects(
         self,
