@@ -130,15 +130,13 @@ class TaskEventRecord:
     attempt_id: AttemptId | None
 
     def __post_init__(self) -> None:
-        """Validate the Phase 4 event-attribution snapshot contract."""
+        """Validate the cumulative event-attribution snapshot contract."""
         candidate_event: object = self.event
         candidate_kind: object = self.actor_kind
         if not isinstance(candidate_event, TaskEvent):
             raise StorageUnavailableError
-        if (
-            not isinstance(candidate_kind, SubjectKind)
-            or candidate_kind.value != SubjectKind.HUMAN.value
-            or self.attempt_id != candidate_event.attempt_id
+        if not isinstance(candidate_kind, SubjectKind) or (
+            self.attempt_id != candidate_event.attempt_id
         ):
             raise StorageUnavailableError
 
@@ -154,6 +152,7 @@ def insert_task_event(  # noqa: PLR0913 - exact durable event boundary.
     occurred_at: datetime,
     payload: Mapping[str, JsonValue],
     attempt_id: AttemptId | None,
+    actor_kind: SubjectKind = SubjectKind.HUMAN,
 ) -> TaskEventRecord:
     """Append one attributable Task event in an active write transaction.
 
@@ -167,6 +166,7 @@ def insert_task_event(  # noqa: PLR0913 - exact durable event boundary.
         occurred_at: Authoritative UTC transaction time.
         payload: Validated JSON-compatible event payload.
         attempt_id: Agent Attempt attribution or ``None`` for Human execution.
+        actor_kind: Immutable authenticated Subject-kind snapshot.
 
     Returns:
         Persisted event with its allocated monotonic cursor.
@@ -175,6 +175,8 @@ def insert_task_event(  # noqa: PLR0913 - exact durable event boundary.
         StorageUnavailableError: If an input or allocated cursor is malformed.
 
     """
+    if not isinstance(actor_kind, SubjectKind):
+        raise StorageUnavailableError
     try:
         event = TaskEvent(
             id=event_id,
@@ -202,7 +204,7 @@ def insert_task_event(  # noqa: PLR0913 - exact durable event boundary.
             str(event.task_uid),
             str(event.project_id),
             str(event.actor_subject_id),
-            SubjectKind.HUMAN.value,
+            actor_kind.value,
             None if attempt_id is None else str(attempt_id),
             str(event.request_id),
             event.event_type.value,
@@ -224,7 +226,7 @@ def insert_task_event(  # noqa: PLR0913 - exact durable event boundary.
     )
     return TaskEventRecord(
         event=persisted,
-        actor_kind=SubjectKind.HUMAN,
+        actor_kind=actor_kind,
         attempt_id=attempt_id,
     )
 

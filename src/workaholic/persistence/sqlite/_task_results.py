@@ -20,9 +20,11 @@ from workaholic.application import (
 )
 from workaholic.domain import (
     ApprovalRequirement,
+    AuthenticatedActor,
     DomainValidationError,
     ResultReview,
     ResultReviewStatus,
+    SubjectKind,
     Task,
     TaskEventType,
     TaskResult,
@@ -62,6 +64,7 @@ from workaholic.persistence.sqlite.errors import StorageUnavailableError
 
 if TYPE_CHECKING:
     import sqlite3
+    from datetime import datetime
     from pathlib import Path
 
     from workaholic.application import TaskResultInput
@@ -245,11 +248,18 @@ def _execute_result_mutation(
     fingerprint = _mutation_fingerprint(mutation)
     try:
         with open_write_transaction(database_path) as connection:
+            operator_actor = (
+                None
+                if isinstance(mutation, SubmitAgentResultMutation)
+                else mutation.actor
+            )
             current = _load_authorized_task(
                 connection,
                 task_uid=mutation.task_uid,
                 project_id=str(mutation.project_id),
                 actor_subject_id=str(mutation.actor_subject_id),
+                actor=operator_actor,
+                occurred_at=mutation.occurred_at,
             )
             replay = read_idempotent_result_outcome(
                 connection,
@@ -272,6 +282,11 @@ def _execute_result_mutation(
                     request_id=mutation.request_id,
                     occurred_at=mutation.occurred_at,
                     claim_expired_event_id=mutation.claim_expired_event_id,
+                    actor_kind=(
+                        SubjectKind.HUMAN
+                        if mutation.actor is None
+                        else mutation.actor.subject_kind
+                    ),
                 )
             elif isinstance(mutation, SubmitAgentResultMutation):
                 agent_owner_state = require_current_claim_owner(
@@ -415,6 +430,10 @@ def _prepare_submission(
         connection,
         task=current,
         actor_subject_id=mutation.actor_subject_id,
+        actor=(
+            None if isinstance(mutation, SubmitAgentResultMutation) else mutation.actor
+        ),
+        occurred_at=mutation.occurred_at,
     )
     if any(item.state is TaskState.CANCELLED for item in prerequisites):
         raise UnsatisfiableDependencyError
@@ -544,6 +563,8 @@ def _load_prerequisite_tasks(
     *,
     task: Task,
     actor_subject_id: SubjectId,
+    actor: AuthenticatedActor | None = None,
+    occurred_at: datetime | None = None,
 ) -> tuple[Task, ...]:
     """Hydrate the exact dependency projection under the same authorization.
 
@@ -551,6 +572,8 @@ def _load_prerequisite_tasks(
         connection: Active write transaction.
         task: Dependant Task with ordered prerequisite identities.
         actor_subject_id: Authenticated Human identity.
+        actor: Authenticated actor context, or the tokenless build bridge.
+        occurred_at: Authoritative authentication time when ``actor`` is set.
 
     Returns:
         Complete prerequisites in stable Human-key order.
@@ -569,6 +592,8 @@ def _load_prerequisite_tasks(
             task_uid=identity,
             project_id=str(task.project_id),
             actor_subject_id=str(actor_subject_id),
+            actor=actor,
+            occurred_at=occurred_at,
         )
         for identity in identities
     )
@@ -664,6 +689,11 @@ def _append_events(
                 occurred_at=mutation.occurred_at,
                 payload=_event_payload(event_type, task=task, result=result),
                 attempt_id=attempt_id,
+                actor_kind=(
+                    SubjectKind.HUMAN
+                    if mutation.actor is None
+                    else mutation.actor.subject_kind
+                ),
             )
         )
     return tuple(records)

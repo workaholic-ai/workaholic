@@ -653,6 +653,7 @@ class ProjectCreationMutation(_CommandModel):
     request_id: RequestId
     instance_id: InstanceId
     actor_subject_id: SubjectId
+    actor: AuthenticatedActor | None = Field(default=None, exclude=True, repr=False)
     occurred_at: datetime
     project_key: str
     project_name: str
@@ -728,6 +729,7 @@ class TaskCreationMutation(_CommandModel):
     request_id: RequestId
     project_id: ProjectId
     actor_subject_id: SubjectId
+    actor: AuthenticatedActor | None = Field(default=None, exclude=True, repr=False)
     occurred_at: datetime
     title: str
     objective: str
@@ -1434,6 +1436,7 @@ class _ExistingTaskMutation(_CommandModel):
     task_uid: TaskId
     project_id: ProjectId
     actor_subject_id: SubjectId
+    actor: AuthenticatedActor | None = Field(default=None, exclude=True, repr=False)
     request_id: RequestId
     occurred_at: datetime
     expected_version: int
@@ -1671,6 +1674,7 @@ class _ClaimOperationMutation(_CommandModel):
 
     project_id: ProjectId
     actor_subject_id: SubjectId
+    actor: AuthenticatedActor | None = Field(default=None, exclude=True, repr=False)
     request_id: RequestId
     occurred_at: datetime
     idempotency_key: str | None = None

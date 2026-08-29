@@ -6,6 +6,7 @@ from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING
 
 from workaholic.application import (
+    AuthenticationRequiredError,
     AuthorizeActor,
     LastInstanceAdminError,
     LastProjectOwnerError,
@@ -163,6 +164,57 @@ def require_project_permission(
         subject=subject,
         project=selected_project,
         grant=grant,
+    )
+
+
+def require_task_operator(  # noqa: PLR0913 - explicit authorization boundary.
+    connection: sqlite3.Connection,
+    *,
+    actor: AuthenticatedActor | None,
+    actor_subject_id: SubjectId,
+    project_id: ProjectId,
+    occurred_at: datetime | None,
+    required_kind: SubjectKind | None = None,
+) -> AuthorizedProject | None:
+    """Authorize one Phase 5 Operator mutation or its tokenless build bridge.
+
+    The null actor path exists only until authenticated Session composition is
+    completed. Once any Token exists, callers must supply an authenticated
+    actor and cannot fall back to the Phase 4 bootstrap identity.
+
+    Args:
+        connection: Active caller-owned SQLite write transaction.
+        actor: Optional secret-free authenticated actor context.
+        actor_subject_id: Mutation attribution identity that must match actor.
+        project_id: Exact Project mutation scope.
+        occurred_at: Authoritative Token validation time.
+        required_kind: Optional exact Human or Agent constraint.
+
+    Returns:
+        Fresh authorized projections, or null for a tokenless Phase 4 store.
+
+    Raises:
+        AuthenticationRequiredError: If a Token-backed store omits the actor.
+        PermissionDeniedError: If identity, role, kind, or scope is unauthorized.
+
+    """
+    if actor is None:
+        if connection.execute("SELECT 1 FROM tokens LIMIT 1").fetchone() is not None:
+            raise AuthenticationRequiredError
+        return None
+    if actor.subject_id != actor_subject_id:
+        raise PermissionDeniedError
+    if occurred_at is None:
+        raise StorageUnavailableError
+    return require_project_permission(
+        connection,
+        ProjectPermissionRequest(
+            actor=actor,
+            project=project_id,
+            permission=Permission.OPERATE_PROJECT,
+            occurred_at=occurred_at,
+            required_kind=required_kind,
+        ),
     )
 
 

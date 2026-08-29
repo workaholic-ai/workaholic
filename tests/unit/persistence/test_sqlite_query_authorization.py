@@ -205,6 +205,7 @@ def _task_mutation(
         request_id=RequestId(f"req_{suffix}"),
         project_id=project_id,
         actor_subject_id=_OWNER_ID,
+        actor=_actor("owner"),
         occurred_at=_NOW + timedelta(seconds=seconds),
         title=f"Task {suffix}",
         objective=f"Read {suffix}",

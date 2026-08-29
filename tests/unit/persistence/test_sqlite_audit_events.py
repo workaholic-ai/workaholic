@@ -268,6 +268,7 @@ def test_administrative_mutations_emit_exact_order_payload_and_attribution(
             request_id=RequestId("req_project-second"),
             instance_id=_INSTANCE_ID,
             actor_subject_id=_OWNER_ID,
+            actor=_actor(),
             occurred_at=_NOW + timedelta(minutes=13),
             project_key="SECOND",
             project_name="Second",
@@ -317,7 +318,7 @@ def test_administrative_mutations_emit_exact_order_payload_and_attribution(
         "subject_id": str(agent_id),
         "expires_at": _timestamp(expires_at),
     }
-    assert page.events[-1].actor_token_id is None
+    assert page.events[-1].actor_token_id == _OWNER_TOKEN_ID
     assert ordinary.version == 6
 
 

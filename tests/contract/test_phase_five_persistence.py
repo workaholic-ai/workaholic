@@ -7,6 +7,18 @@ from typing import TYPE_CHECKING, Final
 
 import pytest
 
+from workaholic.application import (
+    AddTaskDependencyMutation,
+    ApproveResultMutation,
+    ClaimTaskMutation,
+    ProjectCreationMutation,
+    RejectResultMutation,
+    ReleaseClaimMutation,
+    RenewClaimMutation,
+    SubmitHumanResultMutation,
+    TaskCreationMutation,
+    TaskUpdateMutation,
+)
 from workaholic.persistence.sqlite import (
     SchemaUnsupportedError,
     SQLiteRepository,
@@ -109,6 +121,26 @@ def test_sqlite_repository_exposes_current_identity_lifecycle_ports(
         "read_audit_events",
     ):
         assert callable(getattr(repository, method_name))
+
+
+def test_operator_mutations_carry_secret_free_internal_actor_context() -> None:
+    """Every Phase 5 Operator boundary accepts but never serializes its actor."""
+    for mutation_type in (
+        ProjectCreationMutation,
+        TaskCreationMutation,
+        TaskUpdateMutation,
+        AddTaskDependencyMutation,
+        SubmitHumanResultMutation,
+        ApproveResultMutation,
+        RejectResultMutation,
+        ClaimTaskMutation,
+        RenewClaimMutation,
+        ReleaseClaimMutation,
+    ):
+        actor_field = mutation_type.model_fields["actor"]
+        assert actor_field.default is None
+        assert actor_field.exclude is True
+        assert actor_field.repr is False
 
 
 def test_version_four_store_is_rejected_without_any_mutation(tmp_path: Path) -> None:

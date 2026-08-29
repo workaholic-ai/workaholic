@@ -14,6 +14,7 @@ from workaholic.domain import (
     ProjectId,
     RequestId,
     SubjectId,
+    SubjectKind,
     Task,
     TaskAttempt,
     TaskClaim,
@@ -263,19 +264,21 @@ def guard_human_task_mutation(  # noqa: PLR0913 - explicit attribution boundary.
     request_id: RequestId,
     occurred_at: datetime,
     claim_expired_event_id: TaskEventId,
+    actor_kind: SubjectKind = SubjectKind.HUMAN,
 ) -> tuple[StoredClaimState | None, tuple[TaskEventRecord, ...]]:
-    """Authorize a Human Task mutation and lazily materialize stale ownership.
+    """Guard an attempt-free Task mutation and materialize stale ownership.
 
     Args:
         connection: Active SQLite write transaction.
-        task: Authorized Task selected by the Human mutation.
-        actor_subject_id: Authenticated bootstrap Human Subject.
+        task: Authorized Task selected by the Operator mutation.
+        actor_subject_id: Authenticated Subject performing the mutation.
         request_id: Current logical request identity.
         occurred_at: Authoritative transaction time.
         claim_expired_event_id: Candidate event identity used only for expiry.
+        actor_kind: Immutable authenticated Subject-kind snapshot.
 
     Returns:
-        The retained current Human owner, if any, and an optional expiry prefix.
+        The retained current Human Claim owner, if any, and an expiry prefix.
 
     Raises:
         TaskLockedError: If another current Human or Agent Claim owns the Task.
@@ -313,6 +316,7 @@ def guard_human_task_mutation(  # noqa: PLR0913 - explicit attribution boundary.
         request_id=candidate_request,
         event_id=candidate_event,
         occurred_at=occurred_at,
+        actor_kind=actor_kind,
     )
     return None, (expired,)
 
@@ -326,6 +330,7 @@ def materialize_expired_claim(  # noqa: PLR0913 - explicit event attribution.
     request_id: RequestId,
     event_id: TaskEventId,
     occurred_at: datetime,
+    actor_kind: SubjectKind = SubjectKind.HUMAN,
 ) -> TaskEventRecord:
     """Remove one stale Claim, end its Agent Attempt, and append expiry.
 
@@ -337,6 +342,7 @@ def materialize_expired_claim(  # noqa: PLR0913 - explicit event attribution.
         request_id: Logical request that materializes the expiry.
         event_id: Globally unique candidate expiry-event identity.
         occurred_at: Authoritative transaction time at or after expiry.
+        actor_kind: Immutable authenticated Subject-kind snapshot.
 
     Returns:
         Persisted ``claim_expired`` event record.
@@ -393,6 +399,7 @@ def materialize_expired_claim(  # noqa: PLR0913 - explicit event attribution.
         occurred_at=occurred_at,
         payload={"lease_expires_at": serialize_timestamp(state.claim.lease_expires_at)},
         attempt_id=state.claim.attempt_id,
+        actor_kind=actor_kind,
     )
 
 

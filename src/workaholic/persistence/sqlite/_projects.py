@@ -7,6 +7,7 @@ import json
 from typing import TYPE_CHECKING, Final, cast
 
 from workaholic.application import (
+    AuthenticationRequiredError,
     IdempotencyConflictError,
     NotInitializedError,
     PermissionDeniedError,
@@ -28,6 +29,10 @@ from workaholic.persistence.sqlite._audit_events import (
     AuditActor,
     AuditEventDraft,
     append_audit_event,
+    authenticated_audit_actor,
+)
+from workaholic.persistence.sqlite._authorization import (
+    require_instance_administrator,
 )
 from workaholic.persistence.sqlite._records import (
     PROJECT_FIELD_SET,
@@ -67,6 +72,7 @@ def create_project(
         The new or idempotently replayed Project and Owner grant.
 
     Raises:
+        AuthenticationRequiredError: If a Token-backed store omits the actor.
         IdempotencyConflictError: If a caller key has different semantic input.
         NotInitializedError: If the selected Instance does not exist.
         PermissionDeniedError: If the creator is not an enabled Human admin.
@@ -178,11 +184,15 @@ def _create_project_in_transaction(
     append_audit_event(
         connection,
         AuditEventDraft(
-            actor=AuditActor(
-                instance_id=mutation.instance_id,
-                subject_id=mutation.actor_subject_id,
-                kind=SubjectKind.HUMAN,
-                token_id=None,
+            actor=(
+                AuditActor(
+                    instance_id=mutation.instance_id,
+                    subject_id=mutation.actor_subject_id,
+                    kind=SubjectKind.HUMAN,
+                    token_id=None,
+                )
+                if mutation.actor is None
+                else authenticated_audit_actor(mutation.actor)
             ),
             request_id=mutation.request_id,
             event_type=AuditEventType.PROJECT_CREATED,
@@ -214,11 +224,27 @@ def _require_authorized_creator(
         mutation: Project request carrying Instance and creator identities.
 
     Raises:
+        AuthenticationRequiredError: If a Token-backed store omits the actor.
         NotInitializedError: If the selected Instance does not exist.
         PermissionDeniedError: If the selected creator is not authorized.
         StorageUnavailableError: If local singleton state is malformed.
 
     """
+    if mutation.actor is not None:
+        if (
+            mutation.actor.instance_id != mutation.instance_id
+            or mutation.actor.subject_id != mutation.actor_subject_id
+        ):
+            raise PermissionDeniedError
+        require_instance_administrator(
+            connection,
+            mutation.actor,
+            occurred_at=mutation.occurred_at,
+        )
+        return
+    if connection.execute("SELECT 1 FROM tokens LIMIT 1").fetchone() is not None:
+        raise AuthenticationRequiredError
+
     instance_rows = connection.execute(
         "SELECT id FROM instances ORDER BY id LIMIT 2"
     ).fetchall()

@@ -552,7 +552,7 @@ def test_agent_event_record_round_trips_attempt_attribution() -> None:
     event = replace(human.event, attempt_id=attempt_id)
     record = TaskEventRecord(
         event=event,
-        actor_kind=SubjectKind.HUMAN,
+        actor_kind=SubjectKind.AGENT,
         attempt_id=attempt_id,
     )
 
@@ -582,7 +582,7 @@ def test_event_codecs_reject_mismatched_attribution_and_noncanonical_payloads() 
     with pytest.raises(StorageUnavailableError):
         task_event_record_from_row(tuple(row))
     row = list(task_event_row(record))
-    row[5] = "agent"
+    row[5] = "invalid"
     with pytest.raises(StorageUnavailableError):
         task_event_record_from_row(tuple(row))
 
