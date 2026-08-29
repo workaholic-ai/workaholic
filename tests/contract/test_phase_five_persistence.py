@@ -9,6 +9,7 @@ import pytest
 
 from workaholic.persistence.sqlite import (
     SchemaUnsupportedError,
+    SQLiteRepository,
     initialize_empty_store,
     validate_store_schema,
 )
@@ -82,6 +83,21 @@ def _insert_instance_and_subject(
             _NOW,
         ),
     )
+
+
+def test_sqlite_repository_exposes_complete_subject_lifecycle_port(
+    tmp_path: Path,
+) -> None:
+    """The concrete façade keeps every SubjectRepository entry point explicit."""
+    repository = SQLiteRepository((tmp_path / "local.db").resolve())
+    for method_name in (
+        "create_subject",
+        "list_subjects",
+        "update_subject",
+        "set_subject_enabled",
+        "set_instance_admin",
+    ):
+        assert callable(getattr(repository, method_name))
 
 
 def test_version_four_store_is_rejected_without_any_mutation(tmp_path: Path) -> None:

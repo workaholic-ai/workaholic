@@ -12,6 +12,9 @@ from workaholic.domain import (
     InstanceId,
     Project,
     ProjectId,
+    Subject,
+    SubjectId,
+    SubjectKind,
     validate_json_value,
 )
 from workaholic.persistence.sqlite.errors import StorageUnavailableError
@@ -29,6 +32,131 @@ PROJECT_FIELDS = (
     "created_at",
 )
 PROJECT_FIELD_SET = frozenset(PROJECT_FIELDS)
+SUBJECT_FIELDS = (
+    "id",
+    "instance_id",
+    "kind",
+    "handle",
+    "display_name",
+    "enabled",
+    "is_instance_admin",
+    "version",
+    "created_by",
+    "created_at",
+    "updated_at",
+)
+SUBJECT_FIELD_SET = frozenset(SUBJECT_FIELDS)
+
+
+def subject_to_mapping(value: Subject) -> dict[str, object]:
+    """Serialize one validated Subject into canonical durable fields.
+
+    Args:
+        value: Subject to serialize.
+
+    Returns:
+        New mapping in canonical Subject field order.
+
+    Raises:
+        StorageUnavailableError: If the runtime value is not a Subject.
+
+    """
+    candidate: object = value
+    if not isinstance(candidate, Subject):
+        raise StorageUnavailableError
+    return {
+        "id": str(candidate.id),
+        "instance_id": str(candidate.instance_id),
+        "kind": candidate.kind.value,
+        "handle": candidate.handle,
+        "display_name": candidate.display_name,
+        "enabled": candidate.enabled,
+        "is_instance_admin": candidate.is_instance_admin,
+        "version": candidate.version,
+        "created_by": str(candidate.created_by),
+        "created_at": serialize_timestamp(candidate.created_at),
+        "updated_at": serialize_timestamp(candidate.updated_at),
+    }
+
+
+def subject_from_mapping(value: Mapping[str, object]) -> Subject:
+    """Deserialize one exact canonical Subject mapping.
+
+    Args:
+        value: Candidate persisted Subject fields.
+
+    Returns:
+        Validated immutable Subject.
+
+    Raises:
+        StorageUnavailableError: If the mapping shape or values are malformed.
+
+    """
+    candidate: object = value
+    if not isinstance(candidate, Mapping) or set(candidate) != SUBJECT_FIELD_SET:
+        raise StorageUnavailableError
+    ordered = [candidate[field] for field in SUBJECT_FIELDS]
+    if type(ordered[5]) is not bool or type(ordered[6]) is not bool:
+        raise StorageUnavailableError
+    ordered[5] = int(ordered[5])
+    ordered[6] = int(ordered[6])
+    return _build_subject(tuple(ordered))
+
+
+def subject_from_row(value: Sequence[object]) -> Subject:
+    """Deserialize one Subject selected in ``SUBJECT_FIELDS`` order.
+
+    Args:
+        value: SQLite row values in canonical Subject field order.
+
+    Returns:
+        Validated immutable Subject.
+
+    Raises:
+        StorageUnavailableError: If the row shape or values are malformed.
+
+    """
+    candidate: object = value
+    if not isinstance(candidate, Sequence) or isinstance(candidate, (str, bytes)):
+        raise StorageUnavailableError
+    if len(candidate) != len(SUBJECT_FIELDS):
+        raise StorageUnavailableError
+    return _build_subject(candidate)
+
+
+def _build_subject(value: Sequence[object]) -> Subject:
+    """Build one Subject from a shape-checked value sequence.
+
+    Args:
+        value: Ordered persisted Subject values.
+
+    Returns:
+        Validated immutable Subject.
+
+    Raises:
+        StorageUnavailableError: If any value violates the Subject contract.
+
+    """
+    try:
+        persisted_display_name = require_text(value[4])
+        subject = Subject(
+            id=SubjectId(require_text(value[0])),
+            instance_id=InstanceId(require_text(value[1])),
+            kind=SubjectKind(require_text(value[2])),
+            handle=require_text(value[3]),
+            display_name=persisted_display_name,
+            enabled=require_boolean(value[5]),
+            is_instance_admin=require_boolean(value[6]),
+            version=require_integer(value[7]),
+            created_by=SubjectId(require_text(value[8])),
+            created_at=parse_timestamp(value[9]),
+            updated_at=parse_timestamp(value[10]),
+        )
+    except (IndexError, TypeError, ValueError) as error:
+        raise StorageUnavailableError from error
+    if subject.display_name != persisted_display_name:
+        raise StorageUnavailableError
+    return subject
 
 
 def project_to_mapping(value: Project) -> dict[str, object]:

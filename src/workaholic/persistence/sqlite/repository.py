@@ -12,6 +12,15 @@ from workaholic.persistence.sqlite._bootstrap import (
     bootstrap_local_project as _bootstrap_local_project,
 )
 from workaholic.persistence.sqlite._projects import create_project as _create_project
+from workaholic.persistence.sqlite._subjects import create_subject as _create_subject
+from workaholic.persistence.sqlite._subjects import list_subjects as _list_subjects
+from workaholic.persistence.sqlite._subjects import (
+    set_instance_admin as _set_instance_admin,
+)
+from workaholic.persistence.sqlite._subjects import (
+    set_subject_enabled as _set_subject_enabled,
+)
+from workaholic.persistence.sqlite._subjects import update_subject as _update_subject
 from workaholic.persistence.sqlite._task_claims import (
     claim_next_task as _claim_next_task,
 )
@@ -61,12 +70,14 @@ if TYPE_CHECKING:
         ClaimNextTaskMutation,
         ClaimTaskMutation,
         Clock,
+        CreateSubjectMutation,
         GetLocalStatus,
         GetProjectByKey,
         GetTask,
         GetTaskDetails,
         ListInstanceTasks,
         ListProjects,
+        ListSubjects,
         ListTasks,
         ListTasksByView,
         ProjectCreationMutation,
@@ -77,7 +88,11 @@ if TYPE_CHECKING:
         RemoveTaskDependencyMutation,
         RenewClaimMutation,
         ReportTaskProgressMutation,
+        SetInstanceAdminMutation,
+        SetSubjectEnabledMutation,
         StatusResult,
+        SubjectPage,
+        SubjectResult,
         SubmitAgentResultMutation,
         SubmitHumanResultMutation,
         TaskBlockMutation,
@@ -92,6 +107,7 @@ if TYPE_CHECKING:
         TaskSubmissionResult,
         TaskUnblockMutation,
         TaskUpdateMutation,
+        UpdateSubjectMutation,
     )
     from workaholic.domain import Project, Task
 
@@ -388,6 +404,72 @@ class SQLiteRepository:
 
         """
         return _create_project(self._database_path, mutation)
+
+    def create_subject(self, mutation: CreateSubjectMutation) -> SubjectResult:
+        """Create one enabled, non-administrative Subject atomically.
+
+        Args:
+            mutation: Authenticated Subject creation mutation.
+
+        Returns:
+            Committed or idempotently replayed Subject.
+
+        """
+        return _create_subject(self._database_path, mutation)
+
+    def list_subjects(self, command: ListSubjects) -> SubjectPage:
+        """List one stable handle-ordered page of Instance Subjects.
+
+        Args:
+            command: Authenticated actor-bound pagination query.
+
+        Returns:
+            Stable Subject page with an opaque continuation cursor.
+
+        """
+        return _list_subjects(self._database_path, command)
+
+    def update_subject(self, mutation: UpdateSubjectMutation) -> SubjectResult:
+        """Update one Subject display name at its exact version.
+
+        Args:
+            mutation: Authenticated optimistic Subject update.
+
+        Returns:
+            Committed or idempotently replayed Subject.
+
+        """
+        return _update_subject(self._database_path, mutation)
+
+    def set_subject_enabled(
+        self,
+        mutation: SetSubjectEnabledMutation,
+    ) -> SubjectResult:
+        """Enable or disable one Subject at its exact version.
+
+        Args:
+            mutation: Authenticated optimistic state mutation.
+
+        Returns:
+            Committed or idempotently replayed Subject.
+
+        """
+        return _set_subject_enabled(self._database_path, mutation)
+
+    def set_instance_admin(
+        self,
+        mutation: SetInstanceAdminMutation,
+    ) -> SubjectResult:
+        """Grant or revoke Instance administration at an exact version.
+
+        Args:
+            mutation: Authenticated optimistic administrator mutation.
+
+        Returns:
+            Committed or idempotently replayed Subject.
+
+        """
+        return _set_instance_admin(self._database_path, mutation)
 
     def get_local_status(self, command: GetLocalStatus) -> StatusResult:
         """Read authorized local status without mutating storage.
