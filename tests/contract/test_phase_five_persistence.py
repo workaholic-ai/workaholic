@@ -3,16 +3,44 @@
 from __future__ import annotations
 
 import sqlite3
-from typing import TYPE_CHECKING, Final
+from dataclasses import dataclass
+from datetime import datetime, timedelta
+from typing import TYPE_CHECKING, Final, cast
+from unittest.mock import patch
 
 import pytest
+from tests.contract.phase_five import (
+    DeterministicPhaseFiveIdentifierFactory,
+    PhaseFiveIdentifierFactory,
+    PhaseFiveRepository,
+    PhaseFiveRepositoryFactory,
+    PhaseFiveTransactionFailurePoint,
+    actor_for,
+    grant_mutation,
+    phase_five_time,
+    subject_mutation,
+    token_mutation,
+)
+from tests.contract.phase_one import bootstrap_mutation
+from tests.contract.test_phase_four_persistence import (
+    PhaseFourPersistenceContract,
+    _SQLitePhaseFourRepositoryFactory,
+)
 
 from workaholic.application import (
+    ActivateTokenMutation,
     AddTaskDependencyMutation,
     ApproveResultMutation,
+    AuthenticateToken,
+    BootstrapResult,
     ClaimNextTaskMutation,
     ClaimTaskMutation,
+    GetCurrentIdentity,
+    ListProjectGrants,
+    ListSubjects,
+    ListTokens,
     ProjectCreationMutation,
+    ReadAuditEvents,
     RejectResultMutation,
     ReleaseClaimMutation,
     RenewClaimMutation,
@@ -22,6 +50,15 @@ from workaholic.application import (
     TaskCreationMutation,
     TaskUpdateMutation,
 )
+from workaholic.auth import generate_token, hash_token
+from workaholic.domain import (
+    AuditEventType,
+    AuthenticatedActor,
+    ProjectRole,
+    RequestId,
+    TokenId,
+    TokenStatus,
+)
 from workaholic.persistence.sqlite import (
     SchemaUnsupportedError,
     SQLiteRepository,
@@ -30,12 +67,386 @@ from workaholic.persistence.sqlite import (
 )
 
 if TYPE_CHECKING:
+    from contextlib import AbstractContextManager
     from pathlib import Path
 
 pytestmark = pytest.mark.contract
 
 _NOW: Final = "2026-08-29T10:00:00.000000Z"
 _LATER: Final = "2026-08-29T11:00:00.000000Z"
+
+
+def _zero_bytes(size: int) -> bytes:
+    """Return deterministic zero-filled Token entropy."""
+    return bytes(size)
+
+
+def _worker_bytes(size: int) -> bytes:
+    """Return deterministic worker-Token entropy."""
+    return b"w" * size
+
+
+def _test_token_bytes(size: int) -> bytes:
+    """Return deterministic rollback-Token entropy."""
+    return b"t" * size
+
+
+@dataclass(frozen=True, slots=True)
+class _SQLitePhaseFiveRepositoryFactory(_SQLitePhaseFourRepositoryFactory):
+    """Adapt production SQLite to the cumulative Phase 5 factory."""
+
+    def identifiers(self, namespace: str) -> PhaseFiveIdentifierFactory:
+        """Construct one complete deterministic Phase 5 identity sequence."""
+        return DeterministicPhaseFiveIdentifierFactory(namespace)
+
+    def bootstrap_authenticated(
+        self,
+        root: Path,
+        namespace: str,
+    ) -> tuple[PhaseFiveRepository, BootstrapResult, AuthenticatedActor]:
+        """Create one bootstrap graph and seed its active Human Token."""
+        repository = SQLiteRepository(
+            root / "local.db",
+            clock=self.clock(offset=0),
+        )
+        bootstrap = repository.bootstrap_local_project(
+            bootstrap_mutation(
+                namespace,
+                occurred_at=phase_five_time(),
+            )
+        )
+        token_id = TokenId(f"tok_{namespace}_root")
+        raw_token = generate_token(token_id, random_bytes=_zero_bytes)
+        connection = sqlite3.connect(repository.database_path)
+        connection.execute("PRAGMA foreign_keys = ON")
+        try:
+            connection.execute(
+                """
+                INSERT INTO tokens (
+                    id, instance_id, subject_id, token_hash, created_by,
+                    created_at, activated_at, expires_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    str(token_id),
+                    str(bootstrap.instance.id),
+                    str(bootstrap.subject.id),
+                    hash_token(raw_token),
+                    str(bootstrap.subject.id),
+                    _serialize_time(phase_five_time()),
+                    _serialize_time(phase_five_time()),
+                    _serialize_time(phase_five_time() + timedelta(days=30)),
+                ),
+            )
+            connection.commit()
+        finally:
+            connection.close()
+        return repository, bootstrap, actor_for(bootstrap, token_id=token_id)
+
+    def inject_phase_five_failure(
+        self,
+        point: PhaseFiveTransactionFailurePoint,
+    ) -> AbstractContextManager[None]:
+        """Patch one SQLite identity write at an adapter-neutral boundary."""
+        targets = {
+            PhaseFiveTransactionFailurePoint.SUBJECT_AUDIT: (
+                "workaholic.persistence.sqlite._subjects.append_audit_event"
+            ),
+            PhaseFiveTransactionFailurePoint.SUBJECT_IDEMPOTENCY: (
+                "workaholic.persistence.sqlite._subjects._record_replay"
+            ),
+            PhaseFiveTransactionFailurePoint.TOKEN_AUDIT: (
+                "workaholic.persistence.sqlite._tokens.append_audit_event"
+            ),
+            PhaseFiveTransactionFailurePoint.TOKEN_IDEMPOTENCY: (
+                "workaholic.persistence.sqlite._tokens._record_replay"
+            ),
+            PhaseFiveTransactionFailurePoint.GRANT_AUDIT: (
+                "workaholic.persistence.sqlite._grants.append_audit_event"
+            ),
+            PhaseFiveTransactionFailurePoint.GRANT_IDEMPOTENCY: (
+                "workaholic.persistence.sqlite._grants._record_replay"
+            ),
+        }
+        return cast(
+            "AbstractContextManager[None]",
+            patch(
+                targets[point],
+                side_effect=RuntimeError(f"injected {point.value} failure"),
+            ),
+        )
+
+
+def _serialize_time(value: datetime) -> str:
+    """Serialize one UTC fixture timestamp in canonical SQLite form."""
+    return value.isoformat(timespec="microseconds").replace("+00:00", "Z")
+
+
+class PhaseFivePersistenceContract(PhaseFourPersistenceContract):
+    """Reusable cumulative observable contract for identity persistence."""
+
+    @pytest.fixture
+    def repository_factory(self) -> PhaseFiveRepositoryFactory:
+        """Provide the adapter factory under cumulative conformance."""
+        message = "A concrete Phase 5 repository contract must provide its factory."
+        raise NotImplementedError(message)
+
+    def test_factory_provides_phase_five_ids_and_restart_authentication(
+        self,
+        repository_factory: PhaseFiveRepositoryFactory,
+        tmp_path: Path,
+    ) -> None:
+        """Identity IDs are deterministic and committed auth survives restart."""
+        first = repository_factory.identifiers("identity")
+        second = repository_factory.identifiers("identity")
+        assert str(first.new_token_id()) == "tok_identity_1"
+        assert str(first.new_audit_event_id()) == "aev_identity_1"
+        assert str(second.new_token_id()) == "tok_identity_1"
+
+        root = tmp_path / "restart"
+        _, bootstrap, actor = repository_factory.bootstrap_authenticated(
+            root,
+            "restart",
+        )
+        reopened = cast("PhaseFiveRepository", repository_factory.create(root))
+        assert (
+            reopened.get_current_identity(GetCurrentIdentity(actor=actor)).subject.id
+            == bootstrap.subject.id
+        )
+
+    def test_subject_token_grant_and_audit_lifecycle_is_secret_free(
+        self,
+        repository_factory: PhaseFiveRepositoryFactory,
+        tmp_path: Path,
+    ) -> None:
+        """One identity graph is durable, attributable, and never returns secrets."""
+        repository, bootstrap, actor = repository_factory.bootstrap_authenticated(
+            tmp_path / "lifecycle",
+            "lifecycle",
+        )
+        created = repository.create_subject(
+            subject_mutation(actor, "worker", idempotency_key="create-worker")
+        ).subject
+        replayed = repository.create_subject(
+            subject_mutation(actor, "worker", idempotency_key="create-worker")
+        ).subject
+        assert replayed == created
+
+        token_id = TokenId("tok_worker")
+        raw_token = generate_token(token_id, random_bytes=_worker_bytes)
+        digest = hash_token(raw_token)
+        pending = repository.issue_pending_token(
+            token_mutation(actor, created.id, "worker", digest=digest)
+        ).token
+        assert pending.status is TokenStatus.PENDING
+        active = repository.activate_token(
+            ActivateTokenMutation(
+                actor=actor,
+                request_id=RequestId("req_activate_worker"),
+                occurred_at=phase_five_time(3),
+                idempotency_key="activate-worker",
+                token_id=token_id,
+            )
+        ).token
+        assert active.status is TokenStatus.ACTIVE
+        authenticated = repository.authenticate_token(
+            AuthenticateToken(
+                token_id=token_id,
+                token_digest=digest,
+                expected_instance_id=bootstrap.instance.id,
+                occurred_at=phase_five_time(4),
+            )
+        )
+        assert authenticated.subject_id == created.id
+
+        assigned = repository.assign_project_grant(
+            grant_mutation(
+                actor,
+                created.id,
+                bootstrap.project.id,
+                "worker",
+                role=ProjectRole.AGENT,
+                idempotency_key="grant-worker",
+            )
+        ).grant
+        assert assigned.role is ProjectRole.AGENT
+        subjects = repository.list_subjects(ListSubjects(actor=actor)).subjects
+        grants = repository.list_project_grants(
+            ListProjectGrants(actor=actor, project=bootstrap.project.id)
+        ).grants
+        tokens = repository.list_tokens(
+            ListTokens(actor=actor, subject=created.id)
+        ).tokens
+        assert {subject.id for subject in subjects} == {
+            bootstrap.subject.id,
+            created.id,
+        }
+        assert any(grant.subject_id == created.id for grant in grants)
+        assert tokens == (active,)
+        serialized = repr(tokens)
+        assert raw_token.get_secret_value() not in serialized
+        assert digest not in serialized
+
+        events = repository.read_audit_events(
+            ReadAuditEvents(actor=actor, limit=100)
+        ).events
+        assert {
+            AuditEventType.SUBJECT_CREATED,
+            AuditEventType.TOKEN_ISSUED,
+            AuditEventType.PROJECT_GRANT_ASSIGNED,
+        }.issubset({event.event_type for event in events})
+        assert all(event.actor_subject_id == actor.subject_id for event in events[1:])
+
+    @pytest.mark.parametrize(
+        "point",
+        [
+            PhaseFiveTransactionFailurePoint.SUBJECT_AUDIT,
+            PhaseFiveTransactionFailurePoint.SUBJECT_IDEMPOTENCY,
+        ],
+    )
+    def test_subject_failures_roll_back_every_observable_record(
+        self,
+        repository_factory: PhaseFiveRepositoryFactory,
+        tmp_path: Path,
+        point: PhaseFiveTransactionFailurePoint,
+    ) -> None:
+        """Subject audit and replay failures expose no partial identity state."""
+        repository, _, actor = repository_factory.bootstrap_authenticated(
+            tmp_path / point.value,
+            point.value,
+        )
+        before_events = repository.read_audit_events(
+            ReadAuditEvents(actor=actor, limit=100)
+        )
+        mutation = subject_mutation(
+            actor,
+            f"rollback-{point.value}",
+            idempotency_key=f"idem-{point.value}",
+        )
+        before = repository.list_subjects(ListSubjects(actor=actor))
+
+        with (
+            repository_factory.inject_phase_five_failure(point),
+            pytest.raises(RuntimeError, match="injected"),
+        ):
+            repository.create_subject(mutation)
+        assert repository.list_subjects(ListSubjects(actor=actor)) == before
+        assert (
+            repository.read_audit_events(ReadAuditEvents(actor=actor, limit=100))
+            == before_events
+        )
+        repository.create_subject(mutation)
+        assert len(repository.list_subjects(ListSubjects(actor=actor)).subjects) == (
+            len(before.subjects) + 1
+        )
+
+    @pytest.mark.parametrize(
+        "point",
+        [
+            PhaseFiveTransactionFailurePoint.TOKEN_AUDIT,
+            PhaseFiveTransactionFailurePoint.TOKEN_IDEMPOTENCY,
+        ],
+    )
+    def test_token_failures_leave_the_token_pending(
+        self,
+        repository_factory: PhaseFiveRepositoryFactory,
+        tmp_path: Path,
+        point: PhaseFiveTransactionFailurePoint,
+    ) -> None:
+        """Token activation is atomic with audit and replay persistence."""
+        repository, bootstrap, actor = repository_factory.bootstrap_authenticated(
+            tmp_path / point.value,
+            point.value,
+        )
+        token_id = TokenId(f"tok_{point.value}")
+        raw = generate_token(token_id, random_bytes=_test_token_bytes)
+        repository.issue_pending_token(
+            token_mutation(
+                actor,
+                bootstrap.subject.id,
+                point.value,
+                digest=hash_token(raw),
+            )
+        )
+        mutation = ActivateTokenMutation(
+            actor=actor,
+            request_id=RequestId(f"req_{point.value}"),
+            occurred_at=phase_five_time(4),
+            idempotency_key=f"idem-{point.value}",
+            token_id=token_id,
+        )
+        with (
+            repository_factory.inject_phase_five_failure(point),
+            pytest.raises(RuntimeError, match="injected"),
+        ):
+            repository.activate_token(mutation)
+        token = repository.list_tokens(
+            ListTokens(actor=actor, subject=bootstrap.subject.id)
+        ).tokens[-1]
+        assert token.id == token_id
+        assert token.status is TokenStatus.PENDING
+        assert repository.activate_token(mutation).token.status is TokenStatus.ACTIVE
+
+    @pytest.mark.parametrize(
+        "point",
+        [
+            PhaseFiveTransactionFailurePoint.GRANT_AUDIT,
+            PhaseFiveTransactionFailurePoint.GRANT_IDEMPOTENCY,
+        ],
+    )
+    def test_grant_failures_preserve_the_previous_role_set(
+        self,
+        repository_factory: PhaseFiveRepositoryFactory,
+        tmp_path: Path,
+        point: PhaseFiveTransactionFailurePoint,
+    ) -> None:
+        """Grant assignment is atomic with audit and replay persistence."""
+        repository, bootstrap, actor = repository_factory.bootstrap_authenticated(
+            tmp_path / point.value,
+            point.value,
+        )
+        target = repository.create_subject(
+            subject_mutation(actor, f"target-{point.value}")
+        ).subject
+        mutation = grant_mutation(
+            actor,
+            target.id,
+            bootstrap.project.id,
+            point.value,
+            idempotency_key=f"idem-{point.value}",
+        )
+        before = repository.list_project_grants(
+            ListProjectGrants(actor=actor, project=bootstrap.project.id)
+        )
+        with (
+            repository_factory.inject_phase_five_failure(point),
+            pytest.raises(RuntimeError, match="injected"),
+        ):
+            repository.assign_project_grant(mutation)
+        assert (
+            repository.list_project_grants(
+                ListProjectGrants(actor=actor, project=bootstrap.project.id)
+            )
+            == before
+        )
+        repository.assign_project_grant(mutation)
+        assert (
+            len(
+                repository.list_project_grants(
+                    ListProjectGrants(actor=actor, project=bootstrap.project.id)
+                ).grants
+            )
+            == len(before.grants) + 1
+        )
+
+
+class TestSQLitePhaseFivePersistence(PhaseFivePersistenceContract):
+    """Apply the cumulative Phase 5 repository contract to SQLite."""
+
+    @pytest.fixture
+    def repository_factory(self) -> PhaseFiveRepositoryFactory:
+        """Provide the production SQLite Phase 5 factory."""
+        return _SQLitePhaseFiveRepositoryFactory()
 
 
 def _connect_phase_five(tmp_path: Path) -> tuple[Path, sqlite3.Connection]:

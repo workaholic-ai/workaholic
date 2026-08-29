@@ -2,12 +2,19 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 import pytest
+from tests.contract.test_phase_four_session import PhaseFourSessionContract
+from tests.contract.test_phase_three_session import _LocalSessionFactory
 
 if TYPE_CHECKING:
     from pathlib import Path
+
+    from tests.contract.phase_five import PhaseFiveSessionFactory
+
+    from workaholic.session import WorkaholicSession
 
 from workaholic import composition
 from workaholic.application import (
@@ -33,6 +40,131 @@ from workaholic.session import (
     UpRequest,
     WhoAmIRequest,
 )
+
+pytestmark = pytest.mark.contract
+
+
+@dataclass(slots=True)
+class _PhaseFiveLocalSessionFactory(_LocalSessionFactory):
+    """Extend the local cumulative factory with explicit Token Sessions."""
+
+    def create_with_token(
+        self,
+        root: Path,
+        workspace: Path,
+        token_file: Path,
+    ) -> WorkaholicSession:
+        """Create a Session whose sole caller credential is one Token file.
+
+        Args:
+            root: Test-owned trusted data root.
+            workspace: Existing Workspace bound to the configured Instance.
+            token_file: Protected absolute Token file.
+
+        Returns:
+            Production LocalSession authenticated by ``token_file``.
+
+        """
+        config_directory = root.parent / f".{root.name}-config"
+        return composition.create_local_session(
+            cwd=workspace,
+            environment={
+                "WORKAHOLIC_CONFIG_DIR": str(config_directory),
+                "WORKAHOLIC_CREDENTIAL_BACKEND": "file",
+                "WORKAHOLIC_DATA_DIR": str(root),
+                "WORKAHOLIC_TOKEN_FILE": str(token_file),
+            },
+        )
+
+
+class PhaseFiveSessionContract(PhaseFourSessionContract):
+    """Reusable cumulative Session contract for explicit identities."""
+
+    @pytest.fixture
+    def session_factory(self) -> PhaseFiveSessionFactory:
+        """Provide the Session factory under cumulative conformance."""
+        message = "A concrete Phase 5 Session contract must provide its factory."
+        raise NotImplementedError(message)
+
+    def test_two_agents_use_distinct_tokens_and_project_roles(
+        self,
+        session_factory: PhaseFiveSessionFactory,
+        tmp_path: Path,
+    ) -> None:
+        """Independent Agent Tokens never collapse into the local Human actor."""
+        root = tmp_path / "data"
+        workspace = _workspace(tmp_path)
+        human = composition.create_local_session(
+            cwd=workspace,
+            environment={
+                "WORKAHOLIC_CONFIG_DIR": str(root.parent / f".{root.name}-config"),
+                "WORKAHOLIC_CREDENTIAL_BACKEND": "file",
+                "WORKAHOLIC_DATA_DIR": str(root),
+            },
+        )
+        human.up(UpRequest(project_key="ACME"))
+        first = human.create_subject(
+            SubjectCreateRequest(kind=SubjectKind.AGENT, handle="first-agent")
+        ).subject
+        second = human.create_subject(
+            SubjectCreateRequest(kind=SubjectKind.AGENT, handle="second-agent")
+        ).subject
+        human.assign_grant(
+            GrantAssignRequest(
+                subject=first.id,
+                project="ACME",
+                role=ProjectRole.AGENT,
+            )
+        )
+        human.assign_grant(
+            GrantAssignRequest(
+                subject=second.id,
+                project="ACME",
+                role=ProjectRole.VIEWER,
+            )
+        )
+        task = human.create_task(TaskCreateRequest(title="Identity-owned work"))
+        first_path = _token_path(tmp_path, "first.token")
+        second_path = _token_path(tmp_path, "second.token")
+        first_token = human.create_token(
+            TokenCreateRequest(subject=first.id, token_file=first_path)
+        ).token
+        human.create_token(
+            TokenCreateRequest(subject=second.id, token_file=second_path)
+        )
+
+        first_session = session_factory.create_with_token(
+            root,
+            workspace,
+            first_path,
+        )
+        second_session = session_factory.create_with_token(
+            root,
+            workspace,
+            second_path,
+        )
+        assert first_session.whoami(WhoAmIRequest()).subject.id == first.id
+        assert second_session.whoami(WhoAmIRequest()).subject.id == second.id
+        assert first_session.claim_next_task(AgentTaskClaimRequest()).task == task
+        with pytest.raises(PermissionDeniedError):
+            second_session.claim_next_task(AgentTaskClaimRequest())
+
+        human.revoke_token(TokenRevokeRequest(token_id=first_token.id))
+        with pytest.raises(AuthenticationFailedError):
+            session_factory.create_with_token(
+                root,
+                workspace,
+                first_path,
+            ).whoami(WhoAmIRequest())
+
+
+class TestEmbeddedLocalPhaseFiveSession(PhaseFiveSessionContract):
+    """Apply the cumulative Phase 5 Session contract to LocalSession."""
+
+    @pytest.fixture
+    def session_factory(self) -> PhaseFiveSessionFactory:
+        """Provide a production local Phase 5 Session factory."""
+        return _PhaseFiveLocalSessionFactory()
 
 
 def _environment(tmp_path: Path) -> dict[str, str]:
@@ -150,9 +282,7 @@ def test_logout_login_and_confirmed_recovery_are_credential_boundaries(
         )
     ).token
     session.logout(LogoutRequest())
-    enrolled = session.login(
-        LoginRequest(raw_token=read_token_file(replacement_path))
-    )
+    enrolled = session.login(LoginRequest(raw_token=read_token_file(replacement_path)))
     assert enrolled.token.id == replacement.id
 
     with pytest.raises(AuthenticationFailedError):
