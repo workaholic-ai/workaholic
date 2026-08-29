@@ -35,7 +35,10 @@ from workaholic.domain import (
     build_task_key,
     transition_task_state,
 )
-from workaholic.persistence.sqlite._authorization import require_task_operator
+from workaholic.persistence.sqlite._authorization import (
+    require_task_agent,
+    require_task_operator,
+)
 from workaholic.persistence.sqlite._claim_state import (
     end_human_claim,
     guard_human_task_mutation,
@@ -598,35 +601,11 @@ def _load_authorized_task(  # noqa: PLR0913 - explicit authorization boundary.
         required_kind=required_kind,
     )
     if authorized is not None:
-        row = connection.execute(
-            """
-            SELECT
-                p.key,
-                t.uid, t.project_id, t.number, t.key, t.title, t.objective,
-                t.state, t.priority, t.available_at, t.approval,
-                t.acceptance_json, t.context_json, t.blocking_reason,
-                t.current_result_id, t.version, t.created_by, t.created_at,
-                t.updated_at
-            FROM projects AS p
-            LEFT JOIN tasks AS t
-              ON t.project_id = p.id AND t.uid = ?
-            WHERE p.id = ?
-            """,
-            (str(task_uid), project_id),
-        ).fetchone()
-        if row is None:
-            raise PermissionDeniedError
-        if row[1] is None:
-            raise TaskNotFoundError
-        dependencies = _load_dependencies(
+        return _load_scoped_task(
             connection,
             task_uid=task_uid,
-            project_id=project_id,
+            project_id=authorized.project.id,
         )
-        task = task_from_row(row[1:], depends_on=dependencies)
-        if task.key != build_task_key(require_text(row[0]), task.number):
-            raise StorageUnavailableError
-        return task
     row = connection.execute(
         """
         SELECT
@@ -661,6 +640,104 @@ def _load_authorized_task(  # noqa: PLR0913 - explicit authorization boundary.
         project_id=project_id,
     )
     task = task_from_row(row[4:], depends_on=dependencies)
+    if task.key != build_task_key(require_text(row[0]), task.number):
+        raise StorageUnavailableError
+    return task
+
+
+def _load_agent_task(  # noqa: PLR0913 - explicit authorization boundary.
+    connection: sqlite3.Connection,
+    *,
+    task_uid: TaskId,
+    project_id: ProjectId,
+    actor_subject_id: SubjectId,
+    actor: AuthenticatedActor | None,
+    occurred_at: datetime,
+) -> Task:
+    """Authorize one exact Agent execution and hydrate its scoped Task.
+
+    Args:
+        connection: Active validated write transaction.
+        task_uid: Canonical Task identity.
+        project_id: Exact Project execution scope.
+        actor_subject_id: Mutation attribution identity bound to the actor.
+        actor: Authenticated Agent context or the tokenless build bridge.
+        occurred_at: Authoritative authentication time.
+
+    Returns:
+        Complete persisted Task including ordered dependencies.
+
+    Raises:
+        PermissionDeniedError: If Agent authorization is absent.
+        TaskNotFoundError: If the authorized scoped Task does not exist.
+
+    """
+    authorized = require_task_agent(
+        connection,
+        actor=actor,
+        actor_subject_id=actor_subject_id,
+        project_id=project_id,
+        occurred_at=occurred_at,
+    )
+    if authorized is not None:
+        return _load_scoped_task(
+            connection,
+            task_uid=task_uid,
+            project_id=authorized.project.id,
+        )
+    return _load_authorized_task(
+        connection,
+        task_uid=task_uid,
+        project_id=str(project_id),
+        actor_subject_id=str(actor_subject_id),
+    )
+
+
+def _load_scoped_task(
+    connection: sqlite3.Connection,
+    *,
+    task_uid: TaskId,
+    project_id: ProjectId,
+) -> Task:
+    """Hydrate one Task after authorization in the caller's transaction.
+
+    Args:
+        connection: Active validated write transaction.
+        task_uid: Canonical Task identity.
+        project_id: Already-authorized Project identity.
+
+    Returns:
+        Complete persisted Task including ordered dependencies.
+
+    Raises:
+        TaskNotFoundError: If the scoped Task does not exist.
+        StorageUnavailableError: If persisted Task data is malformed.
+
+    """
+    row = connection.execute(
+        """
+        SELECT
+            p.key,
+            t.uid, t.project_id, t.number, t.key, t.title, t.objective,
+            t.state, t.priority, t.available_at, t.approval,
+            t.acceptance_json, t.context_json, t.blocking_reason,
+            t.current_result_id, t.version, t.created_by, t.created_at,
+            t.updated_at
+        FROM projects AS p
+        LEFT JOIN tasks AS t
+          ON t.project_id = p.id AND t.uid = ?
+        WHERE p.id = ?
+        """,
+        (str(task_uid), str(project_id)),
+    ).fetchone()
+    if row is None or row[1] is None:
+        raise TaskNotFoundError
+    dependencies = _load_dependencies(
+        connection,
+        task_uid=task_uid,
+        project_id=str(project_id),
+    )
+    task = task_from_row(row[1:], depends_on=dependencies)
     if task.key != build_task_key(require_text(row[0]), task.number):
         raise StorageUnavailableError
     return task

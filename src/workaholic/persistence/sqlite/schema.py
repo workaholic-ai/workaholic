@@ -346,6 +346,7 @@ _SCHEMA_STATEMENTS: Final = (
                 AND lease_expires_at > started_at
             ),
         UNIQUE (id, task_uid, subject_id),
+        UNIQUE (id, task_uid, project_id),
         UNIQUE (id, task_uid, project_id, subject_id),
         FOREIGN KEY (task_uid, project_id)
             REFERENCES tasks(uid, project_id) ON DELETE RESTRICT,
@@ -582,8 +583,8 @@ _SCHEMA_STATEMENTS: Final = (
             REFERENCES tasks(uid, project_id) ON DELETE RESTRICT,
         FOREIGN KEY (actor_subject_id, actor_kind)
             REFERENCES subjects(id, kind) ON DELETE RESTRICT,
-        FOREIGN KEY (attempt_id, task_uid, project_id, actor_subject_id)
-            REFERENCES task_attempts(id, task_uid, project_id, subject_id)
+        FOREIGN KEY (attempt_id, task_uid, project_id)
+            REFERENCES task_attempts(id, task_uid, project_id)
             ON DELETE RESTRICT
     ) STRICT
     """,

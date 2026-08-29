@@ -1,4 +1,4 @@
-"""Canonical Phase 4 TaskClaim and TaskAttempt SQLite record codecs."""
+"""Canonical TaskClaim and authenticated Agent TaskAttempt record codecs."""
 
 from __future__ import annotations
 

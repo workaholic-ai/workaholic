@@ -198,6 +198,83 @@ def require_task_operator(  # noqa: PLR0913 - explicit authorization boundary.
         PermissionDeniedError: If identity, role, kind, or scope is unauthorized.
 
     """
+    return _require_task_permission(
+        connection,
+        actor=actor,
+        actor_subject_id=actor_subject_id,
+        project_id=project_id,
+        occurred_at=occurred_at,
+        permission=Permission.OPERATE_PROJECT,
+        required_kind=required_kind,
+    )
+
+
+def require_task_agent(
+    connection: sqlite3.Connection,
+    *,
+    actor: AuthenticatedActor | None,
+    actor_subject_id: SubjectId,
+    project_id: ProjectId,
+    occurred_at: datetime | None,
+) -> AuthorizedProject | None:
+    """Authorize one Agent execution mutation or its tokenless build bridge.
+
+    Args:
+        connection: Active caller-owned SQLite write transaction.
+        actor: Optional secret-free authenticated actor context.
+        actor_subject_id: Mutation attribution identity that must match actor.
+        project_id: Exact Project execution scope.
+        occurred_at: Authoritative Token validation time.
+
+    Returns:
+        Fresh authorized projections, or null for a tokenless Phase 4 store.
+
+    Raises:
+        AuthenticationRequiredError: If a Token-backed store omits the actor.
+        PermissionDeniedError: If identity, role, kind, or scope is unauthorized.
+
+    """
+    return _require_task_permission(
+        connection,
+        actor=actor,
+        actor_subject_id=actor_subject_id,
+        project_id=project_id,
+        occurred_at=occurred_at,
+        permission=Permission.EXECUTE_AGENT,
+        required_kind=SubjectKind.AGENT,
+    )
+
+
+def _require_task_permission(  # noqa: PLR0913 - explicit authorization boundary.
+    connection: sqlite3.Connection,
+    *,
+    actor: AuthenticatedActor | None,
+    actor_subject_id: SubjectId,
+    project_id: ProjectId,
+    occurred_at: datetime | None,
+    permission: Permission,
+    required_kind: SubjectKind | None,
+) -> AuthorizedProject | None:
+    """Apply shared actor binding and fresh Project permission semantics.
+
+    Args:
+        connection: Active caller-owned SQLite write transaction.
+        actor: Optional secret-free authenticated actor context.
+        actor_subject_id: Mutation attribution identity that must match actor.
+        project_id: Exact Project operation scope.
+        occurred_at: Authoritative Token validation time.
+        permission: Cumulative Project permission required by the operation.
+        required_kind: Optional exact Subject-kind constraint.
+
+    Returns:
+        Fresh authorized projections, or null for a tokenless Phase 4 store.
+
+    Raises:
+        AuthenticationRequiredError: If a Token-backed store omits the actor.
+        PermissionDeniedError: If identity, role, kind, or scope is unauthorized.
+        StorageUnavailableError: If authenticated input omits authoritative time.
+
+    """
     if actor is None:
         if connection.execute("SELECT 1 FROM tokens LIMIT 1").fetchone() is not None:
             raise AuthenticationRequiredError
@@ -211,7 +288,7 @@ def require_task_operator(  # noqa: PLR0913 - explicit authorization boundary.
         ProjectPermissionRequest(
             actor=actor,
             project=project_id,
-            permission=Permission.OPERATE_PROJECT,
+            permission=permission,
             occurred_at=occurred_at,
             required_kind=required_kind,
         ),

@@ -10,11 +10,14 @@ import pytest
 from workaholic.application import (
     AddTaskDependencyMutation,
     ApproveResultMutation,
+    ClaimNextTaskMutation,
     ClaimTaskMutation,
     ProjectCreationMutation,
     RejectResultMutation,
     ReleaseClaimMutation,
     RenewClaimMutation,
+    ReportTaskProgressMutation,
+    SubmitAgentResultMutation,
     SubmitHumanResultMutation,
     TaskCreationMutation,
     TaskUpdateMutation,
@@ -123,8 +126,8 @@ def test_sqlite_repository_exposes_current_identity_lifecycle_ports(
         assert callable(getattr(repository, method_name))
 
 
-def test_operator_mutations_carry_secret_free_internal_actor_context() -> None:
-    """Every Phase 5 Operator boundary accepts but never serializes its actor."""
+def test_task_mutations_carry_secret_free_internal_actor_context() -> None:
+    """Every Phase 5 task boundary accepts but never serializes its actor."""
     for mutation_type in (
         ProjectCreationMutation,
         TaskCreationMutation,
@@ -134,8 +137,11 @@ def test_operator_mutations_carry_secret_free_internal_actor_context() -> None:
         ApproveResultMutation,
         RejectResultMutation,
         ClaimTaskMutation,
+        ClaimNextTaskMutation,
         RenewClaimMutation,
         ReleaseClaimMutation,
+        ReportTaskProgressMutation,
+        SubmitAgentResultMutation,
     ):
         actor_field = mutation_type.model_fields["actor"]
         assert actor_field.default is None

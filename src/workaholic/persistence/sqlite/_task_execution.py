@@ -14,6 +14,7 @@ from workaholic.application import (
 from workaholic.domain import (
     PROGRESS_OBSERVATIONS_MAX_ITEMS,
     DomainValidationError,
+    SubjectKind,
     Task,
     TaskAttempt,
     TaskEventType,
@@ -47,7 +48,7 @@ from workaholic.persistence.sqlite._records import (
     require_text,
     serialize_timestamp,
 )
-from workaholic.persistence.sqlite._task_lifecycle import _load_authorized_task
+from workaholic.persistence.sqlite._task_lifecycle import _load_agent_task
 from workaholic.persistence.sqlite._task_records import (
     TASK_FIELD_SET,
     task_from_mapping,
@@ -92,11 +93,13 @@ def report_task_progress(
     fingerprint = _progress_fingerprint(candidate)
     try:
         with open_write_transaction(database_path) as connection:
-            task = _load_authorized_task(
+            task = _load_agent_task(
                 connection,
                 task_uid=candidate.task_uid,
-                project_id=str(candidate.project_id),
-                actor_subject_id=str(candidate.actor_subject_id),
+                project_id=candidate.project_id,
+                actor_subject_id=candidate.actor_subject_id,
+                actor=candidate.actor,
+                occurred_at=candidate.occurred_at,
             )
             replay = _read_idempotent_progress(
                 connection,
@@ -201,6 +204,11 @@ def _append_progress_events(
             occurred_at=mutation.occurred_at,
             payload=_progress_event_payload(mutation.progress),
             attempt_id=mutation.attempt_id,
+            actor_kind=(
+                SubjectKind.HUMAN
+                if mutation.actor is None
+                else mutation.actor.subject_kind
+            ),
         )
     ]
     for event_id, observation in zip(
@@ -219,6 +227,11 @@ def _append_progress_events(
                 occurred_at=mutation.occurred_at,
                 payload={"kind": observation.kind.value, "text": observation.text},
                 attempt_id=mutation.attempt_id,
+                actor_kind=(
+                    SubjectKind.HUMAN
+                    if mutation.actor is None
+                    else mutation.actor.subject_kind
+                ),
             )
         )
     return tuple(records)

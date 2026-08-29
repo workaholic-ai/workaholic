@@ -614,6 +614,7 @@ def test_empty_store_has_exact_columns_indexes_and_foreign_keys(
             "task_attempts": {
                 ("id",),
                 ("id", "task_uid", "subject_id"),
+                ("id", "task_uid", "project_id"),
                 ("id", "task_uid", "project_id", "subject_id"),
             },
             "task_claims": {("task_uid",), ("attempt_id",)},
@@ -850,13 +851,6 @@ def test_empty_store_has_exact_columns_indexes_and_foreign_keys(
                 "project_id",
                 "task_attempts",
                 "project_id",
-                "RESTRICT",
-            ),
-            (
-                "task_events",
-                "actor_subject_id",
-                "task_attempts",
-                "subject_id",
                 "RESTRICT",
             ),
             ("task_events", "task_uid", "tasks", "uid", "RESTRICT"),

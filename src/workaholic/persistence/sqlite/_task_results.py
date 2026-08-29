@@ -55,6 +55,7 @@ from workaholic.persistence.sqlite._result_records import (
     task_result_row,
 )
 from workaholic.persistence.sqlite._task_lifecycle import (
+    _load_agent_task,
     _load_authorized_task,
     _load_dependencies,
     _write_task_if_version,
@@ -248,18 +249,24 @@ def _execute_result_mutation(
     fingerprint = _mutation_fingerprint(mutation)
     try:
         with open_write_transaction(database_path) as connection:
-            operator_actor = (
-                None
+            current = (
+                _load_agent_task(
+                    connection,
+                    task_uid=mutation.task_uid,
+                    project_id=mutation.project_id,
+                    actor_subject_id=mutation.actor_subject_id,
+                    actor=mutation.actor,
+                    occurred_at=mutation.occurred_at,
+                )
                 if isinstance(mutation, SubmitAgentResultMutation)
-                else mutation.actor
-            )
-            current = _load_authorized_task(
-                connection,
-                task_uid=mutation.task_uid,
-                project_id=str(mutation.project_id),
-                actor_subject_id=str(mutation.actor_subject_id),
-                actor=operator_actor,
-                occurred_at=mutation.occurred_at,
+                else _load_authorized_task(
+                    connection,
+                    task_uid=mutation.task_uid,
+                    project_id=str(mutation.project_id),
+                    actor_subject_id=str(mutation.actor_subject_id),
+                    actor=mutation.actor,
+                    occurred_at=mutation.occurred_at,
+                )
             )
             replay = read_idempotent_result_outcome(
                 connection,
@@ -430,10 +437,9 @@ def _prepare_submission(
         connection,
         task=current,
         actor_subject_id=mutation.actor_subject_id,
-        actor=(
-            None if isinstance(mutation, SubmitAgentResultMutation) else mutation.actor
-        ),
+        actor=mutation.actor,
         occurred_at=mutation.occurred_at,
+        agent_execution=isinstance(mutation, SubmitAgentResultMutation),
     )
     if any(item.state is TaskState.CANCELLED for item in prerequisites):
         raise UnsatisfiableDependencyError
@@ -558,22 +564,24 @@ def _prepare_review(
     return reviewed, target_state
 
 
-def _load_prerequisite_tasks(
+def _load_prerequisite_tasks(  # noqa: PLR0913 - explicit authorization boundary.
     connection: sqlite3.Connection,
     *,
     task: Task,
     actor_subject_id: SubjectId,
     actor: AuthenticatedActor | None = None,
     occurred_at: datetime | None = None,
+    agent_execution: bool = False,
 ) -> tuple[Task, ...]:
     """Hydrate the exact dependency projection under the same authorization.
 
     Args:
         connection: Active write transaction.
         task: Dependant Task with ordered prerequisite identities.
-        actor_subject_id: Authenticated Human identity.
+        actor_subject_id: Authenticated mutation identity.
         actor: Authenticated actor context, or the tokenless build bridge.
         occurred_at: Authoritative authentication time when ``actor`` is set.
+        agent_execution: Whether Agent rather than Operator permission applies.
 
     Returns:
         Complete prerequisites in stable Human-key order.
@@ -586,6 +594,20 @@ def _load_prerequisite_tasks(
     )
     if identities != task.depends_on:
         raise StorageUnavailableError
+    if agent_execution:
+        if occurred_at is None:
+            raise StorageUnavailableError
+        return tuple(
+            _load_agent_task(
+                connection,
+                task_uid=identity,
+                project_id=task.project_id,
+                actor_subject_id=actor_subject_id,
+                actor=actor,
+                occurred_at=occurred_at,
+            )
+            for identity in identities
+        )
     return tuple(
         _load_authorized_task(
             connection,
