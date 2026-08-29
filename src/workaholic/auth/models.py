@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import StrEnum
+from hmac import compare_digest
 
 from workaholic.auth._token_format import validate_token_text
 from workaholic.auth.errors import TokenFormatError
@@ -54,6 +55,30 @@ class RawToken:
     def __repr__(self) -> str:
         """Return a representation that cannot disclose the credential."""
         return "RawToken(<redacted>)"
+
+    def __eq__(self, other: object) -> bool:
+        """Compare two opaque credentials without timing-sensitive equality.
+
+        Args:
+            other: Candidate opaque credential.
+
+        Returns:
+            Whether both canonical strings are identical.
+
+        """
+        if not isinstance(other, RawToken):
+            return NotImplemented
+        return compare_digest(self.__value, other.__value)
+
+    def __hash__(self) -> int:
+        """Reject hashing so credentials cannot become durable mapping keys.
+
+        Raises:
+            TypeError: Always.
+
+        """
+        message = "RawToken values are intentionally unhashable."
+        raise TypeError(message)
 
     def __str__(self) -> str:
         """Return a redacted string for logging and common formatting."""

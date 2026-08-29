@@ -46,6 +46,7 @@ def test_source_metadata_matches_foundation_decisions() -> None:
         {"name": "Pavels Gurskis", "email": "pg@ithesion.com"}
     ]
     assert project["dependencies"] == [
+        "keyring>=25.7.0,<26.0.0",
         "platformdirs>=4.11.0,<4.12.0",
         "pydantic>=2.13.4,<2.14.0",
         "typer>=0.27.0,<0.28.0",
@@ -68,6 +69,7 @@ def test_installed_metadata_matches_source_metadata() -> None:
     assert installed["Author-email"] == ("Pavels Gurskis <pg@ithesion.com>")
     assert installed["Description-Content-Type"] == "text/markdown"
     assert installed.get_all("Requires-Dist") == [
+        "keyring<26.0.0,>=25.7.0",
         "platformdirs<4.12.0,>=4.11.0",
         "pydantic<2.14.0,>=2.13.4",
         "typer<0.28.0,>=0.27.0",

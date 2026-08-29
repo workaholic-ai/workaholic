@@ -84,6 +84,8 @@ def test_absolute_config_override_is_used_without_creating_it(tmp_path: Path) ->
 
     assert paths.config_directory == expected
     assert paths.profiles_file == expected / "profiles.toml"
+    assert paths.credentials_directory == expected / "credentials"
+    assert paths.credentials_file == expected / "credentials" / "credentials.toml"
     assert not expected.exists()
 
 

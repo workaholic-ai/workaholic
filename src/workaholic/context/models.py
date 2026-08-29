@@ -11,6 +11,8 @@ from workaholic.context.errors import ContextInvalidError, ProfileInvalidError
 from workaholic.domain import WorkspaceBinding, validate_profile_name
 
 _DATABASE_FILENAME = "local.db"
+_CREDENTIALS_DIRECTORY = "credentials"
+_CREDENTIALS_FILENAME = "credentials.toml"
 
 
 @dataclass(frozen=True, slots=True)
@@ -35,6 +37,16 @@ class LocalConfigPaths:
         if profiles_file != config_directory / "profiles.toml":
             message = "The trusted profile file must be named profiles.toml."
             raise ContextInvalidError(message)
+
+    @property
+    def credentials_directory(self) -> Path:
+        """Return the dedicated protected credential directory path."""
+        return self.config_directory / _CREDENTIALS_DIRECTORY
+
+    @property
+    def credentials_file(self) -> Path:
+        """Return the protected fallback credential file path."""
+        return self.credentials_directory / _CREDENTIALS_FILENAME
 
 
 @dataclass(frozen=True, slots=True)

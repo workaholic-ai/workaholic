@@ -31,6 +31,8 @@ def test_raw_token_exposes_secret_only_through_explicit_accessor() -> None:
     assert text not in f"{raw_token}"
     assert repr(raw_token) == "RawToken(<redacted>)"
     assert str(raw_token) == "<redacted>"
+    with pytest.raises(TypeError, match="intentionally unhashable"):
+        hash(raw_token)
     with pytest.raises(ValueError, match="does not support"):
         format(raw_token, ">20")
 
