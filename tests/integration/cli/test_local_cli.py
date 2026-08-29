@@ -43,6 +43,7 @@ def _run_cli(
         {
             "NO_COLOR": "1",
             "WORKAHOLIC_CONFIG_DIR": str(data_directory.parent / "config"),
+            "WORKAHOLIC_CREDENTIAL_BACKEND": "file",
             "WORKAHOLIC_DATA_DIR": str(data_directory),
         }
     )
@@ -150,7 +151,7 @@ def test_local_cli_persists_complete_journey_across_fresh_processes(  # noqa: PL
     )
     status_data = require_object(require_success(status), context="status data")
     assert status_data["mode"] == "embedded"
-    assert status_data["schema_version"] == 4
+    assert status_data["schema_version"] == 5
     assert status_data["instance"] == instance
     assert status_data["project"] == project
     assert status_data["subject"] == subject

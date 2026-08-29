@@ -48,7 +48,7 @@ _EXPECTED_WHEEL_SUMMARY = {
         "progress_reported",
         "result_submitted",
     ],
-    "schema_version": 4,
+    "schema_version": 5,
 }
 _FUTURE_GOLDEN_REASONS = (
     "Phase 6: missing authenticated server, RemoteSession, and shared-team workflow.",

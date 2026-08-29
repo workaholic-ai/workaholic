@@ -8,23 +8,30 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Final, Protocol
+from threading import Lock
+from typing import TYPE_CHECKING, Final, Protocol, cast
 
 from workaholic.application import (
     ApplicationError,
     ApplicationErrorCode,
+    AuditApplication,
+    AuthenticationApplication,
     BootstrapApplication,
     BootstrapRepository,
     ClaimExecutionRepository,
     Clock,
     ExecutionIdentifierFactory,
+    GrantApplication,
     IdentifierFactory,
+    IdentityIdentifierFactory,
+    IdentityRepository,
     ProfileInvalidError,
     ProfileNotFoundError,
     ProjectApplication,
     ProjectRepository,
     QueryApplication,
     QueryRepository,
+    SubjectApplication,
     TaskApplication,
     TaskClaimApplication,
     TaskDependencyApplication,
@@ -32,6 +39,15 @@ from workaholic.application import (
     TaskLifecycleApplication,
     TaskRepository,
     TaskResultApplication,
+    TokenApplication,
+)
+from workaholic.auth import (
+    CredentialStore,
+    FileCredentialStore,
+    HumanCredential,
+    KeyringCredentialStore,
+    resolve_credential_backend,
+    select_credential_store,
 )
 from workaholic.cli.main import create_app
 from workaholic.context import (
@@ -48,6 +64,8 @@ from workaholic.context import (
 )
 from workaholic.domain import (
     AttemptId,
+    AuditEventId,
+    AuthenticatedActor,
     InstanceId,
     ProjectId,
     RequestId,
@@ -55,6 +73,7 @@ from workaholic.domain import (
     SubjectId,
     TaskEventId,
     TaskId,
+    TokenId,
     WorkspaceBinding,
     validate_profile_name,
 )
@@ -69,11 +88,56 @@ from workaholic.session import (
     WorkaholicSession,
     WorkspaceContextSelection,
 )
+from workaholic.session._phase_five import PhaseFiveRuntime
+
+if TYPE_CHECKING:
+    from pydantic import BaseModel
+
+    from workaholic.application import (
+        AddTaskDependencyMutation,
+        ApproveResultMutation,
+        BootstrapMutation,
+        ClaimNextTaskMutation,
+        ClaimTaskMutation,
+        GetLocalStatus,
+        GetProjectByKey,
+        GetTask,
+        GetTaskDetails,
+        ListInstanceTasks,
+        ListProjects,
+        ListTasks,
+        ListTasksByView,
+        ProjectCreationMutation,
+        ReadTaskEvents,
+        RejectResultMutation,
+        ReleaseClaimMutation,
+        RemoveTaskDependencyMutation,
+        RenewClaimMutation,
+        ReportTaskProgressMutation,
+        SubmitAgentResultMutation,
+        SubmitHumanResultMutation,
+        TaskBlockMutation,
+        TaskCancelMutation,
+        TaskCreationMutation,
+        TaskUnblockMutation,
+        TaskUpdateMutation,
+    )
 
 _PROGRAM_NAME = "workaholic"
 _UUID7_VERSION = 7
 _IDENTIFIER_PREFIXES: Final = frozenset(
-    ("ins_", "prj_", "sub_", "tsk_", "res_", "evt_", "req_", "atm_")
+    (
+        "ins_",
+        "prj_",
+        "sub_",
+        "tsk_",
+        "res_",
+        "evt_",
+        "req_",
+        "atm_",
+        "tok_",
+        "aev_",
+    )
 )
 
 type ConfigPathResolver = Callable[[Mapping[str, str]], LocalConfigPaths]
@@ -85,6 +149,7 @@ class _ComposedRepository(
     TaskRepository,
     QueryRepository,
     ClaimExecutionRepository,
+    IdentityRepository,
     Protocol,
 ):
     """Expose only operations consumed by the current local composition."""
@@ -94,6 +159,250 @@ class _ComposedIdentifierFactory(
     IdentifierFactory, ExecutionIdentifierFactory, Protocol
 ):
     """Generate every identity owned by the embedded application services."""
+
+
+class _PhaseFiveComposedIdentifierFactory(
+    _ComposedIdentifierFactory,
+    IdentityIdentifierFactory,
+    Protocol,
+):
+    """Generate cumulative identities for authenticated local composition."""
+
+
+class _ActorBoundRepository:
+    """Inject one authenticated actor into every cumulative Task operation."""
+
+    def __init__(
+        self,
+        repository: _ComposedRepository,
+        actor: AuthenticatedActor,
+    ) -> None:
+        """Bind one raw repository to one command-scoped actor.
+
+        Args:
+            repository: Complete raw persistence adapter.
+            actor: Authenticated actor to inject into every operation.
+
+        """
+        actor_value: object = actor
+        if not isinstance(actor_value, AuthenticatedActor):
+            message = "Actor-bound repository requires an AuthenticatedActor."
+            raise TypeError(message)
+        self._repository = repository
+        self._actor = actor
+
+    def bootstrap_local_project(self, value: BaseModel) -> object:
+        """Delegate bootstrap only after the Session authenticated this runtime."""
+        return self._repository.bootstrap_local_project(
+            cast("BootstrapMutation", value)
+        )
+
+    def create_task(self, value: BaseModel) -> object:
+        """Delegate authenticated Task creation."""
+        return self._repository.create_task(
+            cast("TaskCreationMutation", self._bind(value))
+        )
+
+    def update_task_if_version(self, value: BaseModel) -> object:
+        """Delegate an authenticated Task definition update."""
+        return self._repository.update_task_if_version(
+            cast("TaskUpdateMutation", self._bind(value))
+        )
+
+    def block_task(self, value: BaseModel) -> object:
+        """Delegate an authenticated Task block transition."""
+        return self._repository.block_task(cast("TaskBlockMutation", self._bind(value)))
+
+    def unblock_task(self, value: BaseModel) -> object:
+        """Delegate an authenticated Task unblock transition."""
+        return self._repository.unblock_task(
+            cast("TaskUnblockMutation", self._bind(value))
+        )
+
+    def cancel_task(self, value: BaseModel) -> object:
+        """Delegate an authenticated Task cancellation."""
+        return self._repository.cancel_task(
+            cast("TaskCancelMutation", self._bind(value))
+        )
+
+    def claim_task(self, value: BaseModel) -> object:
+        """Delegate an authenticated targeted Claim."""
+        return self._repository.claim_task(cast("ClaimTaskMutation", self._bind(value)))
+
+    def claim_next_task(self, value: BaseModel) -> object:
+        """Delegate an authenticated Agent pull."""
+        return self._repository.claim_next_task(
+            cast("ClaimNextTaskMutation", self._bind(value))
+        )
+
+    def renew_claim(self, value: BaseModel) -> object:
+        """Delegate an authenticated Claim renewal."""
+        return self._repository.renew_claim(
+            cast("RenewClaimMutation", self._bind(value))
+        )
+
+    def release_claim(self, value: BaseModel) -> object:
+        """Delegate an authenticated Claim release."""
+        return self._repository.release_claim(
+            cast("ReleaseClaimMutation", self._bind(value))
+        )
+
+    def report_task_progress(self, value: BaseModel) -> object:
+        """Delegate an authenticated progress report."""
+        return self._repository.report_task_progress(
+            cast("ReportTaskProgressMutation", self._bind(value))
+        )
+
+    def add_task_dependency(self, value: BaseModel) -> object:
+        """Delegate an authenticated dependency addition."""
+        return self._repository.add_task_dependency(
+            cast("AddTaskDependencyMutation", self._bind(value))
+        )
+
+    def remove_task_dependency(self, value: BaseModel) -> object:
+        """Delegate an authenticated dependency removal."""
+        return self._repository.remove_task_dependency(
+            cast("RemoveTaskDependencyMutation", self._bind(value))
+        )
+
+    def submit_human_result(self, value: BaseModel) -> object:
+        """Delegate an authenticated Human submission."""
+        return self._repository.submit_human_result(
+            cast("SubmitHumanResultMutation", self._bind(value))
+        )
+
+    def submit_agent_result(self, value: BaseModel) -> object:
+        """Delegate an authenticated Agent submission."""
+        return self._repository.submit_agent_result(
+            cast("SubmitAgentResultMutation", self._bind(value))
+        )
+
+    def approve_result(self, value: BaseModel) -> object:
+        """Delegate an authenticated Result approval."""
+        return self._repository.approve_result(
+            cast("ApproveResultMutation", self._bind(value))
+        )
+
+    def reject_result(self, value: BaseModel) -> object:
+        """Delegate an authenticated Result rejection."""
+        return self._repository.reject_result(
+            cast("RejectResultMutation", self._bind(value))
+        )
+
+    def create_project(self, value: BaseModel) -> object:
+        """Delegate authenticated Project creation."""
+        return self._repository.create_project(
+            cast("ProjectCreationMutation", self._bind(value))
+        )
+
+    def get_local_status(self, value: BaseModel) -> object:
+        """Delegate an authenticated status query."""
+        return self._repository.get_local_status(
+            cast("GetLocalStatus", self._bind(value))
+        )
+
+    def list_projects(self, value: BaseModel) -> object:
+        """Delegate an authenticated Project listing."""
+        return self._repository.list_projects(cast("ListProjects", self._bind(value)))
+
+    def get_project_by_key(self, value: BaseModel) -> object:
+        """Delegate an authenticated Project lookup."""
+        return self._repository.get_project_by_key(
+            cast("GetProjectByKey", self._bind(value))
+        )
+
+    def list_tasks(self, value: BaseModel) -> object:
+        """Delegate an authenticated Project Task page."""
+        return self._repository.list_tasks(cast("ListTasks", self._bind(value)))
+
+    def list_tasks_for_instance(self, value: BaseModel) -> object:
+        """Delegate an authenticated Instance Task page."""
+        return self._repository.list_tasks_for_instance(
+            cast("ListInstanceTasks", self._bind(value))
+        )
+
+    def get_task(self, value: BaseModel) -> object:
+        """Delegate an authenticated Task lookup."""
+        return self._repository.get_task(cast("GetTask", self._bind(value)))
+
+    def get_task_details(self, value: BaseModel) -> object:
+        """Delegate an authenticated Task-details query."""
+        return self._repository.get_task_details(
+            cast("GetTaskDetails", self._bind(value))
+        )
+
+    def list_tasks_by_view(self, value: BaseModel) -> object:
+        """Delegate an authenticated Task-view page."""
+        return self._repository.list_tasks_by_view(
+            cast("ListTasksByView", self._bind(value))
+        )
+
+    def read_task_events_after(self, value: BaseModel) -> object:
+        """Delegate an authenticated TaskEvent page."""
+        return self._repository.read_task_events_after(
+            cast("ReadTaskEvents", self._bind(value))
+        )
+
+    def _bind(self, value: BaseModel) -> BaseModel:
+        """Copy one validated command with authoritative actor identities."""
+        fields = type(value).model_fields
+        if "actor" not in fields:
+            message = "Actor-bound repository command has no actor field."
+            raise TypeError(message)
+        updates: dict[str, object] = {"actor": self._actor}
+        if "actor_subject_id" in fields:
+            updates["actor_subject_id"] = self._actor.subject_id
+        if "subject_id" in fields:
+            updates["subject_id"] = self._actor.subject_id
+        if "instance_id" in fields:
+            updates["instance_id"] = self._actor.instance_id
+        return value.model_copy(update=updates)
+
+
+class _LazyCredentialStore:
+    """Select one Human credential backend on its first profile operation."""
+
+    def __init__(
+        self,
+        *,
+        environment: Mapping[str, str],
+        paths: LocalConfigPaths,
+        forbidden_roots: tuple[Path, ...],
+    ) -> None:
+        """Retain trusted inputs without touching a keyring or filesystem."""
+        self._environment = environment
+        self._paths = paths
+        self._forbidden_roots = forbidden_roots
+        self._selected: CredentialStore | None = None
+        self._lock = Lock()
+
+    def load(self, profile: str) -> HumanCredential | None:
+        """Load one profile credential from the selected backend."""
+        return self._store().load(profile)
+
+    def replace(self, credential: HumanCredential) -> None:
+        """Replace one profile credential in the selected backend."""
+        self._store().replace(credential)
+
+    def delete(self, profile: str) -> None:
+        """Delete one profile credential from the selected backend."""
+        self._store().delete(profile)
+
+    def _store(self) -> CredentialStore:
+        """Select and cache one backend without operational downgrade."""
+        with self._lock:
+            if self._selected is None:
+                backend = resolve_credential_backend(self._environment)
+                self._selected = select_credential_store(
+                    backend,
+                    keyring_store=KeyringCredentialStore.system(),
+                    file_store=FileCredentialStore(
+                        self._paths.credentials_directory,
+                        self._paths.credentials_file,
+                        forbidden_roots=self._forbidden_roots,
+                    ),
+                )
+            return self._selected
 
 
 @dataclass(frozen=True, slots=True)
@@ -204,6 +513,23 @@ class EmbeddedIdentitySelector(Protocol):
         """Return the initialized Instance and bootstrap Human."""
         ...
 
+    def select_instance(self) -> InstanceId:
+        """Return only the singleton Instance identity before authentication."""
+        ...
+
+    def select_bootstrap_subject(
+        self,
+        *,
+        instance_id: InstanceId,
+        handle: str,
+    ) -> SubjectId:
+        """Return the confirmed bootstrap Human for recovery only."""
+        ...
+
+    def has_tokens(self) -> bool:
+        """Return whether the selected Instance has any Token rows."""
+        ...
+
 
 @dataclass(frozen=True, slots=True)
 class _EmbeddedRuntimeIdentity:
@@ -263,6 +589,14 @@ class _Uuid7IdentifierFactory:
         """Create a candidate Agent Attempt identifier."""
         return AttemptId(_new_uuid7_text("atm_"))
 
+    def new_token_id(self) -> TokenId:
+        """Create a candidate bearer Token identifier."""
+        return TokenId(_new_uuid7_text("tok_"))
+
+    def new_audit_event_id(self) -> AuditEventId:
+        """Create a candidate administrative AuditEvent identifier."""
+        return AuditEventId(_new_uuid7_text("aev_"))
+
 
 @dataclass(frozen=True, slots=True)
 class LocalCompositionFactories:
@@ -287,6 +621,9 @@ class _ProfileRuntimeOpener:
 
     registry: ProfileRegistry
     factories: LocalCompositionFactories
+    credentials: CredentialStore
+    environment: Mapping[str, str]
+    forbidden_roots: tuple[Path, ...]
 
     def open(self, profile: str) -> LocalRuntime:
         """Compose application services for one exact configured profile.
@@ -310,22 +647,65 @@ class _ProfileRuntimeOpener:
             identity = self.factories.identity(selected.database_path)
             clock = self.factories.clock()
             identifiers = self.factories.identifiers()
-            return LocalRuntime(
+            if not callable(getattr(identifiers, "new_token_id", None)):
+                return _compose_application_runtime(
+                    profile=selected.name,
+                    repository=repository,
+                    identity=identity,
+                    clock=clock,
+                    identifiers=identifiers,
+                )
+            phase_five_identifiers = cast(
+                "_PhaseFiveComposedIdentifierFactory",
+                identifiers,
+            )
+            phase_five = PhaseFiveRuntime(
                 profile=selected.name,
-                identity=_EmbeddedRuntimeIdentity(identity),
-                bootstrap=BootstrapApplication(repository, clock, identifiers),
-                projects=ProjectApplication(repository, clock, identifiers),
-                queries=QueryApplication(repository),
-                tasks=TaskApplication(repository, clock, identifiers),
-                lifecycle=TaskLifecycleApplication(repository, clock, identifiers),
-                dependencies=TaskDependencyApplication(
+                instance=identity,
+                authentication=AuthenticationApplication(
+                    repository,
                     repository,
                     clock,
-                    identifiers,
                 ),
-                results=TaskResultApplication(repository, clock, identifiers),
-                claims=TaskClaimApplication(repository, clock, identifiers),
-                execution=TaskExecutionApplication(repository, clock, identifiers),
+                subjects=SubjectApplication(repository, clock, phase_five_identifiers),
+                tokens=TokenApplication(repository, clock, phase_five_identifiers),
+                grants=GrantApplication(repository, clock, phase_five_identifiers),
+                audit=AuditApplication(repository),
+                credentials=self.credentials,
+                environment=self.environment,
+                clock=clock,
+                identifiers=phase_five_identifiers,
+                credential_lock_path=(
+                    selected.data_directory / ".identity-credentials.lock"
+                ),
+                forbidden_roots=self.forbidden_roots,
+            )
+
+            def actor_runtime(actor: AuthenticatedActor) -> LocalRuntime:
+                """Compose one command-scoped actor-bound service set."""
+                bound = cast(
+                    "_ComposedRepository",
+                    _ActorBoundRepository(repository, actor),
+                )
+                return _compose_application_runtime(
+                    profile=selected.name,
+                    repository=bound,
+                    identity=identity,
+                    clock=clock,
+                    identifiers=identifiers,
+                    phase_five=phase_five,
+                    actor=actor,
+                    actor_runtime_factory=actor_runtime,
+                )
+
+            return _compose_application_runtime(
+                profile=selected.name,
+                repository=repository,
+                identity=identity,
+                clock=clock,
+                identifiers=identifiers,
+                phase_five=phase_five,
+                actor_runtime_factory=actor_runtime,
             )
         except ApplicationError:
             raise
@@ -334,6 +714,36 @@ class _ProfileRuntimeOpener:
                 ApplicationErrorCode.INTERNAL_ERROR,
                 "The selected embedded runtime could not be composed.",
             ) from error
+
+
+def _compose_application_runtime(  # noqa: PLR0913 - explicit composition root.
+    *,
+    profile: str,
+    repository: _ComposedRepository,
+    identity: EmbeddedIdentitySelector,
+    clock: Clock,
+    identifiers: _ComposedIdentifierFactory,
+    phase_five: PhaseFiveRuntime | None = None,
+    actor: AuthenticatedActor | None = None,
+    actor_runtime_factory: Callable[[AuthenticatedActor], LocalRuntime] | None = None,
+) -> LocalRuntime:
+    """Compose cumulative application services over one repository view."""
+    return LocalRuntime(
+        profile=profile,
+        identity=_EmbeddedRuntimeIdentity(identity),
+        bootstrap=BootstrapApplication(repository, clock, identifiers),
+        projects=ProjectApplication(repository, clock, identifiers),
+        queries=QueryApplication(repository),
+        tasks=TaskApplication(repository, clock, identifiers),
+        lifecycle=TaskLifecycleApplication(repository, clock, identifiers),
+        dependencies=TaskDependencyApplication(repository, clock, identifiers),
+        results=TaskResultApplication(repository, clock, identifiers),
+        claims=TaskClaimApplication(repository, clock, identifiers),
+        execution=TaskExecutionApplication(repository, clock, identifiers),
+        phase_five=phase_five,
+        actor=actor,
+        actor_runtime_factory=actor_runtime_factory,
+    )
 
 
 def create_local_session(
@@ -380,9 +790,16 @@ def create_local_session(
         message = "Local composition factories are invalid."
         raise TypeError(message)
     environment_profile = _resolve_environment_profile(environment_value)
-    registry = _load_registry(
+    paths = _resolve_config_paths(
         environment=environment_value,
         config_path_resolver=config_path_resolver,
+    )
+    registry = _load_registry(paths=paths, environment=environment_value)
+    forbidden_roots = _credential_forbidden_roots(directory)
+    credentials = _LazyCredentialStore(
+        environment=environment_value,
+        paths=paths,
+        forbidden_roots=forbidden_roots,
     )
     return LocalSession(
         context=_WorkspaceContextAdapter(directory),
@@ -393,6 +810,9 @@ def create_local_session(
         runtimes=_ProfileRuntimeOpener(
             registry=registry,
             factories=configured_factories,
+            credentials=credentials,
+            environment=environment_value,
+            forbidden_roots=forbidden_roots,
         ),
     )
 
@@ -437,19 +857,19 @@ def _resolve_environment_profile(
         raise ProfileInvalidError from error
 
 
-def _load_registry(
+def _resolve_config_paths(
     *,
     environment: Mapping[str, str],
     config_path_resolver: ConfigPathResolver,
-) -> ProfileRegistry:
-    """Resolve and load one trusted registry with redacted unexpected failures.
+) -> LocalConfigPaths:
+    """Resolve trusted local configuration paths with redacted failures.
 
     Args:
         environment: Trusted process environment mapping.
         config_path_resolver: Validated injectable configuration resolver.
 
     Returns:
-        Immutable trusted embedded profile registry.
+        Validated local configuration paths.
 
     Raises:
         ApplicationError: For typed configuration failures.
@@ -465,9 +885,30 @@ def _load_registry(
         raise ProfileInvalidError from error
     if not isinstance(paths_value, LocalConfigPaths):
         raise ProfileInvalidError
+    return paths_value
 
+
+def _load_registry(
+    *,
+    paths: LocalConfigPaths,
+    environment: Mapping[str, str],
+) -> ProfileRegistry:
+    """Load one trusted embedded profile registry.
+
+    Args:
+        paths: Validated trusted configuration paths.
+        environment: Trusted process environment mapping.
+
+    Returns:
+        Immutable trusted embedded profile registry.
+
+    Raises:
+        ApplicationError: For typed configuration failures.
+        ProfileInvalidError: If the loader violates its result contract.
+
+    """
     try:
-        registry_value: object = load_profile_registry(paths_value, environment)
+        registry_value: object = load_profile_registry(paths, environment)
     except ApplicationError:
         raise
     except Exception as error:
@@ -475,6 +916,21 @@ def _load_registry(
     if not isinstance(registry_value, ProfileRegistry):
         raise ProfileInvalidError
     return registry_value
+
+
+def _credential_forbidden_roots(directory: Path) -> tuple[Path, ...]:
+    """Return the Workspace and nearest Git root forbidden to credentials."""
+    roots = [directory]
+    for candidate in (directory, *directory.parents):
+        marker = candidate / ".git"
+        try:
+            if marker.exists() or marker.is_symlink():
+                if candidate != directory:
+                    roots.append(candidate)
+                break
+        except OSError as error:
+            raise ProfileInvalidError from error
+    return tuple(roots)
 
 
 def main() -> None:

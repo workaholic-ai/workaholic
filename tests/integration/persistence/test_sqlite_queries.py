@@ -595,7 +595,7 @@ def test_status_and_project_listing_are_stable_after_reopen(tmp_path: Path) -> N
 
     assert status.mode == "embedded"
     assert status.profile == "local"
-    assert status.schema_version == 4
+    assert status.schema_version == 5
     assert status.instance == bootstrap.instance
     assert status.project == bootstrap.project
     assert status.subject == bootstrap.subject

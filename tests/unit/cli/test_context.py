@@ -90,7 +90,7 @@ def test_context_json_emits_exact_safe_contract_and_forwards_request(
     assert data == {
         "mode": "embedded",
         "profile": "team",
-        "schema_version": 4,
+        "schema_version": 5,
         "instance": {"id": "ins_local"},
         "project": {
             "id": "prj_docs",

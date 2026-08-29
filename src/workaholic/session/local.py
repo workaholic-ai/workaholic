@@ -2,29 +2,41 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Never, Protocol, cast
 
 from workaholic.application import (
     ApplicationError,
     ApplicationErrorCode,
+    AuditEventPage,
+    AuthenticationRequiredError,
     BootstrapLocalProjectInput,
     BootstrapResult,
     ContextResult,
     CreateProjectInput,
     CreateTaskInput,
+    CredentialLogoutResult,
+    CurrentIdentityResult,
     GetLocalStatus,
     GetProjectByKey,
     GetTask,
     ListInstanceTasks,
     ListProjects,
     ListTasks,
+    NotInitializedError,
     ProjectCreationResult,
+    ProjectGrantPage,
+    ProjectGrantResult,
     StatusResult,
+    SubjectPage,
+    SubjectResult,
     TaskPage,
+    TokenPage,
+    TokenResult,
 )
 from workaholic.domain import (
+    AuthenticatedActor,
     Project,
     ProjectId,
     Task,
@@ -34,6 +46,7 @@ from workaholic.domain import (
     build_task_key,
     validate_profile_name,
 )
+from workaholic.session._phase_five import PhaseFiveRuntime, ProtectedTokenFile
 from workaholic.session._phase_four import (
     LocalExecutionOperations,
     PhaseFourClaimService,
@@ -53,18 +66,36 @@ from workaholic.session.base import (
     WorkspaceContextSelection,
 )
 from workaholic.session.models import (
+    AuditEventsRequest,
     ContextRequest,
+    GrantAssignRequest,
+    GrantListRequest,
+    GrantRevokeRequest,
+    LoginRequest,
+    LogoutRequest,
     ProjectBindRequest,
     ProjectCreateRequest,
     ProjectListRequest,
+    RecoverLocalRequest,
     StatusRequest,
+    SubjectAdminRequest,
+    SubjectCreateRequest,
+    SubjectEnabledRequest,
+    SubjectListRequest,
+    SubjectUpdateRequest,
     TaskCreateRequest,
     TaskGetRequest,
     TaskListRequest,
+    TokenCreateRequest,
+    TokenListRequest,
+    TokenRevokeRequest,
     UpRequest,
+    WhoAmIRequest,
 )
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from workaholic.application import (
         GetTaskDetails,
         ListTasksByView,
@@ -288,6 +319,9 @@ class LocalRuntime:
     results: PhaseThreeResultService
     claims: PhaseFourClaimService
     execution: PhaseFourExecutionService
+    phase_five: PhaseFiveRuntime | None = None
+    actor: AuthenticatedActor | None = None
+    actor_runtime_factory: Callable[[AuthenticatedActor], LocalRuntime] | None = None
 
     def __post_init__(self) -> None:
         """Validate the runtime's explicit stable capability surface."""
@@ -327,7 +361,49 @@ class LocalRuntime:
             _require_callable(self.claims, method_name, "Claim service")
         for method_name in ("report_progress", "submit_result"):
             _require_callable(self.execution, method_name, "execution service")
+        if self.phase_five is not None and (
+            self.actor_runtime_factory is None
+            or not callable(self.actor_runtime_factory)
+        ):
+            message = "Authenticated local runtime requires an actor factory."
+            raise TypeError(message)
+        actor_value: object = self.actor
+        if actor_value is not None and not isinstance(
+            actor_value,
+            AuthenticatedActor,
+        ):
+            message = "Local runtime actor must be an AuthenticatedActor."
+            raise TypeError(message)
         object.__setattr__(self, "profile", profile)
+
+    def for_actor(self, actor: AuthenticatedActor) -> LocalRuntime:
+        """Build one command-scoped runtime bound to an authenticated actor.
+
+        Args:
+            actor: Secret-free actor authenticated for this profile.
+
+        Returns:
+            Runtime whose repositories inject that exact actor internally.
+
+        Raises:
+            TypeError: If this is a legacy runtime or the actor is invalid.
+
+        """
+        actor_value: object = actor
+        if not isinstance(actor_value, AuthenticatedActor) or (
+            self.actor_runtime_factory is None
+        ):
+            message = "Local runtime cannot bind the supplied actor."
+            raise TypeError(message)
+        runtime: object = self.actor_runtime_factory(actor_value)
+        if (
+            not isinstance(runtime, LocalRuntime)
+            or runtime.profile != self.profile
+            or runtime.actor != actor
+        ):
+            message = "Actor runtime factory returned an invalid runtime."
+            raise TypeError(message)
+        return runtime
 
 
 @dataclass(frozen=True, slots=True)
@@ -337,6 +413,7 @@ class _ResolvedRuntime:
     profile: str
     runtime: LocalRuntime
     discovered: WorkspaceContextSelection | None
+    actor: AuthenticatedActor | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -394,7 +471,18 @@ class LocalSession:
         candidate: object = request
         if not isinstance(candidate, UpRequest):
             _raise_invalid_input("Bootstrap Session request is invalid.")
-        resolved = self._resolve_runtime(candidate.profile)
+        resolved = self._resolve_runtime(candidate.profile, authenticate=False)
+        needs_bootstrap_credential = False
+        if resolved.runtime.phase_five is not None:
+            try:
+                resolved = self._authenticate_resolved(resolved)
+            except NotInitializedError:
+                needs_bootstrap_credential = True
+            except AuthenticationRequiredError:
+                phase_five = _require_phase_five(resolved.runtime)
+                if phase_five.instance.has_tokens():
+                    raise
+                needs_bootstrap_credential = True
         project_name = (
             candidate.project_key
             if candidate.project_name is None
@@ -418,6 +506,19 @@ class LocalSession:
             or result.project.name != command.project_name
         ):
             _raise_internal_result("Bootstrap")
+        if needs_bootstrap_credential:
+            phase_five = _require_phase_five(resolved.runtime)
+            identity_result = phase_five.recover(
+                instance_id=result.instance.id,
+                bootstrap_handle=result.subject.handle,
+            )
+            actor = AuthenticatedActor(
+                instance_id=identity_result.subject.instance_id,
+                subject_id=identity_result.subject.id,
+                subject_kind=identity_result.subject.kind,
+                token_id=identity_result.token.id,
+            )
+            resolved = self._bind_resolved_actor(resolved, actor)
         binding = WorkspaceBinding(
             context_version=1,
             profile=resolved.profile,
@@ -455,8 +556,9 @@ class LocalSession:
         candidate: object = request
         if not isinstance(candidate, StatusRequest):
             _raise_invalid_input("Status Session request is invalid.")
-        resolved = self._resolve_runtime(candidate.profile)
+        resolved = self._resolve_runtime(candidate.profile, authenticate=False)
         _require_project_selector(resolved, candidate.project)
+        resolved = self._authenticate_selected_runtime(resolved)
         identity = self._select_identity(resolved)
         selected = self._select_project(
             resolved,
@@ -478,8 +580,9 @@ class LocalSession:
         candidate: object = request
         if not isinstance(candidate, ContextRequest):
             _raise_invalid_input("Context Session request is invalid.")
-        resolved = self._resolve_runtime(candidate.profile)
+        resolved = self._resolve_runtime(candidate.profile, authenticate=False)
         _require_project_selector(resolved, candidate.project)
+        resolved = self._authenticate_selected_runtime(resolved)
         identity = self._select_identity(resolved)
         selected = self._select_project(
             resolved,
@@ -491,6 +594,243 @@ class LocalSession:
             workspace_root=selected.workspace_root,
             context_source=selected.context_source,
         )
+
+    def whoami(self, request: WhoAmIRequest) -> CurrentIdentityResult:
+        """Return freshly revalidated identity and active Token metadata."""
+        candidate = _require_session_request(request, WhoAmIRequest, "Whoami")
+        resolved = self._resolve_runtime(candidate.profile)
+        phase_five, actor = _phase_five_scope(resolved)
+        return phase_five.authentication.whoami(actor)
+
+    def login(self, request: LoginRequest) -> CurrentIdentityResult:
+        """Authenticate and enroll one explicitly supplied Human Token."""
+        candidate = _require_session_request(request, LoginRequest, "Login")
+        resolved = self._resolve_runtime(candidate.profile, authenticate=False)
+        return _require_phase_five(resolved.runtime).login(candidate.raw_token)
+
+    def logout(self, request: LogoutRequest) -> CredentialLogoutResult:
+        """Remove only the selected profile's stored Human credential."""
+        candidate = _require_session_request(request, LogoutRequest, "Logout")
+        resolved = self._resolve_runtime(candidate.profile, authenticate=False)
+        return _require_phase_five(resolved.runtime).logout()
+
+    def recover_local(
+        self,
+        request: RecoverLocalRequest,
+    ) -> CurrentIdentityResult:
+        """Execute the explicit confirmed tokenless embedded recovery path."""
+        candidate = _require_session_request(
+            request,
+            RecoverLocalRequest,
+            "Local recovery",
+        )
+        resolved = self._resolve_runtime(candidate.profile, authenticate=False)
+        return _require_phase_five(resolved.runtime).recover(
+            instance_id=candidate.instance_id,
+            bootstrap_handle=candidate.subject,
+        )
+
+    def create_subject(self, request: SubjectCreateRequest) -> SubjectResult:
+        """Create one Human or Agent Subject as an Instance administrator."""
+        candidate = _require_session_request(
+            request,
+            SubjectCreateRequest,
+            "Subject creation",
+        )
+        phase_five, actor = self._phase_five_request_scope(candidate.profile)
+        return phase_five.subjects.create(
+            actor=actor,
+            kind=candidate.kind,
+            handle=candidate.handle,
+            display_name=candidate.display_name,
+            idempotency_key=candidate.idempotency_key,
+        )
+
+    def list_subjects(self, request: SubjectListRequest) -> SubjectPage:
+        """List one stable administrator-visible Subject page."""
+        candidate = _require_session_request(
+            request,
+            SubjectListRequest,
+            "Subject listing",
+        )
+        phase_five, actor = self._phase_five_request_scope(candidate.profile)
+        return phase_five.subjects.list(
+            actor=actor,
+            cursor=candidate.cursor,
+            limit=candidate.limit,
+        )
+
+    def update_subject(self, request: SubjectUpdateRequest) -> SubjectResult:
+        """Update one Subject display name at an exact version."""
+        candidate = _require_session_request(
+            request,
+            SubjectUpdateRequest,
+            "Subject update",
+        )
+        phase_five, actor = self._phase_five_request_scope(candidate.profile)
+        return phase_five.subjects.update(
+            actor=actor,
+            subject=candidate.subject,
+            expected_version=candidate.expected_version,
+            display_name=candidate.display_name,
+            idempotency_key=candidate.idempotency_key,
+        )
+
+    def set_subject_enabled(
+        self,
+        request: SubjectEnabledRequest,
+    ) -> SubjectResult:
+        """Set one Subject's enabled state at an exact version."""
+        candidate = _require_session_request(
+            request,
+            SubjectEnabledRequest,
+            "Subject enabled-state update",
+        )
+        phase_five, actor = self._phase_five_request_scope(candidate.profile)
+        return phase_five.subjects.set_enabled(
+            actor=actor,
+            subject=candidate.subject,
+            expected_version=candidate.expected_version,
+            enabled=candidate.enabled,
+            idempotency_key=candidate.idempotency_key,
+        )
+
+    def set_instance_admin(self, request: SubjectAdminRequest) -> SubjectResult:
+        """Set one Subject's Instance-administrator state at an exact version."""
+        candidate = _require_session_request(
+            request,
+            SubjectAdminRequest,
+            "Instance administrator update",
+        )
+        phase_five, actor = self._phase_five_request_scope(candidate.profile)
+        return phase_five.subjects.set_instance_admin(
+            actor=actor,
+            subject=candidate.subject,
+            expected_version=candidate.expected_version,
+            is_instance_admin=candidate.is_instance_admin,
+            idempotency_key=candidate.idempotency_key,
+        )
+
+    def assign_grant(self, request: GrantAssignRequest) -> ProjectGrantResult:
+        """Create or replace one cumulative ProjectGrant."""
+        candidate = _require_session_request(
+            request,
+            GrantAssignRequest,
+            "ProjectGrant assignment",
+        )
+        phase_five, actor = self._phase_five_request_scope(candidate.profile)
+        return phase_five.grants.assign(
+            actor=actor,
+            subject=candidate.subject,
+            project=candidate.project,
+            role=candidate.role,
+            expected_version=candidate.expected_version,
+            idempotency_key=candidate.idempotency_key,
+        )
+
+    def list_grants(self, request: GrantListRequest) -> ProjectGrantPage:
+        """List one stable Project-scoped grant page."""
+        candidate = _require_session_request(
+            request,
+            GrantListRequest,
+            "ProjectGrant listing",
+        )
+        phase_five, actor = self._phase_five_request_scope(candidate.profile)
+        return phase_five.grants.list(
+            actor=actor,
+            project=candidate.project,
+            cursor=candidate.cursor,
+            limit=candidate.limit,
+        )
+
+    def revoke_grant(self, request: GrantRevokeRequest) -> ProjectGrantResult:
+        """Revoke one exact current ProjectGrant."""
+        candidate = _require_session_request(
+            request,
+            GrantRevokeRequest,
+            "ProjectGrant revocation",
+        )
+        phase_five, actor = self._phase_five_request_scope(candidate.profile)
+        return phase_five.grants.revoke(
+            actor=actor,
+            subject=candidate.subject,
+            project=candidate.project,
+            expected_version=candidate.expected_version,
+            idempotency_key=candidate.idempotency_key,
+        )
+
+    def create_token(self, request: TokenCreateRequest) -> TokenResult:
+        """Issue one Token through pending, protected-output, and activation."""
+        candidate = _require_session_request(
+            request,
+            TokenCreateRequest,
+            "Token creation",
+        )
+        resolved = self._resolve_runtime(candidate.profile)
+        phase_five, actor = _phase_five_scope(resolved)
+        forbidden_roots = (
+            () if resolved.discovered is None else (resolved.discovered.workspace_root,)
+        )
+        return phase_five.provision_token(
+            actor=actor,
+            subject=candidate.subject,
+            output=ProtectedTokenFile(
+                path=candidate.token_file,
+                forbidden_roots=forbidden_roots,
+            ),
+            expires_in=candidate.expires_in,
+            idempotency_key=candidate.idempotency_key,
+        )
+
+    def list_tokens(self, request: TokenListRequest) -> TokenPage:
+        """List one stable self- or administrator-visible Token page."""
+        candidate = _require_session_request(
+            request,
+            TokenListRequest,
+            "Token listing",
+        )
+        phase_five, actor = self._phase_five_request_scope(candidate.profile)
+        return phase_five.tokens.list(
+            actor=actor,
+            subject=candidate.subject,
+            cursor=candidate.cursor,
+            limit=candidate.limit,
+        )
+
+    def revoke_token(self, request: TokenRevokeRequest) -> TokenResult:
+        """Monotonically revoke one visible public Token identity."""
+        candidate = _require_session_request(
+            request,
+            TokenRevokeRequest,
+            "Token revocation",
+        )
+        phase_five, actor = self._phase_five_request_scope(candidate.profile)
+        return phase_five.tokens.revoke(
+            actor=actor,
+            token_id=candidate.token_id,
+            idempotency_key=candidate.idempotency_key,
+        )
+
+    def read_audit_events(self, request: AuditEventsRequest) -> AuditEventPage:
+        """Read one bounded administrator-only AuditEvent page."""
+        candidate = _require_session_request(
+            request,
+            AuditEventsRequest,
+            "AuditEvent listing",
+        )
+        phase_five, actor = self._phase_five_request_scope(candidate.profile)
+        return phase_five.audit.read(
+            actor=actor,
+            after=candidate.after,
+            limit=candidate.limit,
+        )
+
+    def _phase_five_request_scope(
+        self,
+        profile: str | None,
+    ) -> tuple[PhaseFiveRuntime, AuthenticatedActor]:
+        """Resolve one authenticated identity-administration request scope."""
+        return _phase_five_scope(self._resolve_runtime(profile))
 
     def list_projects(
         self,
@@ -624,8 +964,9 @@ class LocalSession:
         candidate: object = request
         if not isinstance(candidate, TaskCreateRequest):
             _raise_invalid_input("Task-create Session request is invalid.")
-        resolved = self._resolve_runtime(None)
+        resolved = self._resolve_runtime(None, authenticate=False)
         _require_project_selector(resolved, candidate.project)
+        resolved = self._authenticate_selected_runtime(resolved)
         identity = self._select_identity(resolved)
         selected = self._select_project(
             resolved,
@@ -689,9 +1030,10 @@ class LocalSession:
         candidate: object = request
         if not isinstance(candidate, TaskListRequest):
             _raise_invalid_input("Task-list Session request is invalid.")
-        resolved = self._resolve_runtime(None)
+        resolved = self._resolve_runtime(None, authenticate=False)
         if not candidate.all_projects:
             _require_project_selector(resolved, candidate.project)
+        resolved = self._authenticate_selected_runtime(resolved)
         identity = self._select_identity(resolved)
         result: object
         expected_project_id: ProjectId | None = None
@@ -752,8 +1094,9 @@ class LocalSession:
         candidate: object = request
         if not isinstance(candidate, TaskGetRequest):
             _raise_invalid_input("Task-get Session request is invalid.")
-        resolved = self._resolve_runtime(None)
+        resolved = self._resolve_runtime(None, authenticate=False)
         _require_project_selector(resolved, candidate.project)
+        resolved = self._authenticate_selected_runtime(resolved)
         identity = self._select_identity(resolved)
         selected = self._select_project(
             resolved,
@@ -894,8 +1237,7 @@ class LocalSession:
             ApplicationError: If selection or authorization fails.
 
         """
-        resolved = self._resolve_runtime(None)
-        identity = self._select_identity(resolved)
+        resolved = self._resolve_runtime(None, authenticate=False)
         selected_project: Project | None = None
         if all_projects:
             if project is not None:
@@ -904,6 +1246,9 @@ class LocalSession:
                 )
         else:
             _require_project_selector(resolved, project)
+        resolved = self._authenticate_selected_runtime(resolved)
+        identity = self._select_identity(resolved)
+        if not all_projects:
             selected = self._select_project(
                 resolved,
                 identity,
@@ -931,9 +1276,10 @@ class LocalSession:
             Authorized Project, bootstrap Subject, and Phase 4 services.
 
         """
-        resolved = self._resolve_runtime(None)
-        identity = self._select_identity(resolved)
+        resolved = self._resolve_runtime(None, authenticate=False)
         _require_project_selector(resolved, project)
+        resolved = self._authenticate_selected_runtime(resolved)
+        identity = self._select_identity(resolved)
         selected = self._select_project(
             resolved,
             identity,
@@ -946,11 +1292,17 @@ class LocalSession:
             execution=resolved.runtime.execution,
         )
 
-    def _resolve_runtime(self, explicit_profile: str | None) -> _ResolvedRuntime:
+    def _resolve_runtime(
+        self,
+        explicit_profile: str | None,
+        *,
+        authenticate: bool = True,
+    ) -> _ResolvedRuntime:
         """Discover context, resolve trusted profile precedence, and open runtime.
 
         Args:
             explicit_profile: Validated caller profile selector when present.
+            authenticate: Whether to require and bind one credential immediately.
 
         Returns:
             Trusted runtime and optional validated discovered context.
@@ -981,10 +1333,55 @@ class LocalSession:
             or runtime_value.profile != profile
         ):
             _raise_internal_result("Local runtime")
-        return _ResolvedRuntime(
+        resolved = _ResolvedRuntime(
             profile=profile,
             runtime=runtime_value,
             discovered=discovered,
+        )
+        if authenticate and runtime_value.phase_five is not None:
+            return self._authenticate_resolved(resolved)
+        return resolved
+
+    def _authenticate_resolved(self, resolved: _ResolvedRuntime) -> _ResolvedRuntime:
+        """Authenticate and bind one selected profile before data access."""
+        phase_five = _require_phase_five(resolved.runtime)
+        actor = phase_five.authenticate()
+        return self._bind_resolved_actor(resolved, actor)
+
+    def _authenticate_selected_runtime(
+        self,
+        resolved: _ResolvedRuntime,
+    ) -> _ResolvedRuntime:
+        """Authenticate a production runtime after local selector validation.
+
+        Legacy injected runtimes retain their explicit identity selector. Production
+        runtimes authenticate only after profile and Workspace context discovery,
+        neither of which reads application data.
+
+        Args:
+            resolved: Opened runtime with validated local selectors.
+
+        Returns:
+            Actor-bound production runtime or the unchanged legacy test runtime.
+
+        """
+        if resolved.runtime.phase_five is None:
+            return resolved
+        return self._authenticate_resolved(resolved)
+
+    def _bind_resolved_actor(
+        self,
+        resolved: _ResolvedRuntime,
+        actor: AuthenticatedActor,
+    ) -> _ResolvedRuntime:
+        """Create one command-scoped runtime for an authenticated actor."""
+        phase_five = _require_phase_five(resolved.runtime)
+        if actor.instance_id != phase_five.instance.select_instance():
+            _raise_internal_result("Authenticated actor")
+        return replace(
+            resolved,
+            runtime=resolved.runtime.for_actor(actor),
+            actor=actor,
         )
 
     def _select_identity(self, resolved: _ResolvedRuntime) -> LocalIdentity:
@@ -997,6 +1394,11 @@ class LocalSession:
             Validated Instance and Subject identities.
 
         """
+        if resolved.actor is not None:
+            return LocalIdentity(
+                instance_id=resolved.actor.instance_id,
+                subject_id=resolved.actor.subject_id,
+            )
         identity: object = resolved.runtime.identity.select()
         if not isinstance(identity, LocalIdentity):
             _raise_internal_result("Local identity selection")
@@ -1119,6 +1521,60 @@ def _context_result(
             ApplicationErrorCode.INTERNAL_ERROR,
             "Context selection returned an invalid result.",
         ) from error
+
+
+def _require_phase_five(runtime: LocalRuntime) -> PhaseFiveRuntime:
+    """Require the authenticated identity capability on one runtime.
+
+    Args:
+        runtime: Selected embedded runtime.
+
+    Returns:
+        Phase 5 credential and identity coordinator.
+
+    Raises:
+        ApplicationError: If an injected legacy runtime lacks Phase 5.
+
+    """
+    phase_five = runtime.phase_five
+    if not isinstance(phase_five, PhaseFiveRuntime):
+        _raise_internal_result("Phase 5 runtime")
+    return phase_five
+
+
+def _phase_five_scope(
+    resolved: _ResolvedRuntime,
+) -> tuple[PhaseFiveRuntime, AuthenticatedActor]:
+    """Require one authenticated actor and its Phase 5 service surface."""
+    phase_five = _require_phase_five(resolved.runtime)
+    actor = resolved.actor
+    if not isinstance(actor, AuthenticatedActor):
+        _raise_internal_result("Authenticated identity")
+    return phase_five, actor
+
+
+def _require_session_request[RequestT](
+    value: object,
+    expected_type: type[RequestT],
+    label: str,
+) -> RequestT:
+    """Require one exact typed Session request at runtime.
+
+    Args:
+        value: Candidate caller value.
+        expected_type: Exact accepted request class.
+        label: Safe operation name for the public diagnostic.
+
+    Returns:
+        Typed request instance.
+
+    Raises:
+        ApplicationError: If the boundary receives another runtime type.
+
+    """
+    if not isinstance(value, expected_type):
+        _raise_invalid_input(f"{label} Session request is invalid.")
+    return value
 
 
 def _require_project_selector(

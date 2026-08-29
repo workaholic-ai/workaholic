@@ -824,6 +824,7 @@ name = "workaholic-ai"
 version = "0.4.0a1"
 source = { editable = "." }
 dependencies = [
+    { name = "filelock" },
     { name = "keyring" },
     { name = "platformdirs" },
     { name = "pydantic" },
@@ -847,6 +848,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "filelock", specifier = ">=3.32.0,<4.0.0" },
     { name = "keyring", specifier = ">=25.7.0,<26.0.0" },
     { name = "platformdirs", specifier = ">=4.11.0,<4.12.0" },
     { name = "pydantic", specifier = ">=2.13.4,<2.14.0" },

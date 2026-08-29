@@ -1,10 +1,11 @@
-"""Tests for public documentation and the Phase 4 Human/Agent quick start."""
+"""Tests for public documentation and the authenticated Human quick start."""
 
 from __future__ import annotations
 
 import os
 import re
 import shutil
+import stat
 import subprocess
 from importlib import metadata
 from pathlib import Path
@@ -49,6 +50,7 @@ _EXPECTED_QUICK_START = (
     "uv sync --frozen\n"
     'export WORKAHOLIC_CONFIG_DIR="$(mktemp -d "'
     '${TMPDIR:-/tmp}/workaholic-quickstart-config.XXXXXX")"\n'
+    "export WORKAHOLIC_CREDENTIAL_BACKEND=file\n"
     'export WORKAHOLIC_DATA_DIR="$(mktemp -d "'
     '${TMPDIR:-/tmp}/workaholic-quickstart-data.XXXXXX")"\n'
     "workaholic_source_directory=$PWD\n"
@@ -68,34 +70,10 @@ _EXPECTED_QUICK_START = (
     "ACME-1 --priority 80 --expected-version 1\n"
     '  uv run --project "$workaholic_source_directory" workaholic task submit '
     'ACME-1 --comment "Implemented manually." --expected-version 2\n'
-    '  uv run --project "$workaholic_source_directory" workaholic task add '
-    '"Agent-owned delivery"\n'
-    '  agent_claim_json="$(uv run --project '
-    '"$workaholic_source_directory" workaholic task claim --lease 15m '
-    '--json --non-interactive)"\n'
-    "  printf '%s\\n' \"$agent_claim_json\"\n"
-    '  agent_attempt_id="$(printf \'%s\\n\' "$agent_claim_json" | uv run '
-    '--project "$workaholic_source_directory" python -c \'import json, sys; '
-    'print(json.load(sys.stdin)["data"]["attempt"]["id"])\')"\n'
-    '  uv run --project "$workaholic_source_directory" workaholic task '
-    'heartbeat ACME-2 --attempt "$agent_attempt_id" --lease 30m\n'
-    '  uv run --project "$workaholic_source_directory" workaholic task '
-    'progress ACME-2 --attempt "$agent_attempt_id" --input-file - '
-    "<<'JSON'\n"
-    '{"message":"Implementing and verifying the change.",'
-    '"percent_complete":70,"observations":[{"kind":"risk","text":'
-    '"The final integration check is still running."}]}\n'
-    "JSON\n"
-    '  uv run --project "$workaholic_source_directory" workaholic task submit '
-    'ACME-2 --attempt "$agent_attempt_id" --expected-version 1 '
-    "--result-file - <<'JSON'\n"
-    '{"summary":"Agent implementation complete.","criteria":[],"artifacts":[],'
-    '"proposed_follow_ups":[]}\n'
-    "JSON\n"
     '  uv run --project "$workaholic_source_directory" workaholic task show '
-    "ACME-2\n"
+    "ACME-1\n"
     '  uv run --project "$workaholic_source_directory" workaholic task events '
-    "ACME-2\n"
+    "ACME-1\n"
     ")"
 )
 _REQUIRED_GLOSSARY_TERMS = frozenset(
@@ -212,8 +190,8 @@ def test_threat_model_covers_required_boundaries_and_attack_scenarios() -> None:
         assert boundary in threat_model
 
 
-def test_readme_quick_start_contains_the_exact_phase_four_journey() -> None:
-    """The quick start is the exact verified Human and Agent sequence."""
+def test_readme_quick_start_contains_the_exact_authenticated_human_journey() -> None:
+    """The quick start is the exact verified authenticated Human sequence."""
     readme = _README.read_text(encoding="utf-8")
     quick_start_match = _QUICK_START_PATTERN.search(readme)
 
@@ -267,12 +245,7 @@ def test_readme_quick_start_executes_in_an_isolated_source_checkout(
     assert result.returncode == 0, f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
     assert "Traceback" not in result.stderr
     assert "ACME-1" in result.stdout
-    assert "ACME-2" in result.stdout
     assert "Human-owned delivery" in result.stdout
-    assert "Agent-owned delivery" in result.stdout
-    assert '"attempt":{' in result.stdout
-    assert "progress_reported" in result.stdout
-    assert "observation_added" in result.stdout
     assert "task_completed" in result.stdout
     config_directories = tuple(tmp_path.glob("workaholic-quickstart-config.*"))
     data_directories = tuple(tmp_path.glob("workaholic-quickstart-data.*"))
@@ -282,7 +255,9 @@ def test_readme_quick_start_executes_in_an_isolated_source_checkout(
     assert len(workspace_directories) == 1
     assert (data_directories[0] / "local.db").is_file()
     assert (workspace_directories[0] / ".workaholic.env").is_file()
-    assert tuple(config_directories[0].iterdir()) == ()
+    credential_file = config_directories[0] / "credentials" / "credentials.toml"
+    assert credential_file.is_file()
+    assert stat.S_IMODE(credential_file.stat().st_mode) == 0o600
     assert (inherited_config_directory / "profiles.toml").read_text(
         encoding="utf-8"
     ) == "not valid TOML = ["
@@ -372,7 +347,7 @@ def test_phase_four_status_and_limitations_are_explicit() -> None:
         "upward Workspace discovery",
         "multiple named Projects",
         "trusted embedded profiles",
-        "schema version `4`",
+        "schema version `5`",
         "structured Human Results",
         "exclusive Human and Agent Claims",
         "Agent progress and submission",

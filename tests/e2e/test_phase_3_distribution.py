@@ -46,7 +46,7 @@ _EXPECTED_WHEEL_SUMMARY = {
         "review_approved",
         "task_completed",
     ],
-    "schema_version": 4,
+    "schema_version": 5,
 }
 _FUTURE_GOLDEN_REASONS = (
     "Phase 4: missing agent claims, leases, heartbeats, and result submission.",

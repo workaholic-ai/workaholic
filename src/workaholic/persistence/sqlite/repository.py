@@ -85,6 +85,7 @@ from workaholic.persistence.sqlite._tokens import (
     issue_pending_token as _issue_pending_token,
 )
 from workaholic.persistence.sqlite._tokens import list_tokens as _list_tokens
+from workaholic.persistence.sqlite._tokens import recover_local as _recover_local
 from workaholic.persistence.sqlite._tokens import revoke_token as _revoke_token
 from workaholic.persistence.sqlite.schema import initialize_empty_store
 
@@ -123,6 +124,7 @@ if TYPE_CHECKING:
         ProjectGrantResult,
         ReadAuditEvents,
         ReadTaskEvents,
+        RecoverLocalMutation,
         RejectResultMutation,
         ReleaseClaimMutation,
         RemoveTaskDependencyMutation,
@@ -604,6 +606,21 @@ class SQLiteRepository:
 
         """
         return _revoke_token(self._database_path, mutation)
+
+    def recover_local(
+        self,
+        mutation: RecoverLocalMutation,
+    ) -> CurrentIdentityResult:
+        """Replace every bootstrap-Human Token through confirmed recovery.
+
+        Args:
+            mutation: Exact tokenless local recovery mutation.
+
+        Returns:
+            Bootstrap Human and active replacement Token metadata.
+
+        """
+        return _recover_local(self._database_path, mutation)
 
     def read_audit_events(self, command: ReadAuditEvents) -> AuditEventPage:
         """Read one bounded ascending administrator-authorized audit page.

@@ -10,15 +10,24 @@ if TYPE_CHECKING:
     from workaholic.application import (
         AddTaskDependencyInput,
         ApproveResultInput,
+        AuditEventPage,
         BlockTaskInput,
         CancelTaskInput,
+        CredentialLogoutResult,
+        CurrentIdentityResult,
+        ProjectGrantPage,
+        ProjectGrantResult,
         RejectResultInput,
         RemoveTaskDependencyInput,
+        SubjectPage,
+        SubjectResult,
         SubmitHumanResultInput,
         TaskClaimResult,
         TaskMutationResult,
         TaskProgressResult,
         TaskSubmissionResult,
+        TokenPage,
+        TokenResult,
         UnblockTaskInput,
         UpdateTaskInput,
     )
@@ -28,9 +37,25 @@ if TYPE_CHECKING:
         AgentReleaseRequest,
         AgentSubmitRequest,
         AgentTaskClaimRequest,
+        AuditEventsRequest,
+        GrantAssignRequest,
+        GrantListRequest,
+        GrantRevokeRequest,
         HumanClaimReleaseRequest,
         HumanClaimRenewRequest,
         HumanTaskClaimRequest,
+        LoginRequest,
+        LogoutRequest,
+        RecoverLocalRequest,
+        SubjectAdminRequest,
+        SubjectCreateRequest,
+        SubjectEnabledRequest,
+        SubjectListRequest,
+        SubjectUpdateRequest,
+        TokenCreateRequest,
+        TokenListRequest,
+        TokenRevokeRequest,
+        WhoAmIRequest,
     )
 
 
@@ -168,3 +193,83 @@ class UnavailablePhaseFourSession:
         """Fail an unexpected Agent Result request."""
         del request
         pytest.fail("This focused test must not submit an Agent Result")
+
+    def whoami(self, request: WhoAmIRequest) -> CurrentIdentityResult:
+        """Fail an unexpected authenticated-identity request."""
+        del request
+        pytest.fail("This focused test must not read authenticated identity")
+
+    def login(self, request: LoginRequest) -> CurrentIdentityResult:
+        """Fail an unexpected credential enrollment request."""
+        del request
+        pytest.fail("This focused test must not enroll a credential")
+
+    def logout(self, request: LogoutRequest) -> CredentialLogoutResult:
+        """Fail an unexpected credential removal request."""
+        del request
+        pytest.fail("This focused test must not remove a credential")
+
+    def recover_local(self, request: RecoverLocalRequest) -> CurrentIdentityResult:
+        """Fail an unexpected local recovery request."""
+        del request
+        pytest.fail("This focused test must not recover local identity")
+
+    def create_subject(self, request: SubjectCreateRequest) -> SubjectResult:
+        """Fail an unexpected Subject creation request."""
+        del request
+        pytest.fail("This focused test must not create a Subject")
+
+    def list_subjects(self, request: SubjectListRequest) -> SubjectPage:
+        """Fail an unexpected Subject-list request."""
+        del request
+        pytest.fail("This focused test must not list Subjects")
+
+    def update_subject(self, request: SubjectUpdateRequest) -> SubjectResult:
+        """Fail an unexpected Subject update request."""
+        del request
+        pytest.fail("This focused test must not update a Subject")
+
+    def set_subject_enabled(self, request: SubjectEnabledRequest) -> SubjectResult:
+        """Fail an unexpected Subject-enable request."""
+        del request
+        pytest.fail("This focused test must not change Subject enablement")
+
+    def set_instance_admin(self, request: SubjectAdminRequest) -> SubjectResult:
+        """Fail an unexpected administrator-state request."""
+        del request
+        pytest.fail("This focused test must not change an administrator")
+
+    def assign_grant(self, request: GrantAssignRequest) -> ProjectGrantResult:
+        """Fail an unexpected ProjectGrant assignment request."""
+        del request
+        pytest.fail("This focused test must not assign a ProjectGrant")
+
+    def list_grants(self, request: GrantListRequest) -> ProjectGrantPage:
+        """Fail an unexpected ProjectGrant-list request."""
+        del request
+        pytest.fail("This focused test must not list ProjectGrants")
+
+    def revoke_grant(self, request: GrantRevokeRequest) -> ProjectGrantResult:
+        """Fail an unexpected ProjectGrant revocation request."""
+        del request
+        pytest.fail("This focused test must not revoke a ProjectGrant")
+
+    def create_token(self, request: TokenCreateRequest) -> TokenResult:
+        """Fail an unexpected Token provisioning request."""
+        del request
+        pytest.fail("This focused test must not create a Token")
+
+    def list_tokens(self, request: TokenListRequest) -> TokenPage:
+        """Fail an unexpected Token-list request."""
+        del request
+        pytest.fail("This focused test must not list Tokens")
+
+    def revoke_token(self, request: TokenRevokeRequest) -> TokenResult:
+        """Fail an unexpected Token revocation request."""
+        del request
+        pytest.fail("This focused test must not revoke a Token")
+
+    def read_audit_events(self, request: AuditEventsRequest) -> AuditEventPage:
+        """Fail an unexpected AuditEvent request."""
+        del request
+        pytest.fail("This focused test must not read AuditEvents")

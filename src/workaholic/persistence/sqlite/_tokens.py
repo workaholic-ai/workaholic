@@ -11,12 +11,14 @@ from typing import TYPE_CHECKING, Final, cast
 
 from workaholic.application import (
     ActivateTokenMutation,
+    CurrentIdentityResult,
     IdempotencyConflictError,
     InvalidInputError,
     InvalidTransitionError,
     IssueTokenMutation,
     ListTokens,
     PermissionDeniedError,
+    RecoverLocalMutation,
     RevokeTokenMutation,
     TokenNotFoundError,
     TokenPage,
@@ -27,12 +29,14 @@ from workaholic.domain import (
     InstanceId,
     Subject,
     SubjectId,
+    SubjectKind,
     Token,
     TokenId,
     TokenStatus,
     TokenSummary,
 )
 from workaholic.persistence.sqlite._audit_events import (
+    AuditActor,
     AuditEventDraft,
     append_audit_event,
     authenticated_audit_actor,
@@ -409,6 +413,129 @@ def revoke_token(
         return TokenResult(token=summary)
 
 
+def recover_local(
+    database_path: Path,
+    mutation: RecoverLocalMutation,
+) -> CurrentIdentityResult:
+    """Atomically replace every bootstrap-Human Token during local recovery.
+
+    Args:
+        database_path: Absolute path to the validated embedded store.
+        mutation: Confirmed Instance, bootstrap handle, and fresh Token digest.
+
+    Returns:
+        Enabled bootstrap Human and active replacement Token metadata.
+
+    Raises:
+        PermissionDeniedError: If the confirmation or bootstrap state differs.
+        StorageUnavailableError: If Token state is malformed or collides.
+
+    """
+    candidate: object = mutation
+    if not isinstance(candidate, RecoverLocalMutation):
+        raise StorageUnavailableError
+    with open_write_transaction(database_path) as connection:
+        target = resolve_subject(
+            connection,
+            instance_id=candidate.instance_id,
+            selector=candidate.bootstrap_handle,
+        )
+        if (
+            target.kind is not SubjectKind.HUMAN
+            or not target.enabled
+            or not target.is_instance_admin
+            or target.handle != candidate.bootstrap_handle
+        ):
+            raise PermissionDeniedError
+        _require_available_token_identity(
+            connection,
+            token_id=candidate.token_id,
+            token_digest=candidate.token_digest,
+        )
+        rows = connection.execute(
+            f"""
+            SELECT {", ".join(TOKEN_FIELDS)}
+            FROM tokens
+            WHERE instance_id = ? AND subject_id = ? AND revoked_at IS NULL
+            ORDER BY created_at ASC, id ASC
+            """,  # noqa: S608 - selected columns are a fixed module constant.
+            (str(candidate.instance_id), str(target.id)),
+        ).fetchall()
+        recovery_actor = AuditActor(
+            instance_id=candidate.instance_id,
+            subject_id=target.id,
+            kind=target.kind,
+            token_id=None,
+        )
+        for row in rows:
+            token = token_from_row(row)
+            if candidate.occurred_at < token.created_at or (
+                token.activated_at is not None
+                and candidate.occurred_at < token.activated_at
+            ):
+                raise StorageUnavailableError
+            cursor = connection.execute(
+                """
+                UPDATE tokens
+                SET revoked_at = ?, revoked_by = ?
+                WHERE id = ? AND instance_id = ? AND revoked_at IS NULL
+                """,
+                (
+                    serialize_timestamp(candidate.occurred_at),
+                    str(target.id),
+                    str(token.id),
+                    str(candidate.instance_id),
+                ),
+            )
+            if cursor.rowcount != 1:
+                raise StorageUnavailableError
+            append_audit_event(
+                connection,
+                AuditEventDraft(
+                    actor=recovery_actor,
+                    request_id=candidate.request_id,
+                    event_type=AuditEventType.TOKEN_REVOKED,
+                    occurred_at=candidate.occurred_at,
+                    payload={
+                        "token_id": str(token.id),
+                        "subject_id": str(target.id),
+                    },
+                ),
+            )
+
+        replacement = Token(
+            id=candidate.token_id,
+            instance_id=candidate.instance_id,
+            subject_id=target.id,
+            token_hash=candidate.token_digest,
+            created_by=target.id,
+            created_at=candidate.occurred_at,
+            activated_at=candidate.occurred_at,
+            expires_at=candidate.expires_at,
+            revoked_at=None,
+            revoked_by=None,
+        )
+        _insert_token(connection, replacement)
+        append_audit_event(
+            connection,
+            AuditEventDraft(
+                actor=recovery_actor,
+                request_id=candidate.request_id,
+                event_type=AuditEventType.TOKEN_ISSUED,
+                occurred_at=candidate.occurred_at,
+                payload={
+                    "token_id": str(replacement.id),
+                    "subject_id": str(replacement.subject_id),
+                    "expires_at": serialize_timestamp(replacement.expires_at),
+                },
+            ),
+        )
+        return CurrentIdentityResult(
+            subject=target,
+            token=token_to_summary(replacement, now=candidate.occurred_at),
+        )
+
+
 def _resolve_visible_target(
     connection: sqlite3.Connection,
     *,
@@ -456,7 +583,11 @@ def _insert_token(connection: sqlite3.Connection, token: Token) -> None:
             token.token_hash,
             str(token.created_by),
             serialize_timestamp(token.created_at),
-            None,
+            (
+                None
+                if token.activated_at is None
+                else serialize_timestamp(token.activated_at)
+            ),
             serialize_timestamp(token.expires_at),
             None,
             None,

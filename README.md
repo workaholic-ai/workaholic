@@ -31,11 +31,12 @@ or supported release. Use a source checkout for this alpha.
 ## Quick start
 
 Clone the repository with your preferred Git transport, change into the
-checkout, and run these complete disposable Human and Agent paths:
+checkout, and run this complete disposable Human path:
 
 ```bash
 uv sync --frozen
 export WORKAHOLIC_CONFIG_DIR="$(mktemp -d "${TMPDIR:-/tmp}/workaholic-quickstart-config.XXXXXX")"
+export WORKAHOLIC_CREDENTIAL_BACKEND=file
 export WORKAHOLIC_DATA_DIR="$(mktemp -d "${TMPDIR:-/tmp}/workaholic-quickstart-data.XXXXXX")"
 workaholic_source_directory=$PWD
 workaholic_workspace_directory="$(mktemp -d "${TMPDIR:-/tmp}/workaholic-quickstart-workspace.XXXXXX")"
@@ -47,30 +48,17 @@ workaholic_workspace_directory="$(mktemp -d "${TMPDIR:-/tmp}/workaholic-quicksta
   uv run --project "$workaholic_source_directory" workaholic task renew ACME-1 --lease 12h
   uv run --project "$workaholic_source_directory" workaholic task update ACME-1 --priority 80 --expected-version 1
   uv run --project "$workaholic_source_directory" workaholic task submit ACME-1 --comment "Implemented manually." --expected-version 2
-  uv run --project "$workaholic_source_directory" workaholic task add "Agent-owned delivery"
-  agent_claim_json="$(uv run --project "$workaholic_source_directory" workaholic task claim --lease 15m --json --non-interactive)"
-  printf '%s\n' "$agent_claim_json"
-  agent_attempt_id="$(printf '%s\n' "$agent_claim_json" | uv run --project "$workaholic_source_directory" python -c 'import json, sys; print(json.load(sys.stdin)["data"]["attempt"]["id"])')"
-  uv run --project "$workaholic_source_directory" workaholic task heartbeat ACME-2 --attempt "$agent_attempt_id" --lease 30m
-  uv run --project "$workaholic_source_directory" workaholic task progress ACME-2 --attempt "$agent_attempt_id" --input-file - <<'JSON'
-{"message":"Implementing and verifying the change.","percent_complete":70,"observations":[{"kind":"risk","text":"The final integration check is still running."}]}
-JSON
-  uv run --project "$workaholic_source_directory" workaholic task submit ACME-2 --attempt "$agent_attempt_id" --expected-version 1 --result-file - <<'JSON'
-{"summary":"Agent implementation complete.","criteria":[],"artifacts":[],"proposed_follow_ups":[]}
-JSON
-  uv run --project "$workaholic_source_directory" workaholic task show ACME-2
-  uv run --project "$workaholic_source_directory" workaholic task events ACME-2
+  uv run --project "$workaholic_source_directory" workaholic task show ACME-1
+  uv run --project "$workaholic_source_directory" workaholic task events ACME-1
 )
 ```
 
 `up` creates and binds the ACME Project. The targeted Human Claim has a null
 Attempt and a long Lease. Its owner can renew the Claim, use the normal Human
-Task workflow, and submit with an optional comment. The untargeted Agent Claim
-atomically pulls the next ready Task and creates a non-null Attempt. That exact
-Attempt heartbeats, records bounded progress, and submits a structured Result;
-submission completes the Task, terminalizes the Attempt, and releases the
-Claim. The final commands show the retained Result and attributable event
-history, including `progress_reported` and `observation_added`.
+Task workflow, and submit with an optional comment. The final commands show the
+retained Result and attributable event history. Agent identity provisioning is
+not included in this interim quick start; an Agent must never reuse the
+bootstrap Human credential.
 
 Every versioned existing-Task mutation in the block uses the version produced
 by the previous mutation. Claim acquisition, renewal, heartbeat, progress, and
@@ -154,9 +142,10 @@ requires `--replace`; even then, Workaholic will not replace a malformed file,
 directory, symlink, or concurrently changed context. It may update the local
 `.git/info/exclude`, but it never changes a shared `.gitignore`.
 
-The `0.4.0a1` SQLite store uses the disposable Phase 4 schema version `4`
-foundation. Phase 3 schema version `3`, Phase 2 schema version `2`, and every
-other unsupported version are rejected unchanged with `SCHEMA_UNSUPPORTED`.
+The `0.4.0a1` SQLite store uses the disposable Phase 5 schema version `5`
+foundation. Phase 4 schema version `4` and every other unsupported version are
+rejected unchanged with `SCHEMA_UNSUPPORTED`; prior disposable contracts also
+used Phase 3 schema version `3` and Phase 2 schema version `2`.
 There is no migration, conversion, import, export, or automatic reset. Before
 an alpha upgrade, preserve anything needed outside Workaholic. For an explicit
 disposable-development reset, first verify the exact selected profile data
@@ -166,8 +155,9 @@ configuration directory without verifying its ownership and contents.
 
 ## Current CLI
 
-The default executable composes a short-lived embedded `LocalSession`, trusted
-profile selection, upward Workspace discovery, and SQLite schema version `4`.
+The default executable composes a short-lived authenticated embedded
+`LocalSession`, trusted profile selection, upward Workspace discovery, and
+SQLite schema version `5`.
 It exposes 24 Project, context, Task, Claim, and Agent execution operations
 without starting a daemon.
 
@@ -221,7 +211,7 @@ The Local Agent Alpha supports:
 - `open`, `blocked`, `review`, `done`, and `cancelled` stored states;
 - optimistic versions, idempotent lifecycle mutations, structured Human
   Results, review, and append-only attributable TaskEvents;
-- SQLite schema version `4` through embedded `LocalSession`;
+- SQLite schema version `5` through embedded `LocalSession`;
 - Human-readable output and closed `workaholic.cli/v1` JSON envelopes.
 
 Human claim and renewal default to `8h` with a `1m` minimum and `30d` maximum.

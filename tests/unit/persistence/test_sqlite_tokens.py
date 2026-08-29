@@ -23,12 +23,14 @@ from workaholic.application import (
     IssueTokenMutation,
     ListTokens,
     PermissionDeniedError,
+    RecoverLocalMutation,
     RevokeTokenMutation,
     SetSubjectEnabledMutation,
     TokenNotFoundError,
 )
 from workaholic.auth import generate_token, hash_token
 from workaholic.domain import (
+    AuditEventType,
     AuthenticatedActor,
     InstanceId,
     ProjectId,
@@ -612,3 +614,109 @@ def test_token_metadata_restart_and_repr_never_expose_digest(tmp_path: Path) -> 
     stored = _read_token_hash(repository, token_id)
     assert stored == (digest,)
     assert hashlib.sha256(digest.encode("ascii")).hexdigest() not in serialized
+
+
+def test_local_recovery_atomically_replaces_only_bootstrap_human_tokens(
+    tmp_path: Path,
+) -> None:
+    """Recovery revokes every bootstrap Token and activates one replacement."""
+    repository, clock = _repository(tmp_path)
+    second_owner_id = TokenId("tok_owner-second")
+    second_owner_digest = _issue(
+        repository,
+        token_id=second_owner_id,
+        subject=_OWNER_ID,
+        fill=15,
+    )
+    repository.activate_token(
+        ActivateTokenMutation(
+            **_metadata("activate-owner-second", at=_NOW + timedelta(minutes=3)),
+            token_id=second_owner_id,
+        )
+    )
+    agent_id = _create_agent(repository, "recovery-agent")
+    agent_token_id = TokenId("tok_recovery-agent")
+    agent_digest = _issue(
+        repository,
+        token_id=agent_token_id,
+        subject=agent_id,
+        fill=16,
+        created_at=_NOW + timedelta(minutes=4),
+    )
+    repository.activate_token(
+        ActivateTokenMutation(
+            **_metadata("activate-recovery-agent", at=_NOW + timedelta(minutes=5)),
+            token_id=agent_token_id,
+        )
+    )
+    occurred_at = _NOW + timedelta(minutes=10)
+    replacement_id = TokenId("tok_recovered")
+    replacement_digest = _digest_for(replacement_id, fill=17)
+    clock.value = occurred_at
+
+    result = repository.recover_local(
+        RecoverLocalMutation(
+            instance_id=_INSTANCE_ID,
+            bootstrap_handle="local-operator",
+            token_id=replacement_id,
+            token_digest=replacement_digest,
+            request_id=RequestId("req_recover-local"),
+            occurred_at=occurred_at,
+            expires_at=occurred_at + timedelta(days=30),
+        )
+    )
+
+    assert result.subject.id == _OWNER_ID
+    assert result.token.id == replacement_id
+    assert result.token.status is TokenStatus.ACTIVE
+    assert result.token.activated_at == occurred_at
+    for old_token, old_digest in (
+        (_OWNER_TOKEN_ID, _digest_for(_OWNER_TOKEN_ID, fill=1)),
+        (second_owner_id, second_owner_digest),
+    ):
+        with pytest.raises(AuthenticationFailedError):
+            repository.authenticate_token(
+                AuthenticateToken(
+                    token_id=old_token,
+                    token_digest=old_digest,
+                    expected_instance_id=_INSTANCE_ID,
+                    occurred_at=occurred_at,
+                )
+            )
+    replacement_actor = repository.authenticate_token(
+        AuthenticateToken(
+            token_id=replacement_id,
+            token_digest=replacement_digest,
+            expected_instance_id=_INSTANCE_ID,
+            occurred_at=occurred_at,
+        )
+    )
+    assert replacement_actor.subject_id == _OWNER_ID
+    agent_actor = repository.authenticate_token(
+        AuthenticateToken(
+            token_id=agent_token_id,
+            token_digest=agent_digest,
+            expected_instance_id=_INSTANCE_ID,
+            occurred_at=occurred_at,
+        )
+    )
+    assert agent_actor.subject_id == agent_id
+
+    connection = sqlite3.connect(repository.database_path)
+    try:
+        audit_rows = connection.execute(
+            """
+            SELECT event_type, actor_token_id
+            FROM audit_events
+            WHERE request_id = ?
+            ORDER BY cursor
+            """,
+            ("req_recover-local",),
+        ).fetchall()
+    finally:
+        connection.close()
+    assert audit_rows == [
+        (AuditEventType.TOKEN_REVOKED.value, None),
+        (AuditEventType.TOKEN_REVOKED.value, None),
+        (AuditEventType.TOKEN_ISSUED.value, None),
+    ]

@@ -201,7 +201,7 @@ class PhaseThreePersistenceContract(PhaseTwoPersistenceContract):
                     subject_id=bootstrap.subject.id,
                 )
             ).schema_version
-            == 4
+            == 5
         )
 
     def test_lifecycle_transitions_version_once_and_reject_invalid_states(
