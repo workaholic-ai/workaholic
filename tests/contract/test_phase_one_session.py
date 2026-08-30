@@ -48,6 +48,7 @@ class _LocalSessionFactory:
             cwd=workspace,
             environment={
                 "WORKAHOLIC_CONFIG_DIR": str(root.parent / "config"),
+                "WORKAHOLIC_CREDENTIAL_BACKEND": "file",
                 "WORKAHOLIC_DATA_DIR": str(root),
             },
         )

@@ -92,7 +92,7 @@ if [ "${WORKAHOLIC_TEST_UV_FAIL_ON:-}" = "$*" ]; then
 fi
 if [ "$*" = "build --no-progress" ]; then
   mkdir -p dist
-  printf '%s\n' "wheel fixture" > dist/workaholic_ai-0.4.0a1-py3-none-any.whl
+  printf '%s\n' "wheel fixture" > dist/workaholic_ai-0.5.0a1-py3-none-any.whl
 fi
 """,
     )
@@ -219,7 +219,7 @@ def test_gate_runs_the_exact_phase_four_journey_in_owned_roots(
         tmp_path
     )
     project_root = tmp_path / "project"
-    wheel = "dist/workaholic_ai-0.4.0a1-py3-none-any.whl"
+    wheel = "dist/workaholic_ai-0.5.0a1-py3-none-any.whl"
 
     assert result.returncode == 0
     assert result.stdout.endswith("Phase 4 clean-state acceptance gate passed.\n")

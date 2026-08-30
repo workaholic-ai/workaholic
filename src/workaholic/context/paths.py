@@ -7,6 +7,8 @@ from pathlib import Path
 
 import platformdirs
 
+from workaholic.application import InvalidInputError
+from workaholic.auth.sources import resolve_token_file_path as _resolve_token_file_path
 from workaholic.context.errors import ContextInvalidError, ContextStorageError
 from workaholic.context.models import LocalConfigPaths, LocalDataPaths
 
@@ -14,6 +16,26 @@ _CONFIG_DIRECTORY_ENVIRONMENT_KEY = "WORKAHOLIC_CONFIG_DIR"
 _DATA_DIRECTORY_ENVIRONMENT_KEY = "WORKAHOLIC_DATA_DIR"
 _DATABASE_FILENAME = "local.db"
 _PROFILES_FILENAME = "profiles.toml"
+
+
+def resolve_token_file_path(value: object) -> Path:
+    """Validate one absolute trusted process Token-file path.
+
+    Args:
+        value: Candidate ``WORKAHOLIC_TOKEN_FILE`` value.
+
+    Returns:
+        Absolute path without resolving mounted-secret symlinks yet.
+
+    Raises:
+        ContextInvalidError: If the candidate is not an absolute path string.
+
+    """
+    try:
+        return _resolve_token_file_path(value)
+    except InvalidInputError as error:
+        message = "WORKAHOLIC_TOKEN_FILE must be an absolute path."
+        raise ContextInvalidError(message) from error
 
 
 def resolve_local_config_paths(

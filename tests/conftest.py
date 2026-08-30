@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from typing import TYPE_CHECKING, Protocol, cast
 
 import pytest
@@ -39,6 +40,9 @@ def pytest_configure(config: pytest.Config) -> None:
         config: Active pytest configuration.
 
     """
+    if os.environ.get("COVERAGE_PROCESS_CONFIG"):
+        os.environ["COVERAGE_FILE"] = str(config.rootpath / ".coverage")
+
     marker_expression: object = config.getoption("markexpr")
     if marker_expression == "golden":
         config.option.cov_fail_under = 0
@@ -49,13 +53,13 @@ def pytest_configure(config: pytest.Config) -> None:
 
 @pytest.fixture
 def golden_runner(tmp_path: Path) -> GoldenJourneyRunner:
-    """Provide the Phase 4 runner pinned to two isolated embedded profiles.
+    """Provide the Phase 5 runner pinned to isolated file credentials and data.
 
     Args:
         tmp_path: Pytest-owned root unique to the current golden journey.
 
     Returns:
-        Phase 4 subprocess runner over isolated trusted configuration and data.
+        Phase 5 subprocess runner over isolated trusted configuration and data.
 
     """
     data_directory = tmp_path / "golden-data"

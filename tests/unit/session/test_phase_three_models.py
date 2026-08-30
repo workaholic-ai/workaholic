@@ -14,6 +14,7 @@ from workaholic.session import (
     TaskApproveRequest,
     TaskBlockRequest,
     TaskCancelRequest,
+    TaskCreateRequest,
     TaskDetailsRequest,
     TaskEventsRequest,
     TaskListByViewRequest,
@@ -219,6 +220,41 @@ def test_view_and_event_queries_enforce_closed_bounds_and_selection() -> None:
     ):
         with pytest.raises(ValidationError):
             TaskEventsRequest.model_validate(values)
+
+
+def test_task_creation_rejects_loose_structured_runtime_values() -> None:
+    """Task definitions accept only closed, bounded acceptance and context shapes."""
+    invalid_values = (
+        {"title": "Task", "approval": 1},
+        {"title": "Task", "acceptance": object()},
+        {"title": "Task", "acceptance": (object(),)},
+        {
+            "title": "Task",
+            "acceptance": (
+                {"id": "ac_done", "text": "Done", "required": True},
+                {"id": "ac_done", "text": "Again", "required": False},
+            ),
+        },
+        {"title": "Task", "context": object()},
+        {"title": "Task", "context": (object(),)},
+        {
+            "title": "Task",
+            "context": (
+                {"uri": "workspace://repo/file", "version": None},
+                {"uri": "workspace://repo/file", "version": None},
+            ),
+        },
+        {"title": "Task", "acceptance": [object()] * 101},
+    )
+    for values in invalid_values:
+        with pytest.raises(ValidationError):
+            TaskCreateRequest.model_validate(values)
+
+
+def test_task_view_rejects_non_string_runtime_value() -> None:
+    """Task view parsing accepts only its enum or exact serialized string."""
+    with pytest.raises(ValidationError):
+        TaskListByViewRequest.model_validate({"view": 1})
 
 
 def test_requests_are_frozen_and_protocol_exposes_complete_phase_three_surface() -> (

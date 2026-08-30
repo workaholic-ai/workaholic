@@ -19,6 +19,7 @@ from workaholic.application import (
 )
 from workaholic.domain import (
     DomainValidationError,
+    SubjectKind,
     Task,
     TaskEventType,
     TaskId,
@@ -132,6 +133,8 @@ def _execute_dependency_mutation(
                 task_uid=mutation.task_uid,
                 project_id=str(mutation.project_id),
                 actor_subject_id=str(mutation.actor_subject_id),
+                actor=mutation.actor,
+                occurred_at=mutation.occurred_at,
             )
             replay = _read_idempotent_mutation(
                 connection,
@@ -155,6 +158,11 @@ def _execute_dependency_mutation(
                 request_id=mutation.request_id,
                 occurred_at=mutation.occurred_at,
                 claim_expired_event_id=mutation.claim_expired_event_id,
+                actor_kind=(
+                    SubjectKind.HUMAN
+                    if mutation.actor is None
+                    else mutation.actor.subject_kind
+                ),
             )
             if current.version != mutation.expected_version:
                 raise VersionConflictError
@@ -294,6 +302,8 @@ def _load_prerequisite(
         task_uid=mutation.prerequisite_uid,
         project_id=str(mutation.project_id),
         actor_subject_id=str(mutation.actor_subject_id),
+        actor=mutation.actor,
+        occurred_at=mutation.occurred_at,
     )
 
 

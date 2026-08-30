@@ -77,10 +77,16 @@ def _subject() -> Subject:
     """Build the trusted embedded Human fixture."""
     return Subject(
         id=SubjectId("sub_local"),
+        instance_id=InstanceId("ins_local"),
         kind=SubjectKind.HUMAN,
+        handle="local-operator",
         display_name="Local operator",
         enabled=True,
         is_instance_admin=True,
+        version=1,
+        created_by=SubjectId("sub_local"),
+        created_at=_NOW,
+        updated_at=_NOW,
     )
 
 
@@ -104,9 +110,14 @@ def _project(
 def _grant(project: Project) -> ProjectGrant:
     """Build the trusted Human's Owner grant for a Project."""
     return ProjectGrant(
+        instance_id=project.instance_id,
         subject_id=SubjectId("sub_local"),
         project_id=project.id,
         role=ProjectRole.OWNER,
+        version=1,
+        granted_by=SubjectId("sub_local"),
+        created_at=project.created_at,
+        updated_at=project.created_at,
     )
 
 
@@ -538,7 +549,7 @@ def test_discovered_context_reports_canonical_authoritative_selection() -> None:
 
     assert result.mode == "embedded"
     assert result.profile == "local"
-    assert result.schema_version == 4
+    assert result.schema_version == 5
     assert result.instance.id == InstanceId("ins_local")
     assert result.project.key == "ACME"
     assert result.subject.id == SubjectId("sub_local")

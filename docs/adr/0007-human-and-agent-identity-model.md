@@ -21,7 +21,9 @@ preserve the same authorization and audit behavior as shared remote operation.
 ## Decision
 
 Represent every independently operating Human or Agent as a distinct `Subject`
-with an immutable identifier, kind, display name, and enabled state.
+with an immutable identifier, Instance-scoped immutable lowercase handle,
+immutable kind, mutable display name, enabled state, and positive optimistic
+version. Handles are the stable automation identity and are not reused.
 
 Subject kinds are:
 
@@ -31,18 +33,22 @@ agent
 ```
 
 Kind describes the operator; it does not grant permission. Authorization uses
-an Instance-administrator role plus ProjectGrants with Viewer, Agent, Operator,
-and Owner roles. Every read and mutation is checked against the active Subject
-and target Project.
+separate Instance-administrator status plus cumulative ProjectGrants in the
+order Viewer, Agent, Operator, and Owner. Every read and mutation is checked
+against the active Subject and target Project. An Instance administrator still
+requires a ProjectGrant for ordinary Project data. The Instance must retain an
+enabled administrator, and each Project must retain an enabled Owner.
 
 Each independently operating Agent receives its own Subject and Token. Shared
 "all agents" credentials are not an accepted operating model. Capabilities
 affect task selection only and never authorization.
 
-Tokens are high-entropy bearer credentials belonging to one Subject. Workaholic
-AI stores only Token hashes and supports expiry, revocation, and Subject
-disablement. Raw Tokens do not appear in `.workaholic.env`, normal command
-arguments, task content, Results, TaskEvents, or logs.
+One Subject may have multiple high-entropy bearer Tokens with independent
+expiry and revocation. Workaholic AI stores only Token hashes and supports
+pending provisioning, expiry, revocation, and Subject disablement. Raw Tokens
+do not appear in `.workaholic.env`, `profiles.toml`, normal command arguments,
+task content, Results, events, idempotency state, or logs. Subjects and Tokens
+are not deleted in v1.
 
 Human credentials use the operating-system credential store where available,
 with a protected user-configuration fallback. Agent credentials are supplied
@@ -52,21 +58,26 @@ LocalSession supplies authenticated Subject context and applies application
 authorization even though the local filesystem remains part of the operating
 system trust boundary. RemoteSession authenticates every request. Every
 accepted mutation records authenticated Subject and request attribution.
+Persistence revalidates Token, enabled Subject, Instance, and required grant in
+the operation transaction rather than trusting a Session-time check.
 
 ### Phase delivery boundary
 
 Phase 1 bootstrap creates one real enabled Human Subject named
 `Local operator`, marks that Subject as the Instance administrator, grants it
 the Owner role on the bootstrapped Project, and selects it as the sole
-LocalSession actor. Every accepted Phase 1 Task creation and `task_created`
-event records that Subject and a generated request identity.
+LocalSession actor. Phase 5 assigns that existing identity immutable handle
+`local-operator`. Every accepted Phase 1 Task creation and `task_created` event
+records that Subject and a generated request identity.
 
 Because Phase 1 is an embedded single-user slice whose filesystem is inside
 the local trust boundary, it creates no bearer Token, stores no credential,
 and provides no identity-management commands. Phase 5 adds Tokens, secure
 credential storage, additional Human and Agent Subjects, and general
 ProjectGrant administration. Those additions extend the Phase 1 identity;
-they do not replace anonymous or placeholder bootstrap records.
+they do not replace it with an anonymous or placeholder bootstrap record. ADR
+0013 fixes the exact Phase 5 Token, credential, recovery, role, Claim, and audit
+contracts.
 
 ## Alternatives considered
 
@@ -112,3 +123,4 @@ least-privilege requirements among Projects or Subjects.
 - [Architecture](../architecture.md)
 - [Product scope](../product-scope.md)
 - [ADR 0006: Project Context Trust Model](0006-project-context-trust-model.md)
+- [ADR 0013: Phase 5 Token and Authorization Model](0013-phase-five-token-and-authorization-model.md)

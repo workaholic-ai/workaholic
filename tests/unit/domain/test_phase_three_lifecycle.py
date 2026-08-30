@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
-from dataclasses import FrozenInstanceError, replace
+from dataclasses import FrozenInstanceError, fields, replace
 from datetime import UTC, datetime, timedelta
 from itertools import product
+from types import SimpleNamespace
 
 import pytest
 
@@ -570,6 +571,62 @@ def test_result_consistency_rejects_wrong_task_unknown_and_missing_criteria() ->
         result=_result(task),
         human_submission=True,
     )
+
+
+def test_result_consistency_rejects_malformed_boundary_projections() -> None:
+    """Result validation rejects incomplete objects, loose flags, and criteria."""
+    task = replace(
+        _task(),
+        acceptance=(AcceptanceCriterion("ac_done", "Done", required=True),),
+    )
+    with pytest.raises(DomainValidationError, match="Result must expose"):
+        validate_task_result_consistency(
+            task=task,
+            result=object(),
+            human_submission=True,
+        )
+    with pytest.raises(DomainValidationError, match="boolean"):
+        validate_task_result_consistency(
+            task=task,
+            result=_result(task),
+            human_submission=1,
+        )
+
+    malformed_task = SimpleNamespace(
+        **{field.name: getattr(task, field.name) for field in fields(task)}
+    )
+    malformed_task.acceptance = (object(),)
+    with pytest.raises(DomainValidationError, match="criterion contracts"):
+        validate_task_result_consistency(
+            task=malformed_task,
+            result=_result(task),
+            human_submission=True,
+        )
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "message"),
+    [
+        ("state", "open", "Task state"),
+        ("approval", "none", "Task approval"),
+        ("depends_on", None, "depends_on"),
+        ("acceptance", None, "acceptance"),
+    ],
+)
+def test_readiness_rejects_malformed_task_contract_fields(
+    field: str,
+    value: object,
+    message: str,
+) -> None:
+    """Lifecycle rules validate every structural Task field at runtime."""
+    task = _task()
+    malformed = SimpleNamespace(
+        **{item.name: getattr(task, item.name) for item in fields(task)}
+    )
+    setattr(malformed, field, value)
+
+    with pytest.raises(DomainValidationError, match=message):
+        derive_task_readiness(task=malformed, prerequisites=(), now=_NOW)
 
 
 def test_ready_ordering_is_priority_availability_project_and_number_stable() -> None:

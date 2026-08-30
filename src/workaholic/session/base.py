@@ -10,10 +10,17 @@ from workaholic.domain import InstanceId, SubjectId, WorkspaceBinding
 
 if TYPE_CHECKING:
     from workaholic.application import (
+        AuditEventPage,
         BootstrapResult,
         ContextResult,
+        CredentialLogoutResult,
+        CurrentIdentityResult,
         ProjectCreationResult,
+        ProjectGrantPage,
+        ProjectGrantResult,
         StatusResult,
+        SubjectPage,
+        SubjectResult,
         TaskClaimResult,
         TaskDetails,
         TaskEventPage,
@@ -21,6 +28,8 @@ if TYPE_CHECKING:
         TaskPage,
         TaskProgressResult,
         TaskSubmissionResult,
+        TokenPage,
+        TokenResult,
     )
     from workaholic.domain import (
         Project,
@@ -33,14 +42,26 @@ if TYPE_CHECKING:
         AgentReleaseRequest,
         AgentSubmitRequest,
         AgentTaskClaimRequest,
+        AuditEventsRequest,
         ContextRequest,
+        GrantAssignRequest,
+        GrantListRequest,
+        GrantRevokeRequest,
         HumanClaimReleaseRequest,
         HumanClaimRenewRequest,
         HumanTaskClaimRequest,
+        LoginRequest,
+        LogoutRequest,
         ProjectBindRequest,
         ProjectCreateRequest,
         ProjectListRequest,
+        RecoverLocalRequest,
         StatusRequest,
+        SubjectAdminRequest,
+        SubjectCreateRequest,
+        SubjectEnabledRequest,
+        SubjectListRequest,
+        SubjectUpdateRequest,
         TaskAddDependencyRequest,
         TaskApproveRequest,
         TaskBlockRequest,
@@ -56,7 +77,11 @@ if TYPE_CHECKING:
         TaskSubmitRequest,
         TaskUnblockRequest,
         TaskUpdateRequest,
+        TokenCreateRequest,
+        TokenListRequest,
+        TokenRevokeRequest,
         UpRequest,
+        WhoAmIRequest,
     )
 
 
@@ -306,6 +331,76 @@ class WorkaholicSession(TaskSession, Protocol):
             Effective identity and safe context paths.
 
         """
+        ...
+
+    def whoami(self, request: WhoAmIRequest) -> CurrentIdentityResult:
+        """Return freshly revalidated authenticated identity metadata."""
+        ...
+
+    def login(self, request: LoginRequest) -> CurrentIdentityResult:
+        """Authenticate and store one explicit Human credential."""
+        ...
+
+    def logout(self, request: LogoutRequest) -> CredentialLogoutResult:
+        """Remove only the selected profile's stored Human credential."""
+        ...
+
+    def recover_local(
+        self,
+        request: RecoverLocalRequest,
+    ) -> CurrentIdentityResult:
+        """Execute the confirmed tokenless embedded recovery path."""
+        ...
+
+    def create_subject(self, request: SubjectCreateRequest) -> SubjectResult:
+        """Create one immutable Human or Agent Subject."""
+        ...
+
+    def list_subjects(self, request: SubjectListRequest) -> SubjectPage:
+        """Return one administrator-visible Subject page."""
+        ...
+
+    def update_subject(self, request: SubjectUpdateRequest) -> SubjectResult:
+        """Update one Subject display name at an exact version."""
+        ...
+
+    def set_subject_enabled(
+        self,
+        request: SubjectEnabledRequest,
+    ) -> SubjectResult:
+        """Set one Subject's enabled state at an exact version."""
+        ...
+
+    def set_instance_admin(self, request: SubjectAdminRequest) -> SubjectResult:
+        """Set one Subject's administrator state at an exact version."""
+        ...
+
+    def assign_grant(self, request: GrantAssignRequest) -> ProjectGrantResult:
+        """Create or replace one ProjectGrant."""
+        ...
+
+    def list_grants(self, request: GrantListRequest) -> ProjectGrantPage:
+        """Return one owner-visible ProjectGrant page."""
+        ...
+
+    def revoke_grant(self, request: GrantRevokeRequest) -> ProjectGrantResult:
+        """Revoke one ProjectGrant at an exact version."""
+        ...
+
+    def create_token(self, request: TokenCreateRequest) -> TokenResult:
+        """Safely provision one Token to a protected output file."""
+        ...
+
+    def list_tokens(self, request: TokenListRequest) -> TokenPage:
+        """Return one visible non-secret Token metadata page."""
+        ...
+
+    def revoke_token(self, request: TokenRevokeRequest) -> TokenResult:
+        """Monotonically revoke one visible Token."""
+        ...
+
+    def read_audit_events(self, request: AuditEventsRequest) -> AuditEventPage:
+        """Return one administrator-only AuditEvent page."""
         ...
 
     def create_project(

@@ -1,4 +1,4 @@
-"""Transactional Phase 4 SQLite schema creation and exact validation."""
+"""Transactional Phase 5 SQLite schema creation and exact validation."""
 
 from __future__ import annotations
 
@@ -16,7 +16,7 @@ from workaholic.persistence.sqlite.errors import SchemaUnsupportedError
 if TYPE_CHECKING:
     from pathlib import Path
 
-SCHEMA_VERSION: Final = 4
+SCHEMA_VERSION: Final = 5
 _CREATE_STATEMENT_MIN_WORDS: Final = 3
 
 _SCHEMA_STATEMENTS: Final = (
@@ -42,7 +42,14 @@ _SCHEMA_STATEMENTS: Final = (
     CREATE TABLE subjects (
         id TEXT PRIMARY KEY
             CHECK (length(id) BETWEEN 5 AND 132 AND id GLOB 'sub_*'),
-        kind TEXT NOT NULL CHECK (kind IN ('human')),
+        instance_id TEXT NOT NULL,
+        kind TEXT NOT NULL CHECK (kind IN ('human', 'agent')),
+        handle TEXT NOT NULL
+            CHECK (
+                length(handle) BETWEEN 2 AND 63
+                AND substr(handle, 1, 1) GLOB '[a-z]'
+                AND handle NOT GLOB '*[^a-z0-9-]*'
+            ),
         display_name TEXT NOT NULL
             CHECK (
                 length(display_name) BETWEEN 1 AND 200
@@ -50,7 +57,29 @@ _SCHEMA_STATEMENTS: Final = (
         ),
         enabled INTEGER NOT NULL CHECK (enabled IN (0, 1)),
         is_instance_admin INTEGER NOT NULL CHECK (is_instance_admin IN (0, 1)),
-        UNIQUE (id, kind)
+        version INTEGER NOT NULL CHECK (version >= 1),
+        created_by TEXT NOT NULL,
+        created_at TEXT NOT NULL
+            CHECK (
+                length(created_at) BETWEEN 20 AND 27
+                AND substr(created_at, 11, 1) = 'T'
+                AND substr(created_at, -1, 1) = 'Z'
+            ),
+        updated_at TEXT NOT NULL
+            CHECK (
+                length(updated_at) BETWEEN 20 AND 27
+                AND substr(updated_at, 11, 1) = 'T'
+                AND substr(updated_at, -1, 1) = 'Z'
+                AND updated_at >= created_at
+            ),
+        UNIQUE (id, instance_id),
+        UNIQUE (id, kind),
+        UNIQUE (id, instance_id, kind),
+        UNIQUE (instance_id, handle),
+        FOREIGN KEY (instance_id)
+            REFERENCES instances(id) ON DELETE RESTRICT,
+        FOREIGN KEY (created_by, instance_id)
+            REFERENCES subjects(id, instance_id) ON DELETE RESTRICT
     ) STRICT
     """,
     """
@@ -77,17 +106,98 @@ _SCHEMA_STATEMENTS: Final = (
                 AND substr(created_at, 11, 1) = 'T'
                 AND substr(created_at, -1, 1) = 'Z'
             ),
-        UNIQUE (instance_id, key)
+        UNIQUE (instance_id, key),
+        UNIQUE (id, instance_id)
     ) STRICT
     """,
     """
     CREATE TABLE project_grants (
-        subject_id TEXT NOT NULL
-            REFERENCES subjects(id) ON DELETE RESTRICT,
-        project_id TEXT NOT NULL
-            REFERENCES projects(id) ON DELETE RESTRICT,
-        role TEXT NOT NULL CHECK (role IN ('owner')),
-        PRIMARY KEY (subject_id, project_id)
+        instance_id TEXT NOT NULL,
+        subject_id TEXT NOT NULL,
+        project_id TEXT NOT NULL,
+        role TEXT NOT NULL
+            CHECK (role IN ('viewer', 'agent', 'operator', 'owner')),
+        version INTEGER NOT NULL CHECK (version >= 1),
+        granted_by TEXT NOT NULL,
+        created_at TEXT NOT NULL
+            CHECK (
+                length(created_at) BETWEEN 20 AND 27
+                AND substr(created_at, 11, 1) = 'T'
+                AND substr(created_at, -1, 1) = 'Z'
+            ),
+        updated_at TEXT NOT NULL
+            CHECK (
+                length(updated_at) BETWEEN 20 AND 27
+                AND substr(updated_at, 11, 1) = 'T'
+                AND substr(updated_at, -1, 1) = 'Z'
+                AND updated_at >= created_at
+            ),
+        PRIMARY KEY (subject_id, project_id),
+        UNIQUE (instance_id, subject_id, project_id),
+        FOREIGN KEY (subject_id, instance_id)
+            REFERENCES subjects(id, instance_id) ON DELETE RESTRICT,
+        FOREIGN KEY (project_id, instance_id)
+            REFERENCES projects(id, instance_id) ON DELETE RESTRICT,
+        FOREIGN KEY (granted_by, instance_id)
+            REFERENCES subjects(id, instance_id) ON DELETE RESTRICT
+    ) STRICT
+    """,
+    """
+    CREATE TABLE tokens (
+        id TEXT PRIMARY KEY
+            CHECK (length(id) BETWEEN 5 AND 132 AND id GLOB 'tok_*'),
+        instance_id TEXT NOT NULL,
+        subject_id TEXT NOT NULL,
+        token_hash TEXT NOT NULL UNIQUE
+            CHECK (
+                length(token_hash) = 64
+                AND token_hash NOT GLOB '*[^0-9a-f]*'
+            ),
+        created_by TEXT NOT NULL,
+        created_at TEXT NOT NULL
+            CHECK (
+                length(created_at) BETWEEN 20 AND 27
+                AND substr(created_at, 11, 1) = 'T'
+                AND substr(created_at, -1, 1) = 'Z'
+            ),
+        activated_at TEXT
+            CHECK (
+                activated_at IS NULL
+                OR (
+                    length(activated_at) BETWEEN 20 AND 27
+                    AND substr(activated_at, 11, 1) = 'T'
+                    AND substr(activated_at, -1, 1) = 'Z'
+                    AND activated_at >= created_at
+                )
+            ),
+        expires_at TEXT NOT NULL
+            CHECK (
+                length(expires_at) BETWEEN 20 AND 27
+                AND substr(expires_at, 11, 1) = 'T'
+                AND substr(expires_at, -1, 1) = 'Z'
+                AND expires_at > created_at
+                AND (activated_at IS NULL OR activated_at < expires_at)
+            ),
+        revoked_at TEXT
+            CHECK (
+                revoked_at IS NULL
+                OR (
+                    length(revoked_at) BETWEEN 20 AND 27
+                    AND substr(revoked_at, 11, 1) = 'T'
+                    AND substr(revoked_at, -1, 1) = 'Z'
+                    AND revoked_at >= created_at
+                    AND (activated_at IS NULL OR revoked_at >= activated_at)
+                )
+            ),
+        revoked_by TEXT,
+        UNIQUE (id, instance_id, subject_id),
+        FOREIGN KEY (subject_id, instance_id)
+            REFERENCES subjects(id, instance_id) ON DELETE RESTRICT,
+        FOREIGN KEY (created_by, instance_id)
+            REFERENCES subjects(id, instance_id) ON DELETE RESTRICT,
+        FOREIGN KEY (revoked_by, instance_id)
+            REFERENCES subjects(id, instance_id) ON DELETE RESTRICT,
+        CHECK ((revoked_at IS NULL) = (revoked_by IS NULL))
     ) STRICT
     """,
     f"""
@@ -236,6 +346,7 @@ _SCHEMA_STATEMENTS: Final = (
                 AND lease_expires_at > started_at
             ),
         UNIQUE (id, task_uid, subject_id),
+        UNIQUE (id, task_uid, project_id),
         UNIQUE (id, task_uid, project_id, subject_id),
         FOREIGN KEY (task_uid, project_id)
             REFERENCES tasks(uid, project_id) ON DELETE RESTRICT,
@@ -420,7 +531,7 @@ _SCHEMA_STATEMENTS: Final = (
                 AND actor_subject_id GLOB 'sub_*'
             ),
         actor_kind TEXT NOT NULL DEFAULT 'human'
-            CHECK (actor_kind IN ('human')),
+            CHECK (actor_kind IN ('human', 'agent')),
         attempt_id TEXT
             CHECK (
                 attempt_id IS NULL
@@ -472,9 +583,67 @@ _SCHEMA_STATEMENTS: Final = (
             REFERENCES tasks(uid, project_id) ON DELETE RESTRICT,
         FOREIGN KEY (actor_subject_id, actor_kind)
             REFERENCES subjects(id, kind) ON DELETE RESTRICT,
-        FOREIGN KEY (attempt_id, task_uid, project_id, actor_subject_id)
-            REFERENCES task_attempts(id, task_uid, project_id, subject_id)
+        FOREIGN KEY (attempt_id, task_uid, project_id)
+            REFERENCES task_attempts(id, task_uid, project_id)
             ON DELETE RESTRICT
+    ) STRICT
+    """,
+    f"""
+    CREATE TABLE audit_events (
+        cursor INTEGER PRIMARY KEY AUTOINCREMENT,
+        id TEXT NOT NULL UNIQUE
+            CHECK (length(id) BETWEEN 5 AND 132 AND id GLOB 'aev_*'),
+        instance_id TEXT NOT NULL,
+        actor_subject_id TEXT NOT NULL,
+        actor_kind TEXT NOT NULL CHECK (actor_kind IN ('human', 'agent')),
+        actor_token_id TEXT
+            CHECK (
+                actor_token_id IS NULL
+                OR (
+                    length(actor_token_id) BETWEEN 5 AND 132
+                    AND actor_token_id GLOB 'tok_*'
+                )
+            ),
+        request_id TEXT NOT NULL
+            CHECK (
+                length(request_id) BETWEEN 5 AND 132
+                AND request_id GLOB 'req_*'
+            ),
+        event_type TEXT NOT NULL
+            CHECK (
+                event_type IN (
+                    'instance_bootstrapped',
+                    'project_created',
+                    'subject_created',
+                    'subject_updated',
+                    'subject_enabled',
+                    'subject_disabled',
+                    'instance_admin_granted',
+                    'instance_admin_revoked',
+                    'project_grant_assigned',
+                    'project_grant_revoked',
+                    'token_issued',
+                    'token_revoked'
+                )
+            ),
+        occurred_at TEXT NOT NULL
+            CHECK (
+                length(occurred_at) BETWEEN 20 AND 27
+                AND substr(occurred_at, 11, 1) = 'T'
+                AND substr(occurred_at, -1, 1) = 'Z'
+            ),
+        payload_json TEXT NOT NULL
+            CHECK (
+                length(payload_json) BETWEEN 2 AND {EVENT_PAYLOAD_JSON_MAX_LENGTH}
+                AND substr(payload_json, 1, 1) = '{{'
+                AND substr(payload_json, -1, 1) = '}}'
+                AND json_valid(payload_json)
+                AND json_type(payload_json) = 'object'
+            ),
+        FOREIGN KEY (actor_subject_id, instance_id, actor_kind)
+            REFERENCES subjects(id, instance_id, kind) ON DELETE RESTRICT,
+        FOREIGN KEY (actor_token_id, instance_id, actor_subject_id)
+            REFERENCES tokens(id, instance_id, subject_id) ON DELETE RESTRICT
     ) STRICT
     """,
     f"""
@@ -504,7 +673,18 @@ _SCHEMA_STATEMENTS: Final = (
                     'task.claim.renew',
                     'task.claim.release',
                     'task.progress.report',
-                    'task.result.submit.agent'
+                    'task.result.submit.agent',
+                    'subject.create',
+                    'subject.update',
+                    'subject.enable',
+                    'subject.disable',
+                    'subject.admin.grant',
+                    'subject.admin.revoke',
+                    'project.grant.assign',
+                    'project.grant.revoke',
+                    'token.activate',
+                    'token.revoke',
+                    'auth.recover.local'
                 )
             ),
         caller_key TEXT NOT NULL
@@ -538,6 +718,30 @@ _SCHEMA_STATEMENTS: Final = (
     """
     CREATE INDEX idx_tasks_readiness
     ON tasks (project_id, state, available_at, priority DESC, number)
+    """,
+    """
+    CREATE INDEX idx_subjects_instance_handle
+    ON subjects (instance_id, handle, id)
+    """,
+    """
+    CREATE INDEX idx_subjects_instance_admin
+    ON subjects (instance_id, enabled, is_instance_admin, id)
+    """,
+    """
+    CREATE INDEX idx_project_grants_project_subject
+    ON project_grants (instance_id, project_id, subject_id)
+    """,
+    """
+    CREATE INDEX idx_project_grants_subject_project
+    ON project_grants (instance_id, subject_id, project_id)
+    """,
+    """
+    CREATE INDEX idx_tokens_subject_created
+    ON tokens (instance_id, subject_id, created_at, id)
+    """,
+    """
+    CREATE INDEX idx_tokens_active_expiry
+    ON tokens (instance_id, activated_at, revoked_at, expires_at, id)
     """,
     """
     CREATE INDEX idx_task_dependencies_prerequisite
@@ -576,8 +780,12 @@ _SCHEMA_STATEMENTS: Final = (
     ON task_events (project_id, cursor)
     """,
     """
+    CREATE INDEX idx_audit_events_instance_cursor
+    ON audit_events (instance_id, cursor)
+    """,
+    """
     INSERT INTO store_metadata (singleton, schema_version)
-    VALUES (1, 4)
+    VALUES (1, 5)
     """,
 )
 
@@ -613,16 +821,17 @@ _EXPECTED_SCHEMA_SIGNATURE: Final = _schema_signature_from_statements(
 
 
 def initialize_empty_store(database_path: Path) -> None:
-    """Atomically create or accept one empty Phase 4 SQLite store.
+    """Atomically create or accept one empty Phase 5 SQLite store.
 
-    Concurrent callers serialize through a bounded immediate transaction. An
-    existing nonempty store is validated and never repaired or migrated.
+    Concurrent callers and pre-authentication readers serialize through a
+    bounded exclusive transaction. An existing nonempty store is validated and
+    never repaired or migrated.
 
     Args:
         database_path: Absolute target path for the SQLite database.
 
     Raises:
-        SchemaUnsupportedError: If an existing store is not exact version 4.
+        SchemaUnsupportedError: If an existing store is not exact version 5.
         StorageBusyError: If another writer outlives the bounded lock wait.
         StorageUnavailableError: If storage cannot be initialized safely.
 
@@ -645,7 +854,7 @@ def validate_store_schema(connection: sqlite3.Connection) -> None:
         connection: Open SQLite connection to inspect.
 
     Raises:
-        SchemaUnsupportedError: If metadata is absent, malformed, or not version 4.
+        SchemaUnsupportedError: If metadata is absent, malformed, or not version 5.
 
     """
     candidate: object = connection

@@ -19,18 +19,49 @@ from workaholic.cli.errors import normalize_failure, write_failure
 _RUNNER = CliRunner()
 _EXPECTED_EXITS = {
     ApplicationErrorCode.INVALID_INPUT: ExitCategory.INPUT_USAGE,
+    ApplicationErrorCode.RESULT_INVALID: ExitCategory.INPUT_USAGE,
     ApplicationErrorCode.CONTEXT_NOT_FOUND: ExitCategory.MISSING,
     ApplicationErrorCode.CONTEXT_INVALID: ExitCategory.MISSING,
+    ApplicationErrorCode.PROFILE_NOT_FOUND: ExitCategory.MISSING,
+    ApplicationErrorCode.PROFILE_INVALID: ExitCategory.MISSING,
+    ApplicationErrorCode.PROFILE_UNSUPPORTED: ExitCategory.MISSING,
     ApplicationErrorCode.NOT_INITIALIZED: ExitCategory.MISSING,
+    ApplicationErrorCode.PROJECT_NOT_FOUND: ExitCategory.MISSING,
     ApplicationErrorCode.TASK_NOT_FOUND: ExitCategory.MISSING,
+    ApplicationErrorCode.NO_TASK_AVAILABLE: ExitCategory.MISSING,
+    ApplicationErrorCode.SUBJECT_NOT_FOUND: ExitCategory.MISSING,
+    ApplicationErrorCode.TOKEN_NOT_FOUND: ExitCategory.MISSING,
+    ApplicationErrorCode.GRANT_NOT_FOUND: ExitCategory.MISSING,
     ApplicationErrorCode.PROJECT_KEY_CONFLICT: ExitCategory.CONFLICT,
+    ApplicationErrorCode.WORKSPACE_BINDING_CONFLICT: ExitCategory.CONFLICT,
     ApplicationErrorCode.IDEMPOTENCY_CONFLICT: ExitCategory.CONFLICT,
+    ApplicationErrorCode.VERSION_CONFLICT: ExitCategory.CONFLICT,
+    ApplicationErrorCode.INVALID_TRANSITION: ExitCategory.CONFLICT,
+    ApplicationErrorCode.DEPENDENCY_CONFLICT: ExitCategory.CONFLICT,
+    ApplicationErrorCode.DEPENDENCY_CYCLE: ExitCategory.CONFLICT,
+    ApplicationErrorCode.UNSATISFIABLE_DEPENDENCY: ExitCategory.CONFLICT,
+    ApplicationErrorCode.TASK_LOCKED: ExitCategory.CONFLICT,
+    ApplicationErrorCode.LEASE_LOST: ExitCategory.CONFLICT,
+    ApplicationErrorCode.SUBJECT_HANDLE_CONFLICT: ExitCategory.CONFLICT,
+    ApplicationErrorCode.IDENTITY_VERSION_CONFLICT: ExitCategory.CONFLICT,
+    ApplicationErrorCode.LAST_INSTANCE_ADMIN: ExitCategory.CONFLICT,
+    ApplicationErrorCode.LAST_PROJECT_OWNER: ExitCategory.CONFLICT,
+    ApplicationErrorCode.AUTHENTICATION_REQUIRED: ExitCategory.AUTHORIZATION,
+    ApplicationErrorCode.AUTHENTICATION_FAILED: ExitCategory.AUTHORIZATION,
     ApplicationErrorCode.PERMISSION_DENIED: ExitCategory.AUTHORIZATION,
+    ApplicationErrorCode.CREDENTIAL_UNAVAILABLE: ExitCategory.OPERATIONAL,
     ApplicationErrorCode.SCHEMA_UNSUPPORTED: ExitCategory.OPERATIONAL,
     ApplicationErrorCode.STORAGE_BUSY: ExitCategory.OPERATIONAL,
     ApplicationErrorCode.STORAGE_UNAVAILABLE: ExitCategory.OPERATIONAL,
     ApplicationErrorCode.INTERNAL_ERROR: ExitCategory.OPERATIONAL,
 }
+_RETRYABLE_CODES = {
+    ApplicationErrorCode.NO_TASK_AVAILABLE,
+    ApplicationErrorCode.TASK_LOCKED,
+    ApplicationErrorCode.STORAGE_BUSY,
+}
+
+assert set(_EXPECTED_EXITS) == set(ApplicationErrorCode)
 
 
 def _invoke_failure(error: Exception, *, json_mode: bool) -> Result:
@@ -91,7 +122,7 @@ def test_every_application_error_maps_to_exact_json_exit(
     assert detail == {
         "code": code.value,
         "message": f"Safe message for {code.value}.",
-        "retryable": code is ApplicationErrorCode.STORAGE_BUSY,
+        "retryable": code in _RETRYABLE_CODES,
     }
 
 
@@ -146,28 +177,22 @@ def test_known_error_never_renders_its_private_cause() -> None:
     assert "Local storage is unavailable." in result.stdout
 
 
-def test_retryable_error_is_true_only_for_storage_busy() -> None:
-    """Bounded storage contention retains explicit retry guidance."""
-    busy = ApplicationError(
-        ApplicationErrorCode.STORAGE_BUSY,
-        "Local storage remained busy.",
-    )
-    unavailable = ApplicationError(
-        ApplicationErrorCode.STORAGE_UNAVAILABLE,
-        "Local storage is unavailable.",
-    )
-
-    busy_detail = require_error(
-        _completed(_invoke_failure(busy, json_mode=True)),
-        expected_code="STORAGE_BUSY",
-    )
-    unavailable_detail = require_error(
-        _completed(_invoke_failure(unavailable, json_mode=True)),
-        expected_code="STORAGE_UNAVAILABLE",
+@pytest.mark.parametrize("code", tuple(ApplicationErrorCode))
+def test_retryability_matches_the_complete_public_error_contract(
+    code: ApplicationErrorCode,
+) -> None:
+    """Only bounded contention or temporary availability failures are retryable."""
+    detail = require_error(
+        _completed(
+            _invoke_failure(
+                ApplicationError(code, f"Safe {code.value} message."),
+                json_mode=True,
+            )
+        ),
+        expected_code=code.value,
     )
 
-    assert busy_detail["retryable"] is True
-    assert unavailable_detail["retryable"] is False
+    assert detail["retryable"] is (code in _RETRYABLE_CODES)
 
 
 def test_normalize_failure_preserves_known_instance() -> None:

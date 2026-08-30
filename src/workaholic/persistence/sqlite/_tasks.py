@@ -23,6 +23,7 @@ from workaholic.domain import (
     TaskState,
     build_task_key,
 )
+from workaholic.persistence.sqlite._authorization import require_task_operator
 from workaholic.persistence.sqlite._records import (
     canonical_json,
     require_integer,
@@ -58,8 +59,9 @@ def create_task(database_path: Path, mutation: TaskCreationMutation) -> Task:
         The new or idempotently replayed Task.
 
     Raises:
+        AuthenticationRequiredError: If a Token-backed store omits the actor.
         IdempotencyConflictError: If a caller key has different semantic input.
-        PermissionDeniedError: If the active Subject is not an enabled Owner.
+        PermissionDeniedError: If the active Subject lacks Operator permission.
         StorageUnavailableError: If persisted state is malformed.
 
     """
@@ -155,7 +157,7 @@ def _require_active_owner(
     connection: sqlite3.Connection,
     mutation: TaskCreationMutation,
 ) -> tuple[str, int]:
-    """Authorize the active Subject and return Project allocation state.
+    """Authorize the active Operator and return Project allocation state.
 
     Args:
         connection: Active validated write transaction.
@@ -165,10 +167,25 @@ def _require_active_owner(
         Immutable Project key and next task number.
 
     Raises:
-        PermissionDeniedError: If Subject, Project, or Owner grant is unavailable.
+        PermissionDeniedError: If Subject, Project, or Operator grant is unavailable.
         StorageUnavailableError: If allocation state is malformed.
 
     """
+    authorized = require_task_operator(
+        connection,
+        actor=mutation.actor,
+        actor_subject_id=mutation.actor_subject_id,
+        project_id=mutation.project_id,
+        occurred_at=mutation.occurred_at,
+    )
+    if authorized is not None:
+        row = connection.execute(
+            "SELECT key, next_task_number FROM projects WHERE id = ?",
+            (str(authorized.project.id),),
+        ).fetchone()
+        if row is None:
+            raise StorageUnavailableError
+        return require_text(row[0]), require_integer(row[1])
     row = connection.execute(
         """
         SELECT p.key, p.next_task_number, s.kind, s.enabled, g.role
@@ -286,7 +303,7 @@ def _read_idempotent_task(
         str(task.uid),
         str(task.project_id),
         str(task.created_by),
-        SubjectKind.HUMAN.value,
+        _actor_kind(mutation).value,
         None,
         TaskEventType.TASK_CREATED.value,
     ):
@@ -355,7 +372,7 @@ def _insert_task_event(
             str(task.uid),
             str(task.project_id),
             str(mutation.actor_subject_id),
-            SubjectKind.HUMAN.value,
+            _actor_kind(mutation).value,
             None,
             str(mutation.request_id),
             TaskEventType.TASK_CREATED.value,
@@ -374,6 +391,11 @@ def _insert_task_event(
         occurred_at=mutation.occurred_at,
         payload=payload,
     )
+
+
+def _actor_kind(mutation: TaskCreationMutation) -> SubjectKind:
+    """Return authenticated kind or the tokenless Phase 4 Human kind."""
+    return SubjectKind.HUMAN if mutation.actor is None else mutation.actor.subject_kind
 
 
 def _record_idempotent_task(

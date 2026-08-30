@@ -1064,7 +1064,7 @@ def test_execute_claim_maps_unexpected_validation_failure(
         yield cast("sqlite3.Connection", object())
 
     monkeypatch.setattr(
-        "workaholic.persistence.sqlite._task_claims._require_authorized_project",
+        "workaholic.persistence.sqlite._task_claims.require_task_operator",
         _raise_value_error,
     )
     monkeypatch.setattr(

@@ -1,6 +1,6 @@
 # Workaholic AI CLI Automation Contract
 
-- Status: Accepted v1 contract through Phase 4 with Phase 4 implementation
+- Status: Accepted v1 contract through Phase 5 with Phase 5 implementation
 - Decision date: 2026-07-29
 - Contract family: `workaholic.cli/v1`
 - Public surface: Documented JSON output of the `workaholic` executable
@@ -8,22 +8,23 @@
 ## Current implementation notice
 
 This document specifies the accepted v1 automation contract through its Phase 8
-freeze. The current `0.4.0a1` development package implements the versioned
-envelopes and all 24 Phase 4 operations through an injected Session boundary.
-Its default executable composes the embedded `LocalSession`, trusted local
-profiles, canonical upward Workspace discovery, and SQLite schema version `4`.
-It includes existing-Task mutations, dependencies, readiness views, Human
-Results and review, exclusive Human and Agent Claims, bounded Leases, Agent
-Attempts, heartbeat, progress, release and submission, and TaskEvent history.
-No compatibility guarantee applies before `1.0.0`.
+freeze. The current `0.5.0a1` development package implements the cumulative
+Phase 1 through Phase 5 versioned envelopes and operations through an injected
+Session boundary. Its default executable composes the authenticated embedded
+`LocalSession`, trusted local profiles and credentials, canonical upward
+Workspace discovery, and disposable SQLite schema version `5`. It includes
+distinct Human and Agent Subjects, independently revocable Tokens, cumulative
+Project roles, administrative AuditEvents, existing-Task mutations,
+dependencies, readiness views, Human Results and review, exclusive Claims,
+bounded Leases, Agent Attempts and progress, and attributable TaskEvent
+history. No compatibility guarantee applies before `1.0.0`.
 
-The alpha reuses one bootstrap Subject for Human and Agent command paths. It
-does not issue Tokens, distinguish Agent identities, use remote profiles or
-credentials, use `RemoteSession`, start a server, schedule by capability,
-archive Projects, force-interrupt execution, migrate schemas, or select JSON or
-PostgreSQL adapters. Human Results always carry a null Attempt identity; a
-non-null Attempt identifies local Agent execution. Proposed follow-ups never
-create Tasks automatically.
+The alpha does not use remote profiles, `RemoteSession`, or a server; schedule
+by capability; provide custom roles or SSO/OAuth; archive Projects;
+force-interrupt execution; migrate schemas; or select JSON or PostgreSQL
+adapters. Human Results always carry a null Attempt identity; a non-null
+Attempt identifies Agent execution. Proposed follow-ups never create Tasks
+automatically.
 
 ## Normative language
 
@@ -1545,6 +1546,444 @@ SQLite schema version `4`. Version `3` and every other version return
 `SCHEMA_UNSUPPORTED` unchanged. Phase 4 provides no migration, conversion,
 import, export, or silent reset.
 
+## Phase 5 identity, authentication, and authorization contract
+
+This section is the normative delivery contract for Phase 5. It extends the
+Phase 4 CLI without adding a server, remote profile, `RemoteSession`, network
+protocol, capability scheduling, SSO/OAuth, refresh Token, or schema migration.
+The public README and executable golden journey describe and verify this
+implemented Phase 5 surface.
+
+All normal commands against an initialized Instance authenticate exactly one
+bearer Token. Authentication derives the Instance, Subject, immutable Subject
+kind, and Token identities used by the Session; no command or structured input
+accepts an actor override. Project authorization is then evaluated through one
+cumulative ProjectGrant. A valid Instance administrator without a ProjectGrant
+may perform Instance administration but cannot read or mutate that Project's
+ordinary data.
+
+### Credential resolution and secret input
+
+Credential sources are selected after trusted profile and embedded database
+resolution in this exact order:
+
+1. non-empty `WORKAHOLIC_TOKEN`;
+2. non-empty `WORKAHOLIC_TOKEN_FILE`;
+3. the selected profile's stored Human credential.
+
+The two process variables are mutually exclusive. Empty values are absent. If
+an explicit source is selected, every parse, file, Instance, authentication,
+expiry, revocation, or Subject failure is final; the client must not fall back
+to a different identity.
+
+`WORKAHOLIC_TOKEN_FILE` is an absolute path to a bounded UTF-8 regular file.
+Mounted-secret symlinks are resolved, then the final target must be regular and
+not group/world writable. The content is one canonical Token followed by at
+most one final newline and is limited to 512 bytes. Authentication never
+changes the source file. On platforms without POSIX mode bits, the adapter must
+verify an equivalent current-user-only ACL or return
+`CREDENTIAL_UNAVAILABLE`.
+
+The Human credential backend is selected by trusted process variable
+`WORKAHOLIC_CREDENTIAL_BACKEND=auto|keyring|file`. `auto` uses an available
+operating-system keyring and falls back to the protected file backend only when
+no keyring backend exists. An operational keyring failure does not downgrade.
+The file backend stores `credentials/credentials.toml` below the selected
+configuration directory with file mode `0600` and dedicated directory mode
+`0700`. The TOML file is limited to 1,048,576 bytes. A platform that cannot
+verify an equivalent current-user-only ACL does not support the file fallback
+and returns `CREDENTIAL_UNAVAILABLE`.
+
+Raw Tokens are never accepted as normal positional/options values, emitted in
+success or error envelopes, or included in diagnostics. The two explicit
+secret input boundaries are process environment/mounted secret for normal
+authentication and `auth login --token-file PATH|-` for Human enrollment.
+`auth create-token` writes its one-time secret only to a protected output file.
+
+### Shared Phase 5 identity objects
+
+Every public Subject is this closed object:
+
+```json
+{
+  "id": "sub_01K9...",
+  "instance_id": "ins_01K9...",
+  "kind": "agent",
+  "handle": "code-agent-3",
+  "display_name": "Code agent 3",
+  "enabled": true,
+  "is_instance_admin": false,
+  "version": 1,
+  "created_by": "sub_01K9...",
+  "created_at": "2026-09-01T09:00:00Z",
+  "updated_at": "2026-09-01T09:00:00Z"
+}
+```
+
+Handles match `^[a-z][a-z0-9-]{1,62}$`, are exact lowercase identifiers unique
+within one Instance, and cannot be renamed or reused. Display names are trimmed
+printable text from 1 through 200 characters. Kind is exactly `human` or
+`agent`. Subject creation starts enabled, non-administrative, and at version
+`1`. Display-name, enabled-state, and administrator changes increment the
+Subject version exactly once.
+
+Every public ProjectGrant is this closed object:
+
+```json
+{
+  "subject_id": "sub_01K9...",
+  "project_id": "prj_01K9...",
+  "role": "agent",
+  "version": 1,
+  "granted_by": "sub_01K9...",
+  "created_at": "2026-09-01T09:00:00Z",
+  "updated_at": "2026-09-01T09:00:00Z"
+}
+```
+
+Role is exactly `viewer`, `agent`, `operator`, or `owner`; permissions are
+cumulative in exact order `viewer < agent < operator < owner`. One Subject has
+at most one current grant per Project. Assigning a different role replaces the
+grant at its exact expected version and increments once.
+
+Every public Token metadata object is this closed, non-secret object:
+
+```json
+{
+  "id": "tok_01K9...",
+  "subject_id": "sub_01K9...",
+  "status": "active",
+  "created_by": "sub_01K9...",
+  "created_at": "2026-09-01T09:00:00Z",
+  "activated_at": "2026-09-01T09:00:01Z",
+  "expires_at": "2026-09-02T09:00:00Z",
+  "revoked_at": null,
+  "revoked_by": null
+}
+```
+
+Status is `pending`, `active`, `expired`, or `revoked`. Public projections use
+authoritative time and do not persist expiry as a background mutation. Token
+hashes and raw Tokens are never public fields.
+
+Every public administrative AuditEvent is this closed object:
+
+```json
+{
+  "cursor": 42,
+  "id": "aev_01K9...",
+  "instance_id": "ins_01K9...",
+  "actor_subject_id": "sub_01K9...",
+  "actor_kind": "human",
+  "actor_token_id": "tok_01K9...",
+  "request_id": "req_01K9...",
+  "event_type": "project_grant_assigned",
+  "occurred_at": "2026-09-01T09:00:00Z",
+  "payload": {
+    "project_id": "prj_01K9...",
+    "subject_id": "sub_01K9...",
+    "role": "agent"
+  }
+}
+```
+
+Tokenless bootstrap and local recovery are self-attributed to the bootstrap
+Human and have null actor Token (`actor_token_id`); every authenticated
+administrative event has its actor Token ID. Exact event types are
+`instance_bootstrapped`,
+`project_created`,
+`subject_created`, `subject_updated`, `subject_enabled`, `subject_disabled`,
+`instance_admin_granted`, `instance_admin_revoked`,
+`project_grant_assigned`, `project_grant_revoked`, `token_issued`, and
+`token_revoked`. Payloads never contain raw Tokens, Token hashes, credential
+paths, process values, or keyring locators.
+
+Payload fields are exact: bootstrap contains `instance_id`, `subject_id`,
+`project_id`, `project_key`, and `grant_role`; Project creation contains
+`project_id`, `project_key`, and `owner_subject_id`; Subject create contains
+`subject_id`, `handle`, `kind`, and `version`; Subject update contains
+`subject_id`, sorted `changed_fields`, and `version`; enable/disable and
+administrator changes contain `subject_id` and `version`; grant assignment
+contains `project_id`, `subject_id`, `role`, and `version`; grant revocation
+contains those identities plus `previous_role` and `previous_version`; Token
+issue contains `token_id`, `subject_id`, and `expires_at`; Token revocation
+contains `token_id` and `subject_id`. Phase 5 `changed_fields` contains only
+`display_name`.
+
+### Credential and identity commands
+
+```text
+workaholic auth whoami
+workaholic auth login --token-file PATH|-
+workaholic auth logout
+workaholic auth recover-local --instance INSTANCE --subject local-operator
+workaholic auth create-human HANDLE [--display-name NAME]
+  [--idempotency-key KEY]
+workaholic auth create-agent HANDLE [--display-name NAME]
+  [--idempotency-key KEY]
+workaholic auth list-subjects [--cursor CURSOR] [--limit LIMIT]
+workaholic auth update-subject SUBJECT --display-name NAME
+  [--expected-version INTEGER] [--idempotency-key KEY]
+workaholic auth enable-subject SUBJECT [--expected-version INTEGER]
+  [--idempotency-key KEY]
+workaholic auth disable-subject SUBJECT [--expected-version INTEGER]
+  [--idempotency-key KEY]
+workaholic auth grant-admin SUBJECT [--expected-version INTEGER]
+  [--idempotency-key KEY]
+workaholic auth revoke-admin SUBJECT [--expected-version INTEGER]
+  [--idempotency-key KEY]
+```
+
+`auth whoami` returns:
+
+```json
+{
+  "subject": {},
+  "token": {}
+}
+```
+
+`auth list-subjects` is restricted to an Instance administrator, ordered by
+`(handle, id)`, uses the identity cursor contract below, defaults to 100, and
+accepts 1 through 500. Its page is:
+
+```json
+{
+  "subjects": [{}],
+  "next_cursor": null
+}
+```
+
+`auth login` reads one Token from the explicit UTF-8 file or stdin,
+authenticates it against the selected profile, requires a Human Subject, stores
+it, and returns the same data shape as `whoami`. It does not revoke or remove
+the input file. `auth logout` removes only the selected profile's stored Human
+credential and returns:
+
+```json
+{
+  "profile": "local",
+  "credential_stored": false
+}
+```
+
+Logout is locally idempotent and does not revoke the Token. It is available
+without a valid current credential because removing unusable local state is a
+client operation.
+
+The first `up` against an empty profile creates Subject handle
+`local-operator`, Instance administrator status, the initial Project Owner
+grant, and one Human credential. It writes the credential before activating
+the pending Token. A failed credential write leaves no active Token; bounded
+compensation revokes the pending Token and removes a just-created output.
+`up` against an initialized store uses normal authentication.
+
+`auth recover-local` is the sole tokenless recovery command. It works only for
+embedded mode under the local filesystem trust boundary. Interactive mode
+prompts after validating the exact `--instance` and bootstrap `--subject`
+operands. JSON or non-interactive mode treats supplying both exact operands as
+the confirmation and never prompts. It revokes all Tokens for the bootstrap
+Subject, creates and stores one new Human Token, and changes no Subject,
+Project, grant, Task, Claim, or Attempt. Its output is the `whoami` shape and
+never includes the raw Token.
+
+Subject operands accept an exact handle or opaque Subject ID. Display names are
+never lookup keys. Create defaults display name to the handle; update changes
+display name only. There is no Subject rename, delete, or kind-change command.
+Only an enabled Instance administrator may create or change Subjects or
+administrator state.
+
+Existing-Subject changes require `--expected-version` in JSON,
+`--non-interactive`, or any invocation whose stdin is not an interactive
+terminal. An interactive Human may omit it; the CLI reads once, submits that
+exact version once, and never refreshes or retries a conflict.
+
+### Grant commands and permission matrix
+
+```text
+workaholic auth grant SUBJECT viewer|agent|operator|owner --project PROJECT
+  [--expected-version INTEGER] [--idempotency-key KEY]
+workaholic auth list-grants --project PROJECT
+  [--cursor CURSOR] [--limit LIMIT]
+workaholic auth revoke-grant SUBJECT --project PROJECT
+  [--expected-version INTEGER] [--idempotency-key KEY]
+```
+
+Project operands accept exact Project key or opaque ID. `auth list-grants` is
+ordered by `(subject handle, subject ID)`, uses the identity cursor contract,
+defaults to 100, and accepts 1 through 500. Its page contains exact `grants` and
+nullable `next_cursor` fields. Grant administration requires Owner on that
+Project or Instance administrator status. Instance administrator status alone
+does not authorize ordinary Project reads.
+
+For automation, omitted `--expected-version` on `auth grant` asserts that no
+grant exists and creates version `1`; a supplied value replaces the exact
+existing version. For an interactive Human, omission performs one read: absent
+creates once, present replaces its observed version once. `revoke-grant`
+always requires an expected version for automation and has the same one-read
+interactive convenience.
+
+| Operation | Viewer | Agent | Operator | Owner | Instance administrator only |
+| --- | :---: | :---: | :---: | :---: | :---: |
+| Read Project task data | yes | yes | yes | yes | no |
+| Agent Claim/Attempt path | no | yes | yes | yes | no |
+| Task/Human mutation path | no | no | yes | yes | no |
+| Manage ProjectGrants | no | no | no | yes | yes |
+| Create Projects/Subjects/Tokens | no | no | no | no | yes |
+
+Agent Claim/Attempt commands additionally require Subject kind `agent`. Human
+Claim, renew, and release additionally require Subject kind `human`. A current
+Claim remains an exclusive lock; a foreign Owner or Instance administrator
+cannot override it. An Agent Subject with Operator role may mutate an unclaimed
+Task, but it cannot bypass its current Agent Claim without the exact Attempt
+operation.
+
+The Instance must retain at least one enabled administrator and every Project
+must retain at least one enabled Owner. Subject disable, administrator revoke,
+Owner demotion, and Owner revoke validate all affected invariants atomically.
+Disabling a Subject or revoking a Token does not force-release a Claim.
+Another active Token for the same Subject may continue the exact current
+Attempt.
+
+### Token commands and lifetime
+
+```text
+workaholic auth create-token SUBJECT --token-file ABSOLUTE_PATH
+  [--expires-in DURATION] [--idempotency-key KEY]
+workaholic auth list-tokens [SUBJECT] [--cursor CURSOR] [--limit LIMIT]
+workaholic auth revoke-token TOKEN [--idempotency-key KEY]
+```
+
+Token operands accept only public `tok_` IDs, never raw Tokens. A Subject may
+list and revoke its own Tokens. An Instance administrator may list, issue, and
+revoke for any Subject. Disabled Subjects cannot receive Tokens.
+
+Token lists order by `(created_at, id)`, use the identity cursor contract,
+default to 100, and accept 1 through 500. Their page contains exact `tokens` and
+nullable `next_cursor` fields and never contains a raw Token or Token hash.
+
+Raw Token form is `<token-id>.<secret>`, with an unpadded URL-safe base64 secret
+representing exactly 32 cryptographically random bytes. Create requires an
+absolute output path whose target does not exist, whose parent is not
+group/world writable, and which is outside the discovered Workspace and every
+Git worktree/repository detected from the target's ancestors. The CLI atomically
+creates the non-symlink target at mode `0600`, activates the Token, and returns
+only its metadata object. The path and secret never appear in the result
+envelope or diagnostics.
+
+An existing target is accepted only for an equivalent retry carrying the same
+non-empty idempotency key. The client safely opens and validates the protected
+file, parses its Token ID and hash, and may finish an interrupted pending
+activation or return the already committed metadata without rewriting the
+file. An absent file after a committed activation cannot be reconstructed and
+returns `CREDENTIAL_UNAVAILABLE`; the administrator lists and revokes that
+Token before issuing another. A mismatching or unsafe existing file is never
+overwritten.
+
+Token duration text uses `^[1-9][0-9]*(s|m|h|d)$`:
+
+| Subject kind | Default | Minimum | Maximum |
+| --- | ---: | ---: | ---: |
+| Human | `30d` | `1h` | `365d` |
+| Agent | `24h` | `5m` | `30d` |
+
+Expiry uses authoritative time and the half-open rule `now < expires_at`.
+Tokens are not renewed in place; an administrator issues a new Token. Token
+revocation is monotonic. Repeating an already committed revocation returns the
+current metadata without another event when it is an equivalent idempotency
+replay. There is no Token delete command.
+
+### Identity-list cursor contract
+
+Subject, ProjectGrant, and Token continuation cursors use prefix `v5.` followed
+by unpadded URL-safe base64 of canonical closed JSON. The payload contains
+integer `v = 5`, list `kind`, `instance_id`, `actor_subject_id`, nullable
+`scope_id`, and a typed `last` ordering tuple. Kind is exactly `subjects`,
+`grants`, or `tokens`; scope is null, Project ID, or target Subject ID
+respectively. The last tuple matches each documented ordering.
+
+Malformed, padded, noncanonical, unsupported-version, wrong-kind,
+cross-Instance, cross-Subject, or cross-scope reuse returns `INVALID_INPUT`.
+Another active Token for the same Subject may use the cursor. Traversal of
+unchanged rows neither duplicates nor omits an item.
+
+### Administrative audit query
+
+```text
+workaholic auth events [--after INTEGER] [--limit INTEGER]
+```
+
+Only an Instance administrator may read administrative AuditEvents. Results are
+ordered by increasing Instance cursor. `after` is an exclusive nonnegative
+integer defaulting to `0`; limit defaults to 100 and accepts 1 through 500.
+Empty pages succeed. The page shape is:
+
+```json
+{
+  "events": [{}],
+  "next_cursor": 42
+}
+```
+
+`next_cursor` is the greatest returned cursor or the supplied `after` for an
+empty page. Audit reads are non-mutating. Task history remains under
+`task events`; an AuditEvent does not duplicate TaskEvents.
+
+### Authentication, authorization, and idempotency behavior
+
+Authentication yields one internal actor with Instance, Subject, immutable
+kind, and Token IDs. Every persistence read revalidates active Token, enabled
+Subject, selected Instance, and required ProjectGrant in one read transaction.
+Every mutation repeats those checks in its write transaction before reading an
+idempotency outcome or changing state. Revocation, expiry, disablement, or
+grant removal therefore takes effect at the next transaction.
+
+Authentication deliberately collapses missing Token row, wrong digest,
+pending/expired/revoked Token, disabled Subject, and Instance mismatch to
+`AUTHENTICATION_FAILED`. Authorization failures do not disclose targets outside
+the actor's scope. A missing credential uses `AUTHENTICATION_REQUIRED`.
+
+Administrative idempotency fingerprints include operation, authenticated
+Subject, target Instance, target Subject/Project/Token IDs, requested role or
+state, expected version, and all non-secret input. Replays authenticate and
+authorize afresh before returning a prior result. No fingerprint or stored
+outcome contains a raw Token, Token hash, credential path, or keyring locator.
+
+Token provisioning consumes its public idempotency key only when activation
+commits. A failed, compensated provisioning may retry the key with a new Token.
+A crash that leaves a pending Token and its protected output resumes that exact
+Token. A crash after activation returns the committed metadata when the same
+protected output still matches it.
+
+### Phase 5 errors and persistence boundary
+
+Phase 5 adds these exact safe errors:
+
+| Error code | Exit | Retryable | Exact message |
+| --- | ---: | :---: | --- |
+| `AUTHENTICATION_REQUIRED` | 5 | false | `Authentication is required.` |
+| `AUTHENTICATION_FAILED` | 5 | false | `The supplied credential is not valid.` |
+| `SUBJECT_NOT_FOUND` | 3 | false | `The Subject was not found.` |
+| `SUBJECT_HANDLE_CONFLICT` | 4 | false | `The Subject handle is already in use.` |
+| `TOKEN_NOT_FOUND` | 3 | false | `The Token was not found.` |
+| `GRANT_NOT_FOUND` | 3 | false | `The ProjectGrant was not found.` |
+| `IDENTITY_VERSION_CONFLICT` | 4 | false | `The identity or grant changed after the expected version.` |
+| `LAST_INSTANCE_ADMIN` | 4 | false | `The Instance must retain an enabled administrator.` |
+| `LAST_PROJECT_OWNER` | 4 | false | `The Project must retain an enabled Owner.` |
+| `CREDENTIAL_UNAVAILABLE` | 10 | false | `The credential store is unavailable.` |
+
+The existing `PERMISSION_DENIED` remains the non-disclosing authorization
+outcome. Invalid handles, raw Tokens, durations, versions, paths, ambiguous
+sources, and structured inputs use `INVALID_INPUT`. Credential adapter failures
+map to `CREDENTIAL_UNAVAILABLE` without exposing private paths or backend
+details.
+
+Phase 5 embedded commands require exact SQLite schema version `5`. Version `4`,
+malformed, missing, older, and newer stores return `SCHEMA_UNSUPPORTED` without
+modification. Phase 5 has no migration, conversion, import, export, or silent
+reset. Capability filtering remains outside v1; Agent pull assumes the granted
+Agent is capable of the selected Task.
+
 ## Conformance requirements
 
 Contract tests must verify at least:
@@ -1567,6 +2006,7 @@ Contract tests must verify at least:
 - [ADR 0003: CLI JSON as the Public Automation Contract](adr/0003-cli-json-automation-contract.md)
 - [ADR 0011: Phase 3 Task Mutation and Human Submission](adr/0011-phase-three-task-mutation-and-human-submission.md)
 - [ADR 0012: Phase 4 Local Claim and Execution Model](adr/0012-phase-four-local-claim-and-execution-model.md)
+- [ADR 0013: Phase 5 Token and Authorization Model](adr/0013-phase-five-token-and-authorization-model.md)
 - [ADR 0002: Local and Remote Sessions](adr/0002-local-and-remote-sessions.md)
 - [ADR 0004: Private Versioned Client/Server Protocol](adr/0004-private-versioned-client-server-protocol.md)
 - [Compatibility policy](compatibility-policy.md)

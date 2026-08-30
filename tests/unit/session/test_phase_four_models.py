@@ -144,6 +144,15 @@ def test_claim_requests_reject_wrong_bounds_precision_and_coercion(
         request_type.model_validate({**values, "lease": invalid_duration})
 
 
+def test_claim_request_rejects_in_bounds_fractional_seconds() -> None:
+    """Lease requests require whole seconds even when otherwise in range."""
+    with pytest.raises(ValidationError, match="whole seconds"):
+        HumanTaskClaimRequest(
+            task="ACME-1",
+            lease=timedelta(seconds=60, microseconds=1),
+        )
+
+
 def test_agent_owner_requests_require_typed_attempt_ids() -> None:
     """Agent command paths cannot omit or coerce their owner token."""
     with pytest.raises(ValidationError):
@@ -208,6 +217,21 @@ def test_agent_progress_rejects_empty_coerced_or_unknown_content(
                 "task": "ACME-1",
                 "attempt": _ATTEMPT_ID,
                 "progress": progress,
+            }
+        )
+
+
+def test_agent_progress_rejects_unknown_observation_runtime_value() -> None:
+    """Progress observations cannot contain arbitrary objects."""
+    with pytest.raises(ValidationError, match="closed observation shape"):
+        AgentProgressRequest.model_validate(
+            {
+                "task": "ACME-1",
+                "attempt": _ATTEMPT_ID,
+                "progress": {
+                    "message": "Working.",
+                    "observations": (object(),),
+                },
             }
         )
 

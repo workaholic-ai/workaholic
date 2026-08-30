@@ -18,6 +18,7 @@ _GATE_ENVIRONMENT_KEYS = (
     "WORKAHOLIC_PHASE_2_GATE_RUNNING",
     "WORKAHOLIC_PHASE_3_GATE_RUNNING",
     "WORKAHOLIC_PHASE_4_GATE_RUNNING",
+    "WORKAHOLIC_PHASE_5_GATE_RUNNING",
 )
 _COMMAND_TIMEOUT_SECONDS = 600
 
@@ -154,6 +155,7 @@ def _clean_environment(tmp_path: Path) -> dict[str, str]:
             "PRE_COMMIT_HOME": str(tmp_path.parent / "phase-zero-pre-commit"),
             "UV_CACHE_DIR": str(tmp_path.parent / "phase-zero-uv"),
             "UV_LINK_MODE": "copy",
+            "WORKAHOLIC_CREDENTIAL_BACKEND": "file",
             "WORKAHOLIC_DATA_DIR": str(tmp_path / "workaholic-data"),
         }
     )
@@ -207,7 +209,7 @@ def test_phase_zero_gate_passes_from_a_fresh_clone(tmp_path: Path) -> None:
     result = _run_gate(clone, tmp_path)
 
     _require_success(result, context="Phase 0 clean-checkout gate")
-    assert "workaholic 0.4.0a1" in result.stdout
+    assert "workaholic 0.5.0a1" in result.stdout
     assert result.stdout.endswith("Phase 0 clean-checkout acceptance gate passed.\n")
 
 
@@ -282,7 +284,7 @@ set -eu
 if [ "${1:-}" = "build" ]; then
   mkdir -p dist
   printf '%s\n' "not a wheel archive" > \
-    dist/workaholic_ai-0.4.0a1-py3-none-any.whl
+    dist/workaholic_ai-0.5.0a1-py3-none-any.whl
   exit 0
 fi
 exec "$WORKAHOLIC_TEST_REAL_UV" "$@"
@@ -306,4 +308,4 @@ exec "$WORKAHOLIC_TEST_REAL_UV" "$@"
     assert result.returncode != 0
     output = result.stdout + result.stderr
     assert "[6/6] Installing and running the built wheel" in output
-    assert "workaholic_ai-0.4.0a1-py3-none-any.whl" in output
+    assert "workaholic_ai-0.5.0a1-py3-none-any.whl" in output

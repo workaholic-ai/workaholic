@@ -314,7 +314,7 @@ def test_context_removed_during_open_is_invalid_not_absent(
             raise FileNotFoundError
         return original_open(path, flags, mode, dir_fd=dir_fd)
 
-    monkeypatch.setattr("workaholic.context._files.os.open", remove_before_open)
+    monkeypatch.setattr("workaholic.auth._files.os.open", remove_before_open)
 
     with pytest.raises(ContextInvalidError):
         discover_workspace_context(start)

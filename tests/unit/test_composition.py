@@ -32,10 +32,12 @@ from workaholic.domain import (
     AttemptId,
     InstanceId,
     ProjectId,
+    ProjectRole,
     RequestId,
     ResultId,
     ResultReviewStatus,
     SubjectId,
+    SubjectKind,
     TaskEventId,
     TaskEventType,
     TaskId,
@@ -56,8 +58,10 @@ from workaholic.session import (
     AgentSubmitRequest,
     AgentTaskClaimRequest,
     ContextRequest,
+    GrantAssignRequest,
     LocalSession,
     StatusRequest,
+    SubjectCreateRequest,
     TaskAddDependencyRequest,
     TaskApproveRequest,
     TaskBlockRequest,
@@ -72,6 +76,7 @@ from workaholic.session import (
     TaskSubmitRequest,
     TaskUnblockRequest,
     TaskUpdateRequest,
+    TokenCreateRequest,
     UpRequest,
 )
 
@@ -90,6 +95,7 @@ def _environment(data_directory: Path) -> dict[str, str]:
     """
     return {
         "WORKAHOLIC_CONFIG_DIR": str(data_directory.parent / "config"),
+        "WORKAHOLIC_CREDENTIAL_BACKEND": "file",
         "WORKAHOLIC_DATA_DIR": str(data_directory),
     }
 
@@ -684,7 +690,10 @@ def test_two_embedded_profiles_are_isolated_across_process_restarts(
         team_directory=team_directory,
         default_profile="team",
     )
-    environment = {"WORKAHOLIC_CONFIG_DIR": str(config_directory)}
+    environment = {
+        "WORKAHOLIC_CONFIG_DIR": str(config_directory),
+        "WORKAHOLIC_CREDENTIAL_BACKEND": "file",
+    }
 
     local_session = composition.create_local_session(
         cwd=local_workspace,
@@ -720,7 +729,7 @@ def test_two_embedded_profiles_are_isolated_across_process_restarts(
 def test_phase_four_execution_survives_session_restart_with_bootstrap_attribution(
     tmp_path: Path,
 ) -> None:
-    """A restarted local process keeps Claim ownership and bootstrap identity."""
+    """A restarted authenticated Agent process keeps exact Claim ownership."""
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     environment = _environment(tmp_path / "data")
@@ -728,14 +737,37 @@ def test_phase_four_execution_survives_session_restart_with_bootstrap_attributio
         cwd=workspace,
         environment=environment,
     )
-    bootstrapped = first.up(UpRequest(project_key="ACME"))
+    first.up(UpRequest(project_key="ACME"))
+    agent = first.create_subject(
+        SubjectCreateRequest(kind=SubjectKind.AGENT, handle="restart-agent")
+    ).subject
+    first.assign_grant(
+        GrantAssignRequest(
+            subject=agent.id,
+            project="ACME",
+            role=ProjectRole.AGENT,
+        )
+    )
+    secrets = tmp_path / "secrets"
+    secrets.mkdir(mode=0o700)
+    secrets.chmod(0o700)
+    token_file = (secrets / "restart-agent.token").resolve()
+    first.create_token(TokenCreateRequest(subject=agent.id, token_file=token_file))
     first.create_task(TaskCreateRequest(title="Resume Agent execution"))
-    claimed = first.claim_next_task(AgentTaskClaimRequest())
+    agent_environment = {
+        **environment,
+        "WORKAHOLIC_TOKEN_FILE": str(token_file),
+    }
+    agent_session = composition.create_local_session(
+        cwd=workspace,
+        environment=agent_environment,
+    )
+    claimed = agent_session.claim_next_task(AgentTaskClaimRequest())
 
     assert claimed.attempt is not None
     restarted = composition.create_local_session(
         cwd=workspace,
-        environment=environment,
+        environment=agent_environment,
     )
     heartbeat = restarted.heartbeat_attempt(
         AgentHeartbeatRequest(
@@ -761,10 +793,10 @@ def test_phase_four_execution_survives_session_restart_with_bootstrap_attributio
 
     assert claimed.claim is not None
     assert heartbeat.claim is not None
-    assert claimed.claim.subject_id == bootstrapped.subject.id
-    assert heartbeat.claim.subject_id == bootstrapped.subject.id
-    assert progress.claim.subject_id == bootstrapped.subject.id
-    assert submitted.result.submitted_by == bootstrapped.subject.id
+    assert claimed.claim.subject_id == agent.id
+    assert heartbeat.claim.subject_id == agent.id
+    assert progress.claim.subject_id == agent.id
+    assert submitted.result.submitted_by == agent.id
     assert submitted.attempt is not None
     assert submitted.attempt.id == claimed.attempt.id
 
@@ -783,7 +815,10 @@ def test_environment_profile_precedes_context_and_explicit_profile_wins(
         local_directory=local_directory,
         team_directory=team_directory,
     )
-    base_environment = {"WORKAHOLIC_CONFIG_DIR": str(config_directory)}
+    base_environment = {
+        "WORKAHOLIC_CONFIG_DIR": str(config_directory),
+        "WORKAHOLIC_CREDENTIAL_BACKEND": "file",
+    }
     composition.create_local_session(
         cwd=team_workspace,
         environment=base_environment,

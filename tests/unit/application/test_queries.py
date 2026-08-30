@@ -75,10 +75,16 @@ def _subject() -> Subject:
     """
     return Subject(
         id=SubjectId("sub_local"),
+        instance_id=InstanceId("ins_local"),
         kind=SubjectKind.HUMAN,
+        handle="local-operator",
         display_name="Local operator",
         enabled=True,
         is_instance_admin=True,
+        version=1,
+        created_by=SubjectId("sub_local"),
+        created_at=_NOW,
+        updated_at=_NOW,
     )
 
 
@@ -191,9 +197,14 @@ def _status() -> StatusResult:
         project=_project(),
         subject=_subject(),
         grant=ProjectGrant(
+            instance_id=InstanceId("ins_local"),
             subject_id=SubjectId("sub_local"),
             project_id=ProjectId("prj_acme"),
             role=ProjectRole.OWNER,
+            version=1,
+            granted_by=SubjectId("sub_local"),
+            created_at=_NOW,
+            updated_at=_NOW,
         ),
     )
 
@@ -526,19 +537,30 @@ def test_type_correct_cross_selection_results_are_rejected() -> None:
     )
     other_subject = Subject(
         id=SubjectId("sub_other"),
+        instance_id=other_instance.id,
         kind=SubjectKind.HUMAN,
+        handle="other-operator",
         display_name="Other operator",
         enabled=True,
         is_instance_admin=True,
+        version=1,
+        created_by=SubjectId("sub_other"),
+        created_at=_NOW,
+        updated_at=_NOW,
     )
     repository.status_result = StatusResult(
         instance=other_instance,
         project=other_project,
         subject=other_subject,
         grant=ProjectGrant(
+            instance_id=other_instance.id,
             subject_id=other_subject.id,
             project_id=other_project.id,
             role=ProjectRole.OWNER,
+            version=1,
+            granted_by=other_subject.id,
+            created_at=_NOW,
+            updated_at=_NOW,
         ),
     )
     repository.projects_result = (other_project,)

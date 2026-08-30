@@ -79,6 +79,39 @@ ProfileOption = Annotated[
     ),
 ]
 
+TokenInputFileOption = Annotated[
+    str,
+    typer.Option(
+        ...,
+        "--token-file",
+        help="Read one bounded Token from PATH, or stdin with '-'.",
+        metavar="PATH|-",
+        prompt=False,
+    ),
+]
+
+InstanceOption = Annotated[
+    str,
+    typer.Option(
+        ...,
+        "--instance",
+        help="Confirm one exact local Instance ID.",
+        metavar="INSTANCE",
+        prompt=False,
+    ),
+]
+
+RecoverySubjectOption = Annotated[
+    str,
+    typer.Option(
+        ...,
+        "--subject",
+        help="Confirm the exact bootstrap Subject handle local-operator.",
+        metavar="local-operator",
+        prompt=False,
+    ),
+]
+
 ProjectOption = Annotated[
     str | None,
     typer.Option(

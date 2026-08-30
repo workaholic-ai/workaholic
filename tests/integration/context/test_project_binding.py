@@ -10,9 +10,8 @@ import pytest
 
 from workaholic.application import (
     ApplicationErrorCode,
+    AuthenticationFailedError,
     PermissionDeniedError,
-    ProjectCreationMutation,
-    ProjectNotFoundError,
     WorkspaceBindingConflictError,
 )
 from workaholic.composition import create_local_session
@@ -24,17 +23,12 @@ from workaholic.context import (
     read_current_workspace_context,
 )
 from workaholic.context import local as local_context
-from workaholic.domain import (
-    InstanceId,
-    ProjectId,
-    RequestId,
-    WorkspaceBinding,
-)
+from workaholic.domain import InstanceId, ProjectId, WorkspaceBinding
 from workaholic.persistence.sqlite import (
     SQLiteRepository,
     open_write_transaction,
 )
-from workaholic.session import ProjectBindRequest, UpRequest
+from workaholic.session import ProjectBindRequest, ProjectCreateRequest, UpRequest
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -84,6 +78,7 @@ def _environment(data_directory: Path) -> dict[str, str]:
     """
     return {
         "WORKAHOLIC_CONFIG_DIR": str(data_directory.parent / "config"),
+        "WORKAHOLIC_CREDENTIAL_BACKEND": "file",
         "WORKAHOLIC_DATA_DIR": str(data_directory),
     }
 
@@ -102,17 +97,13 @@ def test_composed_session_binds_existing_project_without_database_mutation(
         cwd=current,
         environment=_environment(data_directory),
     )
-    bootstrap = session.up(UpRequest(project_key="ACME"))
+    session.up(UpRequest(project_key="ACME"))
     repository = SQLiteRepository(data_directory / "local.db")
-    created = repository.create_project(
-        ProjectCreationMutation(
-            project_id=ProjectId("prj_docs"),
-            request_id=RequestId("req_docs"),
-            instance_id=bootstrap.instance.id,
-            actor_subject_id=bootstrap.subject.id,
-            occurred_at=_NOW,
-            project_key="DOCS",
-            project_name="Documentation",
+    created = session.create_project(
+        ProjectCreateRequest(
+            key="DOCS",
+            name="Documentation",
+            idempotency_key="create-docs",
         )
     )
     database_before = repository.database_path.read_bytes()
@@ -146,9 +137,9 @@ def test_composed_session_rejects_missing_project_keys(
     )
     session.up(UpRequest(project_key="ACME"))
     for project_key in ("DOCS", "OTHER"):
-        with pytest.raises(ProjectNotFoundError) as captured:
+        with pytest.raises(PermissionDeniedError) as captured:
             session.bind_project(ProjectBindRequest(project=project_key, path=target))
-        assert captured.value.code is ApplicationErrorCode.PROJECT_NOT_FOUND
+        assert captured.value.code is ApplicationErrorCode.PERMISSION_DENIED
         assert not (target / CONTEXT_FILENAME).exists()
 
 
@@ -169,10 +160,10 @@ def test_composed_session_revalidates_active_subject_before_binding(
     with open_write_transaction(data_directory / "local.db") as connection:
         connection.execute("UPDATE subjects SET enabled = 0")
 
-    with pytest.raises(PermissionDeniedError) as captured:
+    with pytest.raises(AuthenticationFailedError) as captured:
         session.bind_project(ProjectBindRequest(project="ACME", path=target))
 
-    assert captured.value.code is ApplicationErrorCode.PERMISSION_DENIED
+    assert captured.value.code is ApplicationErrorCode.AUTHENTICATION_FAILED
     assert not (target / CONTEXT_FILENAME).exists()
 
 

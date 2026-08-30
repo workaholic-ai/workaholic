@@ -67,10 +67,8 @@ class SQLiteLocalActorSelector:
             StorageUnavailableError: If singleton identity state is malformed.
 
         """
+        instance_id = self.select_instance()
         with open_read_connection(self._database_path) as connection:
-            instance_rows = connection.execute(
-                "SELECT id FROM instances ORDER BY id LIMIT 2"
-            ).fetchall()
             subject_rows = connection.execute(
                 """
                 SELECT id
@@ -82,16 +80,89 @@ class SQLiteLocalActorSelector:
                 LIMIT 2
                 """
             ).fetchall()
-        if not instance_rows:
-            raise NotInitializedError
-        if len(instance_rows) != 1:
-            raise StorageUnavailableError
         if len(subject_rows) != 1:
             raise PermissionDeniedError
         try:
             return (
-                InstanceId(instance_rows[0][0]),
+                instance_id,
                 SubjectId(subject_rows[0][0]),
             )
+        except (IndexError, TypeError, ValueError) as error:
+            raise StorageUnavailableError from error
+
+    def select_instance(self) -> InstanceId:
+        """Read only the singleton Instance identity before authentication.
+
+        Returns:
+            Exact initialized Instance identity.
+
+        Raises:
+            NotInitializedError: If no Instance exists.
+            StorageUnavailableError: If singleton state is malformed.
+
+        """
+        if not self._database_path.exists():
+            raise NotInitializedError
+        with open_read_connection(self._database_path) as connection:
+            rows = connection.execute(
+                "SELECT id FROM instances ORDER BY id LIMIT 2"
+            ).fetchall()
+        if not rows:
+            raise NotInitializedError
+        if len(rows) != 1:
+            raise StorageUnavailableError
+        try:
+            return InstanceId(rows[0][0])
+        except (IndexError, TypeError, ValueError) as error:
+            raise StorageUnavailableError from error
+
+    def has_tokens(self) -> bool:
+        """Return whether the initialized store contains any Token row."""
+        with open_read_connection(self._database_path) as connection:
+            row = connection.execute("SELECT 1 FROM tokens LIMIT 1").fetchone()
+        return row is not None
+
+    def select_bootstrap_subject(
+        self,
+        *,
+        instance_id: InstanceId,
+        handle: str,
+    ) -> SubjectId:
+        """Select the exact bootstrap Human for explicit local recovery only.
+
+        Args:
+            instance_id: Confirmed local Instance identity.
+            handle: Confirmed immutable bootstrap handle.
+
+        Returns:
+            Exact enabled Human administrator Subject identity.
+
+        Raises:
+            PermissionDeniedError: If the confirmation or durable state differs.
+            StorageUnavailableError: If singleton state is malformed.
+
+        """
+        candidate_instance: object = instance_id
+        candidate_handle: object = handle
+        if (
+            not isinstance(candidate_instance, InstanceId)
+            or candidate_handle != "local-operator"
+        ):
+            raise PermissionDeniedError
+        with open_read_connection(self._database_path) as connection:
+            rows = connection.execute(
+                """
+                SELECT id
+                FROM subjects
+                WHERE instance_id = ? AND handle = ? AND kind = 'human'
+                  AND enabled = 1 AND is_instance_admin = 1
+                LIMIT 2
+                """,
+                (str(candidate_instance), candidate_handle),
+            ).fetchall()
+        if len(rows) != 1:
+            raise PermissionDeniedError
+        try:
+            return SubjectId(rows[0][0])
         except (IndexError, TypeError, ValueError) as error:
             raise StorageUnavailableError from error

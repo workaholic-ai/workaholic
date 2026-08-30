@@ -22,12 +22,17 @@ from workaholic.application import (
 from workaholic.domain import (
     AttemptStatus,
     DomainValidationError,
+    SubjectKind,
     Task,
     TaskAttempt,
     TaskClaim,
     TaskEventType,
     TaskId,
     is_task_claimable,
+)
+from workaholic.persistence.sqlite._authorization import (
+    require_task_agent,
+    require_task_operator,
 )
 from workaholic.persistence.sqlite._claim_records import (
     TASK_ATTEMPT_FIELD_SET,
@@ -69,7 +74,10 @@ from workaholic.persistence.sqlite._records import (
     require_text,
     serialize_timestamp,
 )
-from workaholic.persistence.sqlite._task_lifecycle import _load_authorized_task
+from workaholic.persistence.sqlite._task_lifecycle import (
+    _load_agent_task,
+    _load_authorized_task,
+)
 from workaholic.persistence.sqlite._task_records import (
     TASK_FIELD_SET,
     task_from_mapping,
@@ -204,10 +212,32 @@ def _execute_claim(
     request_fingerprint = _claim_fingerprint(mutation)
     try:
         with open_write_transaction(database_path) as connection:
-            project = _require_authorized_project(
-                connection,
-                project_id=mutation.project_id,
-                subject_id=mutation.actor_subject_id,
+            authorized = (
+                require_task_operator(
+                    connection,
+                    actor=mutation.actor,
+                    actor_subject_id=mutation.actor_subject_id,
+                    project_id=mutation.project_id,
+                    occurred_at=mutation.occurred_at,
+                    required_kind=SubjectKind.HUMAN,
+                )
+                if isinstance(mutation, ClaimTaskMutation)
+                else require_task_agent(
+                    connection,
+                    actor=mutation.actor,
+                    actor_subject_id=mutation.actor_subject_id,
+                    project_id=mutation.project_id,
+                    occurred_at=mutation.occurred_at,
+                )
+            )
+            project = (
+                authorized.project
+                if authorized is not None
+                else _require_authorized_project(
+                    connection,
+                    project_id=mutation.project_id,
+                    subject_id=mutation.actor_subject_id,
+                )
             )
             replay = _read_idempotent_claim(
                 connection,
@@ -277,6 +307,7 @@ def _execute_claim(
                         request_id=mutation.request_id,
                         event_id=mutation.claim_expired_event_id,
                         occurred_at=mutation.occurred_at,
+                        actor_kind=_claim_actor_kind(mutation),
                     )
                 )
             claim, attempt = _insert_claim_ownership(
@@ -297,6 +328,7 @@ def _execute_claim(
                         "lease_expires_at": serialize_timestamp(claim.lease_expires_at)
                     },
                     attempt_id=claim.attempt_id,
+                    actor_kind=_claim_actor_kind(mutation),
                 )
             )
             result = TaskClaimResult(
@@ -337,11 +369,25 @@ def _execute_lease_operation(
     request_fingerprint = _lease_fingerprint(mutation)
     try:
         with open_write_transaction(database_path) as connection:
-            task = _load_authorized_task(
-                connection,
-                task_uid=mutation.task_uid,
-                project_id=str(mutation.project_id),
-                actor_subject_id=str(mutation.actor_subject_id),
+            task = (
+                _load_authorized_task(
+                    connection,
+                    task_uid=mutation.task_uid,
+                    project_id=str(mutation.project_id),
+                    actor_subject_id=str(mutation.actor_subject_id),
+                    actor=mutation.actor,
+                    occurred_at=mutation.occurred_at,
+                    required_kind=SubjectKind.HUMAN,
+                )
+                if mutation.attempt_id is None
+                else _load_agent_task(
+                    connection,
+                    task_uid=mutation.task_uid,
+                    project_id=mutation.project_id,
+                    actor_subject_id=mutation.actor_subject_id,
+                    actor=mutation.actor,
+                    occurred_at=mutation.occurred_at,
+                )
             )
             replay = _read_idempotent_claim(
                 connection,
@@ -392,6 +438,11 @@ def _execute_lease_operation(
                 occurred_at=mutation.occurred_at,
                 payload={"lease_expires_at": serialize_timestamp(payload_expiry)},
                 attempt_id=mutation.attempt_id,
+                actor_kind=(
+                    SubjectKind.HUMAN
+                    if mutation.actor is None
+                    else mutation.actor.subject_kind
+                ),
             )
             result = TaskClaimResult(
                 task=task,
@@ -440,6 +491,9 @@ def _select_claim_task(
             task_uid=mutation.task_uid,
             project_id=str(project.id),
             actor_subject_id=str(mutation.actor_subject_id),
+            actor=mutation.actor,
+            occurred_at=mutation.occurred_at,
+            required_kind=SubjectKind.HUMAN,
         )
     timestamp = serialize_timestamp(mutation.occurred_at)
     row = connection.execute(
@@ -684,6 +738,19 @@ def _claim_operation(mutation: _ClaimMutation) -> str:
         if isinstance(mutation, ClaimTaskMutation)
         else _CLAIM_NEXT_OPERATION
     )
+
+
+def _claim_actor_kind(mutation: _ClaimMutation) -> SubjectKind:
+    """Return authenticated kind while preserving the tokenless build bridge.
+
+    Args:
+        mutation: Human target or Agent pull mutation.
+
+    Returns:
+        Real authenticated kind, or the Phase 4 bootstrap Human kind.
+
+    """
+    return SubjectKind.HUMAN if mutation.actor is None else mutation.actor.subject_kind
 
 
 def _lease_operation(mutation: _LeaseMutation) -> str:

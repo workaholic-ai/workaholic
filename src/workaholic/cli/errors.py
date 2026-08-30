@@ -16,6 +16,44 @@ _UNKNOWN_ERROR_MESSAGE = "An unexpected internal error occurred."
 TASK_EXPECTED_VERSION_REQUIRED_MESSAGE = (
     "Task mutation requires --expected-version for automation."
 )
+IDENTITY_EXPECTED_VERSION_REQUIRED_MESSAGE = (
+    "Identity mutation requires --expected-version for automation."
+)
+RECOVERY_CONFIRMATION_REQUIRED_MESSAGE = (
+    "Local recovery requires an interactive terminal or --non-interactive."
+)
+
+
+def write_recovery_confirmation_required(*, json_mode: bool) -> Never:
+    """Write the safe missing-recovery-confirmation failure and terminate.
+
+    Args:
+        json_mode: Whether to emit the public automation envelope.
+
+    Raises:
+        typer.Exit: Always, after rendering the stable input failure.
+
+    """
+    write_invalid_input(
+        RECOVERY_CONFIRMATION_REQUIRED_MESSAGE,
+        json_mode=json_mode,
+    )
+
+
+def write_identity_expected_version_required(*, json_mode: bool) -> Never:
+    """Write the safe identity-version omission failure and terminate.
+
+    Args:
+        json_mode: Whether to emit the public automation envelope.
+
+    Raises:
+        typer.Exit: Always, after rendering the stable input failure.
+
+    """
+    write_invalid_input(
+        IDENTITY_EXPECTED_VERSION_REQUIRED_MESSAGE,
+        json_mode=json_mode,
+    )
 
 
 def write_expected_task_version_required(*, json_mode: bool) -> Never:

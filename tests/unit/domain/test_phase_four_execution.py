@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import ast
-from dataclasses import FrozenInstanceError, replace
+from dataclasses import FrozenInstanceError, fields, replace
 from datetime import UTC, datetime, timedelta
 from itertools import product
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -383,6 +384,48 @@ def test_attempt_transition_matrix_is_explicit(
     else:
         with pytest.raises(DomainValidationError, match="only once"):
             transition_attempt_status(current, target)
+
+
+def test_claim_and_attempt_rules_reject_loose_runtime_types() -> None:
+    """Claim ownership and transitions never trust annotation-shaped values."""
+    with pytest.raises(DomainValidationError, match="attempt_id"):
+        claim_owner_matches(
+            claim=_claim(),
+            subject_id=SubjectId("sub_local"),
+            attempt_id="atm_current",
+        )
+    with pytest.raises(DomainValidationError, match="Current Attempt"):
+        transition_attempt_status("active", AttemptStatus.RELEASED)
+    with pytest.raises(DomainValidationError, match="Target Attempt"):
+        transition_attempt_status(AttemptStatus.ACTIVE, "released")
+
+    attempt = _attempt()
+    malformed = SimpleNamespace(
+        **{field.name: getattr(attempt, field.name) for field in fields(attempt)}
+    )
+    malformed.status = "active"
+    with pytest.raises(DomainValidationError, match="Attempt status"):
+        validate_claim_attempt_consistency(
+            claim=_claim(attempt_id=AttemptId("atm_current")),
+            attempt=malformed,
+        )
+
+
+def test_readiness_rejects_cross_task_claim_and_noniterable_prerequisites() -> None:
+    """Readiness binds Claims to the Task and requires a complete iterable graph."""
+    with pytest.raises(DomainValidationError, match="Claim task_uid"):
+        derive_task_readiness(
+            task=_task(),
+            prerequisites=(),
+            now=_NOW,
+            claim=replace(_claim(), task_uid=TaskId("tsk_other")),
+        )
+    with pytest.raises(DomainValidationError, match="iterable"):
+        derive_task_readiness(
+            task=_task(),
+            prerequisites=None,  # type: ignore[arg-type]
+            now=_NOW,
+        )
 
 
 def test_claim_attempt_pair_requires_exact_active_agent_attempt() -> None:

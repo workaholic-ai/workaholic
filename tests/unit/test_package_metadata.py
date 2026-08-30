@@ -36,7 +36,7 @@ def test_source_metadata_matches_foundation_decisions() -> None:
     project = _project_metadata()
 
     assert project["name"] == _DISTRIBUTION_NAME
-    assert project["version"] == "0.4.0a1"
+    assert project["version"] == "0.5.0a1"
     assert project["version"] == __version__
     assert project["readme"] == "README.md"
     assert project["requires-python"] == ">=3.14"
@@ -46,6 +46,8 @@ def test_source_metadata_matches_foundation_decisions() -> None:
         {"name": "Pavels Gurskis", "email": "pg@ithesion.com"}
     ]
     assert project["dependencies"] == [
+        "filelock>=3.32.0,<4.0.0",
+        "keyring>=25.7.0,<26.0.0",
         "platformdirs>=4.11.0,<4.12.0",
         "pydantic>=2.13.4,<2.14.0",
         "typer>=0.27.0,<0.28.0",
@@ -68,6 +70,8 @@ def test_installed_metadata_matches_source_metadata() -> None:
     assert installed["Author-email"] == ("Pavels Gurskis <pg@ithesion.com>")
     assert installed["Description-Content-Type"] == "text/markdown"
     assert installed.get_all("Requires-Dist") == [
+        "filelock<4.0.0,>=3.32.0",
+        "keyring<26.0.0,>=25.7.0",
         "platformdirs<4.12.0,>=4.11.0",
         "pydantic<2.14.0,>=2.13.4",
         "typer<0.28.0,>=0.27.0",
@@ -76,15 +80,22 @@ def test_installed_metadata_matches_source_metadata() -> None:
     assert "# Workaholic AI" in packaged_metadata
 
 
-def test_phase_two_profile_overrides_are_safely_documented() -> None:
-    """The env template documents only trusted embedded profile selectors."""
+def test_phase_five_trusted_process_inputs_are_safely_documented() -> None:
+    """The env template distinguishes profile selectors and explicit secrets."""
     environment_example = (_PROJECT_ROOT / ".env.example").read_text(encoding="utf-8")
 
     assert "Do not copy this file to .workaholic.env" in environment_example
     assert "workaholic up creates" in environment_example
     assert "WORKAHOLIC_CONFIG_DIR=" in environment_example
     assert "WORKAHOLIC_PROFILE=" in environment_example
-    assert environment_example.endswith("WORKAHOLIC_DATA_DIR=\n")
+    for key in (
+        "WORKAHOLIC_TOKEN=",
+        "WORKAHOLIC_TOKEN_FILE=",
+        "WORKAHOLIC_CREDENTIAL_BACKEND=",
+    ):
+        assert key in environment_example
+    assert environment_example.endswith("WORKAHOLIC_CREDENTIAL_BACKEND=auto\n")
+    assert "never copy it into .workaholic.env" in environment_example
     for unsupported in (
         "Remote URLs",
         "credentials",

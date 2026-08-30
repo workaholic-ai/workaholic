@@ -25,6 +25,7 @@ _GATE_ENVIRONMENT_KEYS = (
     "WORKAHOLIC_PHASE_2_GATE_RUNNING",
     "WORKAHOLIC_PHASE_3_GATE_RUNNING",
     "WORKAHOLIC_PHASE_4_GATE_RUNNING",
+    "WORKAHOLIC_PHASE_5_GATE_RUNNING",
 )
 
 pytestmark = [
@@ -115,6 +116,7 @@ def _clean_environment(tmp_path: Path) -> dict[str, str]:
             "PRE_COMMIT_HOME": str(tmp_path.parent / "phase-two-pre-commit"),
             "UV_CACHE_DIR": str(tmp_path.parent / "phase-two-uv"),
             "UV_LINK_MODE": "copy",
+            "WORKAHOLIC_CREDENTIAL_BACKEND": "file",
         }
     )
     return environment
@@ -682,7 +684,7 @@ def test_source_and_wheel_match_and_reject_phase_two_boundaries(  # noqa: PLR091
             "all_list": ["ACME-1", "DOCS-1"],
             "next_cursor": None,
             "restarted_project": "DOCS",
-            "schema_version": 4,
+            "schema_version": 5,
         }
     )
 

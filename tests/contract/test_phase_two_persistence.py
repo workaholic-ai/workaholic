@@ -621,5 +621,5 @@ def _bootstrapped(
             subject_id=bootstrap.subject.id,
         )
     )
-    assert status.schema_version == 4
+    assert status.schema_version == 5
     return repository, bootstrap

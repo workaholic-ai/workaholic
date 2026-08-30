@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, Final, Literal, cast
 
 from workaholic.application import (
     ApplicationError,
+    AuthenticationRequiredError,
     GetLocalStatus,
     GetProjectByKey,
     GetTask,
@@ -27,8 +28,10 @@ from workaholic.application import (
     TaskPage,
 )
 from workaholic.domain import (
+    AuthenticatedActor,
     Instance,
     InstanceId,
+    Permission,
     ProjectGrant,
     ProjectId,
     ProjectRole,
@@ -39,11 +42,17 @@ from workaholic.domain import (
     TaskId,
     validate_project_key,
 )
+from workaholic.persistence.sqlite._authentication import require_authenticated_actor
+from workaholic.persistence.sqlite._authorization import (
+    ProjectPermissionRequest,
+    require_project_permission,
+)
 from workaholic.persistence.sqlite._records import (
     canonical_json,
     parse_timestamp,
     project_from_row,
     require_boolean,
+    require_integer,
     require_text,
 )
 from workaholic.persistence.sqlite._task_records import task_from_row
@@ -53,6 +62,7 @@ from workaholic.persistence.sqlite.errors import StorageUnavailableError
 if TYPE_CHECKING:
     import sqlite3
     from collections.abc import Mapping, Sequence
+    from datetime import datetime
     from pathlib import Path
 
     from workaholic.domain import Project
@@ -71,7 +81,7 @@ _CURSOR_KEYS: Final = frozenset(
 )
 _CURSOR_VERSION: Final = 2
 _MAX_SQLITE_INTEGER: Final = 9_223_372_036_854_775_807
-_SUBJECT_FIELD_COUNT: Final = 5
+_SUBJECT_FIELD_COUNT: Final = 11
 _PROJECT_ORDERED_TASK_FIELD_COUNT: Final = 19
 _ALL_PROJECT_POSITION_FIELD_COUNT: Final = 2
 _Selection = Literal["project", "all_projects"]
@@ -99,12 +109,15 @@ class _CursorPosition:
 def get_local_status(
     database_path: Path,
     command: GetLocalStatus,
+    *,
+    now: datetime | None = None,
 ) -> StatusResult:
     """Read the exact selected local identity and authorization graph.
 
     Args:
         database_path: Absolute path to the validated SQLite store.
         command: Validated status query.
+        now: Optional authoritative time required for a Phase 5 actor.
 
     Returns:
         Current authorized local status.
@@ -120,14 +133,61 @@ def get_local_status(
         raise InvalidInputError
     try:
         with open_read_connection(database_path) as connection:
+            if (
+                candidate.actor is not None
+                and candidate.actor.instance_id != candidate.instance_id
+            ):
+                raise PermissionDeniedError
+            _require_instance(connection, candidate.instance_id)
+            _require_query_actor(
+                connection,
+                actor=candidate.actor,
+                instance_id=candidate.instance_id,
+                subject_id=candidate.subject_id,
+                occurred_at=now,
+            )
+            if candidate.actor is not None:
+                authorized = _require_authorized_project(
+                    connection,
+                    project_id=candidate.project_id,
+                    subject_id=candidate.subject_id,
+                    actor=candidate.actor,
+                    occurred_at=now,
+                )
+                instance_row = connection.execute(
+                    "SELECT id, created_at FROM instances WHERE id = ?",
+                    (str(candidate.instance_id),),
+                ).fetchone()
+                if instance_row is None:
+                    raise NotInitializedError
+                return StatusResult(
+                    profile=candidate.profile,
+                    instance=Instance(
+                        id=InstanceId(require_text(instance_row[0])),
+                        created_at=parse_timestamp(instance_row[1]),
+                    ),
+                    project=authorized,
+                    subject=require_authenticated_actor(
+                        connection,
+                        candidate.actor,
+                        occurred_at=_require_query_time(now),
+                    )[0],
+                    grant=_require_project_grant(
+                        connection,
+                        project_id=authorized.id,
+                        subject_id=candidate.subject_id,
+                    ),
+                )
             row = connection.execute(
                 """
                 SELECT
                     i.id, i.created_at,
                     p.id, p.instance_id, p.key, p.name, p.created_at,
-                    s.id, s.kind, s.display_name, s.enabled,
-                    s.is_instance_admin,
-                    g.subject_id, g.project_id, g.role
+                    s.id, s.instance_id, s.kind, s.handle, s.display_name,
+                    s.enabled, s.is_instance_admin, s.version, s.created_by,
+                    s.created_at, s.updated_at,
+                    g.instance_id, g.subject_id, g.project_id, g.role,
+                    g.version, g.granted_by, g.created_at, g.updated_at
                 FROM instances AS i
                 JOIN projects AS p ON p.instance_id = i.id
                 LEFT JOIN subjects AS s ON s.id = ?
@@ -144,22 +204,34 @@ def get_local_status(
             if row is None:
                 raise NotInitializedError
             _require_owner_values(
-                kind=row[8],
-                enabled=row[10],
-                is_instance_admin=row[11],
-                role=row[14],
+                kind=row[9],
+                enabled=row[12],
+                is_instance_admin=row[13],
+                role=row[21],
             )
             instance = Instance(
                 id=InstanceId(require_text(row[0])),
                 created_at=parse_timestamp(row[1]),
             )
             project = project_from_row(row[2:7])
-            subject = _subject_from_values(row[7:12])
+            subject = _subject_from_values(row[7:18])
             grant = ProjectGrant(
-                subject_id=SubjectId(require_text(row[12])),
-                project_id=ProjectId(require_text(row[13])),
-                role=ProjectRole(require_text(row[14])),
+                instance_id=InstanceId(require_text(row[18])),
+                subject_id=SubjectId(require_text(row[19])),
+                project_id=ProjectId(require_text(row[20])),
+                role=ProjectRole(require_text(row[21])),
+                version=row[22],
+                granted_by=SubjectId(require_text(row[23])),
+                created_at=parse_timestamp(row[24]),
+                updated_at=parse_timestamp(row[25]),
             )
+            if (
+                subject.instance_id != instance.id
+                or grant.instance_id != instance.id
+                or grant.subject_id != subject.id
+                or grant.project_id != project.id
+            ):
+                raise StorageUnavailableError
             return StatusResult(
                 profile=candidate.profile,
                 instance=instance,
@@ -176,12 +248,15 @@ def get_local_status(
 def list_projects(
     database_path: Path,
     command: ListProjects,
+    *,
+    now: datetime | None = None,
 ) -> tuple[Project, ...]:
     """Read all Projects authorized for one active local Subject.
 
     Args:
         database_path: Absolute path to the validated SQLite store.
         command: Validated Project-list query.
+        now: Optional authoritative time required for a Phase 5 actor.
 
     Returns:
         Projects ordered by immutable key ascending.
@@ -198,20 +273,27 @@ def list_projects(
     try:
         with open_read_connection(database_path) as connection:
             _require_instance(connection, candidate.instance_id)
-            _require_active_subject(connection, candidate.subject_id)
+            _require_query_actor(
+                connection,
+                actor=candidate.actor,
+                instance_id=candidate.instance_id,
+                subject_id=candidate.subject_id,
+                occurred_at=now,
+            )
+            if candidate.actor is None:
+                _require_active_subject(connection, candidate.subject_id)
             rows = connection.execute(
                 """
                 SELECT p.id, p.instance_id, p.key, p.name, p.created_at
                 FROM projects AS p
                 JOIN project_grants AS g
                   ON g.project_id = p.id AND g.subject_id = ?
-                WHERE p.instance_id = ? AND g.role = ?
+                WHERE p.instance_id = ?
                 ORDER BY p.key ASC
                 """,
                 (
                     str(candidate.subject_id),
                     str(candidate.instance_id),
-                    ProjectRole.OWNER.value,
                 ),
             ).fetchall()
             return tuple(project_from_row(row) for row in rows)
@@ -224,12 +306,15 @@ def list_projects(
 def get_project_by_key(
     database_path: Path,
     command: GetProjectByKey,
+    *,
+    now: datetime | None = None,
 ) -> Project:
     """Read one authorized Project by immutable key.
 
     Args:
         database_path: Absolute path to the validated SQLite store.
         command: Validated Instance-, Subject-, and key-bound lookup.
+        now: Optional authoritative time required for a Phase 5 actor.
 
     Returns:
         Matching authorized Project.
@@ -246,7 +331,27 @@ def get_project_by_key(
         raise InvalidInputError
     try:
         with open_read_connection(database_path) as connection:
+            if (
+                candidate.actor is not None
+                and candidate.actor.instance_id != candidate.instance_id
+            ):
+                raise PermissionDeniedError
             _require_instance(connection, candidate.instance_id)
+            _require_query_actor(
+                connection,
+                actor=candidate.actor,
+                instance_id=candidate.instance_id,
+                subject_id=candidate.subject_id,
+                occurred_at=now,
+            )
+            if candidate.actor is not None:
+                return _require_authorized_project(
+                    connection,
+                    project_id=candidate.project_key,
+                    subject_id=candidate.subject_id,
+                    actor=candidate.actor,
+                    occurred_at=now,
+                )
             _require_active_subject(connection, candidate.subject_id)
             rows = connection.execute(
                 """
@@ -254,14 +359,13 @@ def get_project_by_key(
                 FROM projects AS p
                 JOIN project_grants AS g
                   ON g.project_id = p.id AND g.subject_id = ?
-                WHERE p.instance_id = ? AND p.key = ? AND g.role = ?
+                WHERE p.instance_id = ? AND p.key = ?
                 LIMIT 2
                 """,
                 (
                     str(candidate.subject_id),
                     str(candidate.instance_id),
                     candidate.project_key,
-                    ProjectRole.OWNER.value,
                 ),
             ).fetchall()
             if not rows:
@@ -275,12 +379,18 @@ def get_project_by_key(
         raise StorageUnavailableError from error
 
 
-def list_tasks(database_path: Path, command: ListTasks) -> TaskPage:
+def list_tasks(
+    database_path: Path,
+    command: ListTasks,
+    *,
+    now: datetime | None = None,
+) -> TaskPage:
     """Read one stable Project-bound page of Tasks.
 
     Args:
         database_path: Absolute path to the validated SQLite store.
         command: Validated Task-list query.
+        now: Optional authoritative time required for a Phase 5 actor.
 
     Returns:
         Tasks ordered by number and an opaque continuation cursor.
@@ -297,11 +407,24 @@ def list_tasks(database_path: Path, command: ListTasks) -> TaskPage:
         raise InvalidInputError
     try:
         with open_read_connection(database_path) as connection:
+            _require_query_actor(
+                connection,
+                actor=candidate.actor,
+                instance_id=(
+                    None if candidate.actor is None else candidate.actor.instance_id
+                ),
+                subject_id=candidate.subject_id,
+                occurred_at=now,
+            )
             project = _require_authorized_project(
                 connection,
                 project_id=candidate.project_id,
                 subject_id=candidate.subject_id,
+                actor=candidate.actor,
+                occurred_at=now,
             )
+            if candidate.actor is None:
+                _require_active_subject(connection, candidate.subject_id)
             binding = _CursorBinding(
                 profile=candidate.profile,
                 instance_id=project.instance_id,
@@ -368,12 +491,15 @@ def list_tasks(database_path: Path, command: ListTasks) -> TaskPage:
 def list_tasks_for_instance(
     database_path: Path,
     command: ListInstanceTasks,
+    *,
+    now: datetime | None = None,
 ) -> TaskPage:
     """Read one stable page across authorized Projects in an Instance.
 
     Args:
         database_path: Absolute path to the validated SQLite store.
         command: Validated profile-, Instance-, and Subject-bound query.
+        now: Optional authoritative time required for a Phase 5 actor.
 
     Returns:
         Tasks ordered by Project key and Project-local number.
@@ -391,7 +517,15 @@ def list_tasks_for_instance(
     try:
         with open_read_connection(database_path) as connection:
             _require_instance(connection, candidate.instance_id)
-            _require_active_subject(connection, candidate.subject_id)
+            _require_query_actor(
+                connection,
+                actor=candidate.actor,
+                instance_id=candidate.instance_id,
+                subject_id=candidate.subject_id,
+                occurred_at=now,
+            )
+            if candidate.actor is None:
+                _require_active_subject(connection, candidate.subject_id)
             binding = _CursorBinding(
                 profile=candidate.profile,
                 instance_id=candidate.instance_id,
@@ -416,7 +550,6 @@ def list_tasks_for_instance(
                   ON g.project_id = p.id AND g.subject_id = ?
                 WHERE
                     p.instance_id = ?
-                    AND g.role = ?
                     AND (
                         p.key > ?
                         OR (p.key = ? AND t.number > ?)
@@ -427,7 +560,6 @@ def list_tasks_for_instance(
                 (
                     str(candidate.subject_id),
                     str(candidate.instance_id),
-                    ProjectRole.OWNER.value,
                     after_key,
                     after_key,
                     position.task_number,
@@ -464,12 +596,18 @@ def list_tasks_for_instance(
         raise StorageUnavailableError from error
 
 
-def get_task(database_path: Path, command: GetTask) -> Task:
+def get_task(
+    database_path: Path,
+    command: GetTask,
+    *,
+    now: datetime | None = None,
+) -> Task:
     """Read one Project-scoped Task by exact UID or stable Human key.
 
     Args:
         database_path: Absolute path to the validated SQLite store.
         command: Validated Task lookup query.
+        now: Optional authoritative time required for a Phase 5 actor.
 
     Returns:
         Matching immutable Task.
@@ -486,10 +624,21 @@ def get_task(database_path: Path, command: GetTask) -> Task:
         raise InvalidInputError
     try:
         with open_read_connection(database_path) as connection:
+            _require_query_actor(
+                connection,
+                actor=candidate.actor,
+                instance_id=(
+                    None if candidate.actor is None else candidate.actor.instance_id
+                ),
+                subject_id=candidate.subject_id,
+                occurred_at=now,
+            )
             project = _require_authorized_project(
                 connection,
                 project_id=candidate.project_id,
                 subject_id=candidate.subject_id,
+                actor=candidate.actor,
+                occurred_at=now,
             )
             selector_column = "uid" if isinstance(candidate.task, TaskId) else "key"
             if selector_column == "uid":
@@ -535,12 +684,15 @@ def get_task(database_path: Path, command: GetTask) -> Task:
 def read_task_events_after(
     database_path: Path,
     command: ReadTaskEvents,
+    *,
+    now: datetime | None = None,
 ) -> TaskEventPage:
     """Read one authorized TaskEvent snapshot through the focused adapter.
 
     Args:
         database_path: Absolute path to the validated SQLite store.
         command: Validated TaskEvent cursor query.
+        now: Optional authoritative time required for a Phase 5 actor.
 
     Returns:
         Polling-safe ascending TaskEvent page.
@@ -550,7 +702,7 @@ def read_task_events_after(
         read_task_events_after as read_focused_events,
     )
 
-    return read_focused_events(database_path, command)
+    return read_focused_events(database_path, command, now=now)
 
 
 def _require_instance(
@@ -607,11 +759,57 @@ def _require_active_subject(
     )
 
 
+def _require_query_actor(
+    connection: sqlite3.Connection,
+    *,
+    actor: AuthenticatedActor | None,
+    instance_id: InstanceId | None,
+    subject_id: SubjectId,
+    occurred_at: datetime | None,
+) -> Subject | None:
+    """Revalidate a Phase 5 read actor or enforce the temporary Phase 4 path.
+
+    The nullable path exists only while Phase 5 Session composition is being
+    built. Authenticated callers can never fall back after presenting an actor.
+
+    Args:
+        connection: Active validated read snapshot.
+        actor: Optional Phase 5 secret-free actor context.
+        instance_id: Trusted query Instance binding.
+        subject_id: Trusted query Subject binding.
+        occurred_at: Authoritative Token validation time.
+
+    Returns:
+        Current Subject for authenticated reads, otherwise null.
+
+    Raises:
+        PermissionDeniedError: If identity bindings disagree.
+
+    """
+    if actor is None:
+        if connection.execute("SELECT 1 FROM tokens LIMIT 1").fetchone() is not None:
+            raise AuthenticationRequiredError
+        return None
+    if (
+        instance_id is None
+        or actor.instance_id != instance_id
+        or actor.subject_id != subject_id
+    ):
+        raise PermissionDeniedError
+    return require_authenticated_actor(
+        connection,
+        actor,
+        occurred_at=_require_query_time(occurred_at),
+    )[0]
+
+
 def _require_authorized_project(
     connection: sqlite3.Connection,
     *,
-    project_id: ProjectId,
+    project_id: ProjectId | str,
     subject_id: SubjectId,
+    actor: AuthenticatedActor | None = None,
+    occurred_at: datetime | None = None,
 ) -> Project:
     """Require and return a selected Project with its active local Owner.
 
@@ -619,6 +817,8 @@ def _require_authorized_project(
         connection: Active validated read snapshot.
         project_id: Selected Project identity.
         subject_id: Selected actor identity.
+        actor: Optional Phase 5 authenticated actor context.
+        occurred_at: Optional authoritative Token validation time.
 
     Returns:
         Validated authorized Project.
@@ -628,6 +828,21 @@ def _require_authorized_project(
         PermissionDeniedError: If the Subject is not its enabled Owner.
 
     """
+    if actor is not None:
+        if actor.subject_id != subject_id:
+            raise PermissionDeniedError
+        try:
+            return require_project_permission(
+                connection,
+                ProjectPermissionRequest(
+                    actor=actor,
+                    project=project_id,
+                    permission=Permission.VIEW_PROJECT,
+                    occurred_at=_require_query_time(occurred_at),
+                ),
+            ).project
+        except ProjectNotFoundError as error:
+            raise PermissionDeniedError from error
     row = connection.execute(
         """
         SELECT
@@ -650,6 +865,46 @@ def _require_authorized_project(
         role=row[8],
     )
     return project_from_row(row[0:5])
+
+
+def _require_project_grant(
+    connection: sqlite3.Connection,
+    *,
+    project_id: ProjectId,
+    subject_id: SubjectId,
+) -> ProjectGrant:
+    """Load one grant already proven present by transaction-local policy."""
+    row = connection.execute(
+        """
+        SELECT instance_id, subject_id, project_id, role, version, granted_by,
+               created_at, updated_at
+        FROM project_grants
+        WHERE project_id = ? AND subject_id = ?
+        """,
+        (str(project_id), str(subject_id)),
+    ).fetchone()
+    if row is None:
+        raise PermissionDeniedError
+    try:
+        return ProjectGrant(
+            instance_id=InstanceId(require_text(row[0])),
+            subject_id=SubjectId(require_text(row[1])),
+            project_id=ProjectId(require_text(row[2])),
+            role=ProjectRole(require_text(row[3])),
+            version=require_integer(row[4]),
+            granted_by=SubjectId(require_text(row[5])),
+            created_at=parse_timestamp(row[6]),
+            updated_at=parse_timestamp(row[7]),
+        )
+    except (IndexError, TypeError, ValueError) as error:
+        raise StorageUnavailableError from error
+
+
+def _require_query_time(value: datetime | None) -> datetime:
+    """Require repository-supplied authoritative time for Phase 5 reads."""
+    if value is None:
+        raise StorageUnavailableError
+    return value
 
 
 def _require_owner_values(
@@ -680,7 +935,9 @@ def _require_owner_values(
         raise PermissionDeniedError
 
 
-def _subject_from_values(value: tuple[object, ...]) -> Subject:
+def _subject_from_values(
+    value: tuple[object, ...],
+) -> Subject:
     """Deserialize one Subject row in the canonical selected-field order.
 
     Args:
@@ -695,12 +952,19 @@ def _subject_from_values(value: tuple[object, ...]) -> Subject:
     """
     if len(value) != _SUBJECT_FIELD_COUNT:
         raise StorageUnavailableError
+    subject_id = SubjectId(require_text(value[0]))
     return Subject(
-        id=SubjectId(require_text(value[0])),
-        kind=SubjectKind(require_text(value[1])),
-        display_name=require_text(value[2]),
-        enabled=require_boolean(value[3]),
-        is_instance_admin=require_boolean(value[4]),
+        id=subject_id,
+        instance_id=InstanceId(require_text(value[1])),
+        kind=SubjectKind(require_text(value[2])),
+        handle=require_text(value[3]),
+        display_name=require_text(value[4]),
+        enabled=require_boolean(value[5]),
+        is_instance_admin=require_boolean(value[6]),
+        version=require_integer(value[7]),
+        created_by=SubjectId(require_text(value[8])),
+        created_at=parse_timestamp(value[9]),
+        updated_at=parse_timestamp(value[10]),
     )
 
 

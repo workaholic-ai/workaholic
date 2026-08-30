@@ -134,5 +134,5 @@ jobs:
       - name: Test base wheel installation outside the checkout
         run: scripts/smoke-install.sh dist/workaholic_ai-*.whl
 
-      - name: Test installed Phase 4 Human and Agent execution
-        run: scripts/smoke-phase-4-wheel.sh dist/workaholic_ai-*.whl
+      - name: Test installed Phase 5 identity and authorization
+        run: scripts/smoke-phase-5-wheel.sh dist/workaholic_ai-*.whl

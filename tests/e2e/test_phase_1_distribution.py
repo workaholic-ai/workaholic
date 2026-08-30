@@ -26,6 +26,7 @@ _GATE_ENVIRONMENT_KEYS = (
     "WORKAHOLIC_PHASE_2_GATE_RUNNING",
     "WORKAHOLIC_PHASE_3_GATE_RUNNING",
     "WORKAHOLIC_PHASE_4_GATE_RUNNING",
+    "WORKAHOLIC_PHASE_5_GATE_RUNNING",
 )
 _QUICK_START_PATTERN = re.compile(
     r"## Quick start\n.*?```bash\n(?P<commands>.*?)\n```",
@@ -163,6 +164,7 @@ def _clean_environment(tmp_path: Path) -> dict[str, str]:
             "PRE_COMMIT_HOME": str(tmp_path.parent / "phase-one-pre-commit"),
             "UV_CACHE_DIR": str(tmp_path.parent / "phase-one-uv"),
             "UV_LINK_MODE": "copy",
+            "WORKAHOLIC_CREDENTIAL_BACKEND": "file",
             "WORKAHOLIC_DATA_DIR": str(tmp_path / "workaholic-data"),
         }
     )

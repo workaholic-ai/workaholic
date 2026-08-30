@@ -106,10 +106,16 @@ def _subject() -> Subject:
     """Build the trusted local bootstrap Human."""
     return Subject(
         id=SubjectId("sub_local"),
+        instance_id=InstanceId("ins_local"),
         kind=SubjectKind.HUMAN,
+        handle="local-operator",
         display_name="Local operator",
         enabled=True,
         is_instance_admin=True,
+        version=1,
+        created_by=SubjectId("sub_local"),
+        created_at=_NOW,
+        updated_at=_NOW,
     )
 
 
@@ -130,9 +136,14 @@ def _status(*, project: Project | None = None) -> StatusResult:
         project=selected_project,
         subject=subject,
         grant=ProjectGrant(
+            instance_id=selected_project.instance_id,
             subject_id=subject.id,
             project_id=selected_project.id,
             role=ProjectRole.OWNER,
+            version=1,
+            granted_by=subject.id,
+            created_at=selected_project.created_at,
+            updated_at=selected_project.created_at,
         ),
     )
 
@@ -354,15 +365,20 @@ def test_bind_project_resolves_authority_before_durable_context_write() -> None:
     )
 
     assert result.mode == "embedded"
-    assert result.schema_version == 4
+    assert result.schema_version == 5
     assert result.profile == "local"
     assert result.instance.id == InstanceId("ins_local")
     assert result.project == _project(project_id="prj_beta", key="BETA")
     assert result.subject == _subject()
     assert result.grant == ProjectGrant(
+        instance_id=InstanceId("ins_local"),
         subject_id=SubjectId("sub_local"),
         project_id=ProjectId("prj_beta"),
         role=ProjectRole.OWNER,
+        version=1,
+        granted_by=SubjectId("sub_local"),
+        created_at=_NOW,
+        updated_at=_NOW,
     )
     assert result.workspace_root == target
     assert result.context_source == target / ".workaholic.env"

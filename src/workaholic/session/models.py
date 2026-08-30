@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from datetime import datetime, timedelta
-from pathlib import Path  # noqa: TC003
+from pathlib import Path
 from typing import Annotated
 
 from pydantic import (
@@ -17,6 +17,7 @@ from pydantic import (
 )
 
 from workaholic.application import TaskListView, TaskResultInput, TaskUpdatePatch
+from workaholic.auth import RawToken  # noqa: TC001 - Pydantic resolves the type.
 from workaholic.domain import (
     ACCEPTANCE_CRITERIA_MAX_ITEMS,
     CONTEXT_REFERENCES_MAX_ITEMS,
@@ -26,10 +27,16 @@ from workaholic.domain import (
     ApprovalRequirement,
     AttemptId,
     ContextReference,
+    InstanceId,
     ObservationKind,
     ProgressObservation,
+    ProjectId,
+    ProjectRole,
+    SubjectId,
+    SubjectKind,
     TaskId,
     TaskProgress,
+    TokenId,
     normalize_project_name,
     resolve_lease_duration,
     validate_profile_name,
@@ -103,6 +110,205 @@ class ProjectBindRequest(_SessionRequest):
     path: Path | None = None
     profile: _ProfileName | None = None
     replace: bool = False
+
+
+class WhoAmIRequest(_SessionRequest):
+    """Request the current authenticated identity for one profile."""
+
+    profile: _ProfileName | None = None
+
+
+class LoginRequest(_SessionRequest):
+    """Enroll one explicitly supplied Human credential for a profile."""
+
+    raw_token: RawToken = Field(repr=False, exclude=True)
+    profile: _ProfileName | None = None
+
+
+class LogoutRequest(_SessionRequest):
+    """Remove the selected profile's locally stored Human credential."""
+
+    profile: _ProfileName | None = None
+
+
+class RecoverLocalRequest(_SessionRequest):
+    """Confirm and execute tokenless embedded bootstrap-Human recovery."""
+
+    instance_id: InstanceId
+    subject: str
+    profile: _ProfileName | None = None
+
+    @field_validator("subject", mode="before")
+    @classmethod
+    def _validate_subject(cls, value: object) -> str:
+        """Require the exact immutable local bootstrap handle.
+
+        Args:
+            value: Candidate recovery Subject confirmation.
+
+        Returns:
+            Exact bootstrap handle.
+
+        Raises:
+            ValueError: If another Subject selector is supplied.
+
+        """
+        if value != "local-operator":
+            message = "Local recovery requires subject local-operator."
+            raise ValueError(message)
+        return value
+
+
+class SubjectCreateRequest(_SessionRequest):
+    """Request creation of one immutable Human or Agent Subject."""
+
+    kind: SubjectKind
+    handle: str
+    display_name: str | None = None
+    profile: _ProfileName | None = None
+    idempotency_key: _IdempotencyKey | None = None
+
+
+class SubjectListRequest(_SessionRequest):
+    """Request one administrator-visible page of Subjects."""
+
+    cursor: _Cursor | None = None
+    limit: int = Field(default=100, ge=1, le=500)
+    profile: _ProfileName | None = None
+
+
+class SubjectUpdateRequest(_SessionRequest):
+    """Request an optimistic Subject display-name update."""
+
+    subject: SubjectId | str
+    expected_version: int = Field(ge=1)
+    display_name: str
+    profile: _ProfileName | None = None
+    idempotency_key: _IdempotencyKey | None = None
+
+
+class SubjectEnabledRequest(_SessionRequest):
+    """Request an optimistic Subject enabled-state change."""
+
+    subject: SubjectId | str
+    expected_version: int = Field(ge=1)
+    enabled: bool
+    profile: _ProfileName | None = None
+    idempotency_key: _IdempotencyKey | None = None
+
+
+class SubjectAdminRequest(_SessionRequest):
+    """Request an optimistic Instance-administrator state change."""
+
+    subject: SubjectId | str
+    expected_version: int = Field(ge=1)
+    is_instance_admin: bool
+    profile: _ProfileName | None = None
+    idempotency_key: _IdempotencyKey | None = None
+
+
+class GrantAssignRequest(_SessionRequest):
+    """Request creation or optimistic replacement of one ProjectGrant."""
+
+    subject: SubjectId | str
+    project: ProjectId | _ProjectKeyText
+    role: ProjectRole
+    expected_version: int | None = Field(default=None, ge=1)
+    profile: _ProfileName | None = None
+    idempotency_key: _IdempotencyKey | None = None
+
+
+class GrantListRequest(_SessionRequest):
+    """Request one owner-visible page of ProjectGrants."""
+
+    project: ProjectId | _ProjectKeyText
+    cursor: _Cursor | None = None
+    limit: int = Field(default=100, ge=1, le=500)
+    profile: _ProfileName | None = None
+
+
+class GrantRevokeRequest(_SessionRequest):
+    """Request optimistic revocation of one current ProjectGrant."""
+
+    subject: SubjectId | str
+    project: ProjectId | _ProjectKeyText
+    expected_version: int = Field(ge=1)
+    profile: _ProfileName | None = None
+    idempotency_key: _IdempotencyKey | None = None
+
+
+class TokenCreateRequest(_SessionRequest):
+    """Request safe one-time Token provisioning to a protected output file."""
+
+    subject: SubjectId | str
+    token_file: Path
+    expires_in: timedelta | None = None
+    profile: _ProfileName | None = None
+    idempotency_key: _IdempotencyKey | None = None
+
+    @field_validator("token_file", mode="before")
+    @classmethod
+    def _validate_token_file(cls, value: object) -> Path:
+        """Require an absolute output path without resolving it.
+
+        Args:
+            value: Candidate protected Token output path.
+
+        Returns:
+            Absolute path to be checked by the output adapter.
+
+        """
+        if not isinstance(value, Path) or not value.is_absolute():
+            message = "Token output must be an absolute pathlib Path."
+            raise ValueError(message)
+        return value
+
+    @field_validator("expires_in", mode="before")
+    @classmethod
+    def _validate_expires_in(cls, value: object) -> timedelta | None:
+        """Require a positive bounded duration when explicitly supplied.
+
+        Args:
+            value: Candidate Token lifetime.
+
+        Returns:
+            Positive duration no greater than the broad Human maximum.
+
+        """
+        if value is None:
+            return None
+        if not isinstance(value, timedelta):
+            message = "Token expiry must be a timedelta."
+            raise ValueError(message)  # noqa: TRY004 - Pydantic boundary.
+        if value <= timedelta(0) or value > timedelta(days=365):
+            message = "Token expiry must be positive and at most 365 days."
+            raise ValueError(message)
+        return value
+
+
+class TokenListRequest(_SessionRequest):
+    """Request one self- or administrator-visible Token metadata page."""
+
+    subject: SubjectId | str | None = None
+    cursor: _Cursor | None = None
+    limit: int = Field(default=100, ge=1, le=500)
+    profile: _ProfileName | None = None
+
+
+class TokenRevokeRequest(_SessionRequest):
+    """Request monotonic revocation of one public Token identity."""
+
+    token_id: TokenId
+    profile: _ProfileName | None = None
+    idempotency_key: _IdempotencyKey | None = None
+
+
+class AuditEventsRequest(_SessionRequest):
+    """Request one bounded page of administrative AuditEvents."""
+
+    after: int = Field(default=0, ge=0)
+    limit: int = Field(default=100, ge=1, le=500)
+    profile: _ProfileName | None = None
 
 
 class TaskCreateRequest(_SessionRequest):

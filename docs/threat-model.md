@@ -1,6 +1,6 @@
 # Workaholic AI Threat Model
 
-- Status: Accepted v1 model through Phase 4 with Phase 4 implementation
+- Status: Accepted v1 model through Phase 5 with Phase 5 implementation
 - Decision date: 2026-07-29
 - Scope: Embedded and shared-server behavior required for v1
 - Security contact: [pg@ithesion.com](mailto:pg@ithesion.com)
@@ -9,17 +9,17 @@
 
 This threat model turns the accepted v1 security boundary into explicit
 engineering constraints and verification targets. It covers planned behavior;
-the current `0.4.0a1` development package implements trusted embedded profiles,
-canonical upward Workspace discovery, safe binding, multi-project
-authorization checks, local SQLite schema version `4`, optimistic Task
-mutations, exclusive Human and Agent Claims, bounded Leases, Agent progress and
-submission, Human Result and review attribution, and append-only TaskEvents. It
-rejects schema version `3` unchanged. It reuses the bootstrap Subject and does
-not implement distinct Agent identities, bearer authentication, remote
-profiles, credentials, `RemoteSession`, or network services.
+the current `0.5.0a1` development package implements trusted embedded profiles
+and credentials, canonical upward Workspace discovery, safe binding, distinct
+Human and Agent Subjects, hash-only bearer Token storage, cumulative
+ProjectGrants, transactional authentication and authorization, local SQLite
+schema version `5`, the complete Task/Claim/Attempt workflow, attributable
+TaskEvents, administrative AuditEvents, and local recovery. It rejects schema
+version `4` unchanged and does not implement remote profiles, `RemoteSession`,
+network services, public multi-tenancy, or cross-organization isolation.
 
-Terms such as Subject, ProjectGrant, Claim, Attempt, Lease, and TaskEvent use their
-canonical definitions in the [glossary](glossary.md).
+Terms such as Subject, ProjectGrant, Token, Claim, Attempt, Lease, TaskEvent, and
+AuditEvent use their canonical definitions in the [glossary](glossary.md).
 
 ## Security objectives
 
@@ -51,6 +51,7 @@ Security-sensitive assets include:
 - exclusive Claim ownership, Attempt identity, Lease expiry, Results, and
   idempotency records;
 - attributable, append-only TaskEvents and their Instance ordering;
+- attributable, append-only administrative AuditEvents;
 - persisted state and backend credentials;
 - local Workspace paths and context;
 - server, CLI, and persistence availability.
@@ -77,7 +78,8 @@ are operator responsibilities.
 Organization membership does not make a Human or Agent trusted for every
 Project. Every read and mutation is constrained by an Instance role or a
 ProjectGrant. Viewer, Agent, Operator, and Owner permissions apply only to the
-named Project.
+named Project and are cumulative in that order. Instance-administrator status
+is separate and does not reveal ordinary Project data without a ProjectGrant.
 
 Subject kind and Project role are independent. Capability-based scheduling is
 outside v1 and must not be mistaken for an authorization boundary if added
@@ -96,6 +98,26 @@ Persisted TaskEvent actor kind remains the bootstrap Subject kind `human` in
 Phase 4. A non-null Attempt ID, not a fabricated Agent Subject, attributes
 Agent execution. Structured progress cannot supply identity, Attempt, request,
 event, Result, cursor, or authoritative timestamp fields.
+
+Phase 5 authenticates each normal operation as exactly one distinct Subject and
+records the real Human or Agent kind. Every query and mutation revalidates the
+active Token, enabled Subject, selected Instance, and required ProjectGrant
+within its persistence transaction. An authentication result cached by Session
+or CLI is not authorization evidence for a later transaction.
+
+Agent execution additionally requires Agent Subject kind and an Agent-or-
+stronger grant. Human Claim operations additionally require Human Subject kind
+and an Operator-or-stronger grant. Other Operator operations are role-based.
+Owner or administrator authority does not override a foreign current Claim.
+
+Another active Token for the same Subject may continue the exact current
+Attempt. Revocation or disablement does not force-release the Claim.
+
+The Instance must retain one enabled administrator and every Project one
+enabled Owner. Subject disablement, administrator removal, Owner demotion, and
+Owner removal enforce those safeguards atomically. Revoking a Token or
+disabling its Subject does not force-release a Claim or interrupt an external
+process; the existing Lease boundary remains authoritative.
 
 ### Local filesystem and credential storage
 
@@ -124,13 +146,37 @@ Profile selection is deterministic:
 
 If `profiles.toml` is absent, only the built-in `local` profile is available.
 
-Human credential storage begins when authenticated remote operation is
-delivered in Phases 5 and 6. Credentials use the operating-system credential
-store where available. A configuration-file fallback must be stored outside
-repositories with permissions limited to the account. Agent credentials may
-be injected through environment variables, mounted secret files, or an
-orchestrator secret mechanism. Deployers must prevent those channels from
-being exposed to untrusted sibling processes or logs.
+Human credential storage begins in Phase 5 local mode. Credentials are scoped
+to a trusted profile and bind expected Instance and Subject identities. The
+default uses the operating-system credential store through an available
+keyring backend. It falls back only when no keyring backend exists, not after
+an operational keyring failure. The explicit
+file backend stores bounded non-symlink `credentials/credentials.toml` at mode
+`0600` in a dedicated mode-`0700` configuration directory outside repositories.
+It is limited to 1,048,576 bytes. Non-POSIX platforms must verify equivalent
+current-user-only ACLs or reject the fallback.
+
+Agent credentials use `WORKAHOLIC_TOKEN`, an absolute path in
+`WORKAHOLIC_TOKEN_FILE`, or orchestrator injection. The two variables are
+mutually exclusive, an explicit source never falls back, and mounted-secret
+symlinks resolve to a regular target of at most 512 bytes that is not
+group/world writable. Non-POSIX access must be equivalently account-restricted.
+Deployers must prevent those channels from being exposed to untrusted sibling
+processes, crash reports, shell history, or logs.
+
+`auth login` accepts a Token only from an explicit bounded file or stdin and
+does not echo it. Token creation writes only to a new protected non-symlink file
+outside the discovered Workspace and any Git worktree/repository and never
+returns the secret in normal output. File-backed stored or Agent credentials
+inside a Workspace or Git repository are rejected. Raw Tokens and hashes do not
+cross into task, event, public idempotency outcome, or diagnostic models.
+
+Local tokenless recovery is intentionally inside the embedded filesystem trust
+boundary. `auth recover-local` requires explicit Instance and bootstrap-Subject
+confirmation, revokes that Subject's existing Tokens, and changes no domain
+work or grants. It is unavailable to a remote client. A party able to invoke it
+with the trusted operating-system account already controls embedded persistence
+and is outside the local application isolation boundary.
 
 ### Repository-controlled context
 
@@ -162,9 +208,11 @@ file, and it never changes a shared `.gitignore`.
 ### Remote transport
 
 Phase 2 has no remote profiles, endpoints, credentials, Tokens,
-`RemoteSession`, or network transport. Phase 3 retains that boundary and
-rejects any configuration that attempts to introduce them. Authenticated remote
-operation begins in Phases 5 and 6.
+`RemoteSession`, or network transport. Phase 3 and Phase 4 retain that boundary.
+Phase 5 adds local credentials and Tokens but still has no remote profiles,
+endpoints, `RemoteSession`, or network transport. It authenticates embedded
+commands and rejects configuration that attempts to introduce a remote target.
+Authenticated remote operation begins in Phase 6.
 
 When delivered, remote bearer-token traffic uses HTTPS through trusted
 deployment infrastructure. A trusted profile owns the server URL and expected
@@ -201,17 +249,22 @@ administrator is outside the v1 application boundary.
 | Threat | Scenario | Required mitigations | Verification target |
 | --- | --- | --- | --- |
 | Compromised Agent | An Agent tries to read or mutate unrelated Projects or perform Operator actions. | From Phase 5, use one Subject per independent Agent and enforce ProjectGrant permissions on every application operation; in Phase 4, constrain the Agent command path to its current Attempt operations and record attribution. | Phase 4 command-path denial tests, then cross-Project and role-denial tests through LocalSession and RemoteSession. |
-| Stolen Token | An attacker replays a bearer Token until it expires or is revoked. | Store only Token hashes; support expiry, revocation, and Subject disablement; use narrow ProjectGrants and separate Agent identities; audit every accepted mutation. | Expiry, revocation, disablement, and least-privilege tests. |
+| Stolen Token | An attacker replays a bearer Token until it expires or is revoked. | Store only SHA-256 of a canonical 256-bit-random Token; compare in constant time; revalidate active Token, enabled Subject, Instance, and grant inside every operation transaction; use narrow grants and independent expiries. | Exact-expiry, revocation/mutation race, disablement, multiple-Token, and least-privilege tests. |
+| Credential downgrade | A failing keyring or unsafe fallback redirects or exposes a Human Token. | Fall back only when no keyring backend exists; bind credentials to profile and expected Instance/Subject; require a dedicated mode-`0700` directory, mode-`0600` non-symlink file, bounded crash-safe replacement, and redacted errors. | Backend-unavailable versus backend-failure, mode, symlink, malformed-file, atomicity, and redaction tests. |
+| Token provisioning failure | A process crash makes an undisclosed Token valid or leaves a partial secret file. | Persist Tokens as non-authenticating pending records; durably write a protected exclusive output before atomic activation; revoke pending state and remove only the just-created file on bounded compensation. | Sink/activation failure injection, crash, retry, existing-file, and secret-scan tests. |
+| Authentication race | Revocation, Subject disablement, or grant removal commits after Session selection but before a mutation. | Treat Session authentication as identity discovery only; revalidate Token, Subject, Instance, permission, Claim, and Attempt in the same persistence transaction as idempotency and mutation. | Independent-process revoke/disable/grant-versus-read/write races. |
+| Administrative lockout | Concurrent changes remove the final usable Instance administrator or Project Owner. | Atomically reject Subject disablement, administrator revoke, Owner demotion, and Owner revoke when no enabled replacement remains. | Concurrent last-administrator and last-Owner tests with rollback assertions. |
+| Recovery abuse | A tokenless recovery route becomes a remote bypass or silently alters work. | Restrict recovery to embedded mode and trusted OS-account boundary; require exact Instance/bootstrap-Subject confirmation; revoke old bootstrap Tokens; never alter Subject, grants, Tasks, Claims, or Attempts. | Remote denial, confirmation, scope, revocation, and unchanged-domain-state tests. |
 | Profile redirection | A repository or unsafe profile file redirects embedded storage to attacker-controlled state. | Forbid storage paths and profile definitions in `.workaholic.env`; read only a bounded regular non-symlink trusted profile file; require absolute canonical one-to-one data directories; validate context identities against selected persistence. | Hostile-context, unsafe-profile, aliasing, and authoritative-identity tests. |
 | Workspace path escape | A context uses `..` or a symlink to claim a Workspace outside its binding directory. | Canonicalize physical discovery; require an existing relative root contained by the context directory after lexical and symlink resolution; fail on the nearest invalid context. | Parent traversal, symlink escape, deep-directory, and invalid-nearer tests. |
 | Token redirection | A repository changes context so a later remote client sends its Token to an attacker endpoint. | Forbid URLs and credentials in `.workaholic.env`; reject all remote configuration in Phase 2; in Phases 5 and 6 resolve only a named trusted remote profile, require HTTPS, and compare the server's Instance identity before mutations. | Phase 2 remote-rejection tests, then hostile-context and unexpected-Instance tests in Phase 6. |
 | Secret exposure | Credentials appear in arguments, task data, events, logs, errors, or repository files. | Reject secrets in context; never accept Tokens in normal command arguments; redact diagnostics and structured logs; exclude raw Tokens from domain models and persistence; protect credential files. | Redaction tests and repository/history secret scans. |
 | Command injection | Context or task input triggers shell expansion or execution. | Parse context with a strict data parser and key allowlist; reject substitution and executable-path keys; never source `.workaholic.env`; use argument-vector subprocess calls at trusted adapter boundaries. | Malformed context, metacharacter, substitution, and unknown-key tests. |
 | Unauthorized Claim or Attempt mutation | A non-owner changes a claimed Task, or a process heartbeats, releases, reports, or submits against another, expired, or superseded Attempt. | Atomically verify Project access, current Claim owner, Lease, command path, and current Attempt ID and status where applicable; reject non-owner and stale mutations without partial writes. Phase 5 additionally authenticates distinct Subject ownership. | Human/Agent claim races, non-owner mutation, foreign owner, expiry, reclaim, and stale-submission tests. |
-| Event forgery | A client supplies another actor, false timestamp, event type, or inconsistent TaskEvent. | Create TaskEvents only inside authenticated application transactions; derive actor and authoritative time server-side; validate typed payloads; commit state and event atomically; allocate ordered cursors in persistence. | Actor spoofing, invalid event, rollback, and ordering contract tests. |
+| Event forgery | A client supplies another actor, false timestamp, event type, or inconsistent TaskEvent/AuditEvent. | Create events only inside authenticated application transactions; derive actor, Token attribution where applicable, request, and time internally; validate typed payloads; commit state and event atomically; exclude credentials. | Actor spoofing, invalid event, rollback, ordering, attribution, and secret-exclusion tests. |
 | Concurrent mutation overwrite | A stale Human or process updates an existing Task after another accepted mutation. | Reject non-owner writes while a Claim is current; otherwise require a positive expected version at every trusted mutation boundary, increment once per semantic mutation, return `VERSION_CONFLICT` without writes, and never refresh and silently retry. | Claimed-Task lock, two-writer, stale-version, multi-event single-increment, and no-retry CLI tests. |
 | Structured Task or Result abuse | Input attempts resource exhaustion, identity forgery, secret persistence, path execution, or automatic Task creation. | Require explicit bounded UTF-8 JSON input; cap bytes, depth, collections, and text; reject actor, Attempt, request, event, Result, cursor, and timestamp identities; treat URIs as inert references; never execute or fetch artifacts or proposed follow-ups. | Oversize, nesting, forged-field, metacharacter, artifact, and proposed-follow-up tests. |
-| Mutation replay | A lost response causes a client to repeat a state-changing request. | Require idempotency keys for retryable mutations; bind stored outcomes to the authenticated operation; combine idempotency with optimistic Task versions and Attempt checks. | Duplicate-request and conflicting-reuse tests. |
+| Mutation replay | A lost response causes a client to repeat a state-changing request. | Require idempotency keys for retryable mutations; authenticate and authorize before lookup; bind non-secret outcomes to actor, operation, target, and versions; combine idempotency with optimistic versions and Attempt checks. | Duplicate/conflicting reuse plus revoked-credential and removed-grant replay tests. |
 | Persistence tampering or confusion | A process reads an unknown schema or exposes inconsistent state after a partial write. | Validate schema versions before access; fail without modifying unsupported stores; use transactional adapter operations and crash-safe JSON replacement; keep backend credentials outside task data. | Unknown-version, rollback, interrupted-write, and backend-contract tests. |
 | Denial of service | A client sends large payloads, expensive queries, rapid heartbeats, connection floods, or unbounded event reads. | Bound payload sizes, pagination, timeouts, retries, concurrency, and transaction duration; apply deployment-level request limits; provide backpressure and actionable errors; keep housekeeping optional for Lease correctness. | Limit, timeout, concurrency-load, and large-history tests. |
 
@@ -251,17 +304,21 @@ windows defined in the CLI contract.
   Workspace-root containment, safe binding replacement, trusted embedded
   profile storage ownership, schema version `1` rejection without mutation,
   remote-configuration rejection, and malicious `.workaholic.env` input.
-- Phase 3 tests schema version `2` rejection, optimistic Task versions,
-  transition and dependency atomicity, Human Result attribution with null
-  Attempt, bounded structured input, review behavior, event ordering, and
-  idempotent lifecycle replay.
+- Phase 3 uses exact SQLite schema version `3`, rejects version `2` unchanged,
+  and tests optimistic Task versions, transition and dependency atomicity,
+  Human Result attribution with null Attempt, bounded structured input, review
+  behavior, event ordering, and idempotent lifecycle replay.
 - Phase 4 tests atomic Human and Agent Claims, exclusive mutation locks, Human
   renewal, current Attempt ownership, Lease expiry, version stability, stale
   submissions, terminal Attempt states, idempotent Results, and bounded Agent
   payloads. It uses exact SQLite schema version `4`, rejects version `3`
   unchanged, and adds no migration or credential surface.
-- Phase 5 tests Token storage, expiry, revocation, redaction, ProjectGrant
-  isolation, and compromised-Agent containment.
+- Phase 5 tests canonical Token generation and hash-only storage, pending
+  activation, exact expiry, revocation and disablement races, credential-source
+  precedence and protected storage, local recovery, cumulative roles,
+  last-administrator/Owner safeguards, Project isolation, real Agent ownership,
+  AuditEvent attribution, and compromised-Agent containment. It uses exact
+  SQLite schema version `5` and rejects version `4` unchanged.
 - Phase 6 tests authenticated RemoteSession behavior, expected Instance
   identity, protocol rejection, timeouts, and safe retries.
 - Phase 7 runs authorization, event, concurrency, and failure contracts against
@@ -295,5 +352,6 @@ the one organization served by an Instance.
 - [Compatibility policy](compatibility-policy.md)
 - [ADR 0011: Phase 3 Task Mutation and Human Submission](adr/0011-phase-three-task-mutation-and-human-submission.md)
 - [ADR 0012: Phase 4 Local Claim and Execution Model](adr/0012-phase-four-local-claim-and-execution-model.md)
+- [ADR 0013: Phase 5 Token and Authorization Model](adr/0013-phase-five-token-and-authorization-model.md)
 - [Glossary](glossary.md)
 - [Security reporting policy](../SECURITY.md)

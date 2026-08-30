@@ -7,6 +7,7 @@ import json
 from typing import TYPE_CHECKING, Final, cast
 
 from workaholic.application import (
+    AuthenticationRequiredError,
     IdempotencyConflictError,
     NotInitializedError,
     PermissionDeniedError,
@@ -15,6 +16,8 @@ from workaholic.application import (
     ProjectKeyConflictError,
 )
 from workaholic.domain import (
+    AuditEventType,
+    InstanceId,
     Project,
     ProjectGrant,
     ProjectId,
@@ -22,13 +25,24 @@ from workaholic.domain import (
     SubjectId,
     SubjectKind,
 )
+from workaholic.persistence.sqlite._audit_events import (
+    AuditActor,
+    AuditEventDraft,
+    append_audit_event,
+    authenticated_audit_actor,
+)
+from workaholic.persistence.sqlite._authorization import (
+    require_instance_administrator,
+)
 from workaholic.persistence.sqlite._records import (
     PROJECT_FIELD_SET,
     canonical_json,
+    parse_timestamp,
     project_from_mapping,
     project_from_row,
     project_to_mapping,
     require_boolean,
+    require_integer,
     require_text,
     serialize_timestamp,
 )
@@ -58,6 +72,7 @@ def create_project(
         The new or idempotently replayed Project and Owner grant.
 
     Raises:
+        AuthenticationRequiredError: If a Token-backed store omits the actor.
         IdempotencyConflictError: If a caller key has different semantic input.
         NotInitializedError: If the selected Instance does not exist.
         PermissionDeniedError: If the creator is not an enabled Human admin.
@@ -138,18 +153,57 @@ def _create_project_in_transaction(
         ),
     )
     grant = ProjectGrant(
+        instance_id=mutation.instance_id,
         subject_id=mutation.actor_subject_id,
         project_id=project.id,
         role=ProjectRole.OWNER,
+        version=1,
+        granted_by=mutation.actor_subject_id,
+        created_at=mutation.occurred_at,
+        updated_at=mutation.occurred_at,
     )
     connection.execute(
         """
-        INSERT INTO project_grants (subject_id, project_id, role)
-        VALUES (?, ?, ?)
+        INSERT INTO project_grants (
+            instance_id, subject_id, project_id, role, version, granted_by,
+            created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         """,
-        (str(grant.subject_id), str(grant.project_id), grant.role.value),
+        (
+            str(grant.instance_id),
+            str(grant.subject_id),
+            str(grant.project_id),
+            grant.role.value,
+            grant.version,
+            str(grant.granted_by),
+            serialize_timestamp(grant.created_at),
+            serialize_timestamp(grant.updated_at),
+        ),
     )
     result = ProjectCreationResult(project=project, grant=grant)
+    append_audit_event(
+        connection,
+        AuditEventDraft(
+            actor=(
+                AuditActor(
+                    instance_id=mutation.instance_id,
+                    subject_id=mutation.actor_subject_id,
+                    kind=SubjectKind.HUMAN,
+                    token_id=None,
+                )
+                if mutation.actor is None
+                else authenticated_audit_actor(mutation.actor)
+            ),
+            request_id=mutation.request_id,
+            event_type=AuditEventType.PROJECT_CREATED,
+            occurred_at=mutation.occurred_at,
+            payload={
+                "project_id": str(project.id),
+                "project_key": project.key,
+                "owner_subject_id": str(grant.subject_id),
+            },
+        ),
+    )
     _record_idempotent_project(
         connection,
         mutation=mutation,
@@ -170,11 +224,27 @@ def _require_authorized_creator(
         mutation: Project request carrying Instance and creator identities.
 
     Raises:
+        AuthenticationRequiredError: If a Token-backed store omits the actor.
         NotInitializedError: If the selected Instance does not exist.
         PermissionDeniedError: If the selected creator is not authorized.
         StorageUnavailableError: If local singleton state is malformed.
 
     """
+    if mutation.actor is not None:
+        if (
+            mutation.actor.instance_id != mutation.instance_id
+            or mutation.actor.subject_id != mutation.actor_subject_id
+        ):
+            raise PermissionDeniedError
+        require_instance_administrator(
+            connection,
+            mutation.actor,
+            occurred_at=mutation.occurred_at,
+        )
+        return
+    if connection.execute("SELECT 1 FROM tokens LIMIT 1").fetchone() is not None:
+        raise AuthenticationRequiredError
+
     instance_rows = connection.execute(
         "SELECT id FROM instances ORDER BY id LIMIT 2"
     ).fetchall()
@@ -344,7 +414,9 @@ def _load_project_result(
     ).fetchall()
     grant_rows = connection.execute(
         """
-        SELECT subject_id, project_id, role
+        SELECT
+            instance_id, subject_id, project_id, role, version, granted_by,
+            created_at, updated_at
         FROM project_grants
         WHERE subject_id = ? AND project_id = ?
         LIMIT 2
@@ -357,11 +429,20 @@ def _load_project_result(
     if project != expected_project:
         raise StorageUnavailableError
     grant = ProjectGrant(
-        subject_id=SubjectId(require_text(grant_rows[0][0])),
-        project_id=ProjectId(require_text(grant_rows[0][1])),
-        role=ProjectRole(require_text(grant_rows[0][2])),
+        instance_id=InstanceId(require_text(grant_rows[0][0])),
+        subject_id=SubjectId(require_text(grant_rows[0][1])),
+        project_id=ProjectId(require_text(grant_rows[0][2])),
+        role=ProjectRole(require_text(grant_rows[0][3])),
+        version=require_integer(grant_rows[0][4]),
+        granted_by=SubjectId(require_text(grant_rows[0][5])),
+        created_at=parse_timestamp(grant_rows[0][6]),
+        updated_at=parse_timestamp(grant_rows[0][7]),
     )
-    if grant.subject_id != subject_id or grant.project_id != project.id:
+    if (
+        grant.instance_id != project.instance_id
+        or grant.subject_id != subject_id
+        or grant.project_id != project.id
+    ):
         raise StorageUnavailableError
     return ProjectCreationResult(project=project, grant=grant)
 

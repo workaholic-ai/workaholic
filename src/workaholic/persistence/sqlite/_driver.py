@@ -27,7 +27,11 @@ _SQLITE_BUSY_RESULTS: Final = frozenset((sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOC
 def _initialize_connection(
     database_path: Path,
 ) -> Iterator[sqlite3.Connection]:
-    """Open the one explicit transaction allowed to create an empty store.
+    """Open the one exclusive transaction allowed to create an empty store.
+
+    The exclusive lock prevents readers from observing SQLite's newly created
+    file before the transactional schema is committed. Normal read and write
+    transactions retain their less restrictive locking behavior.
 
     Args:
         database_path: Absolute initialization target.
@@ -54,7 +58,7 @@ def _initialize_connection(
                 path.unlink()
             raise StorageUnavailableError from error
     try:
-        connection.execute("BEGIN IMMEDIATE")
+        connection.execute("BEGIN EXCLUSIVE")
         yield connection
         connection.commit()
     except SchemaUnsupportedError:

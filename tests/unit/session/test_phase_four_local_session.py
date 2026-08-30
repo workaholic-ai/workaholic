@@ -397,15 +397,26 @@ def _status(project: Project) -> StatusResult:
         project=project,
         subject=Subject(
             id=_SUBJECT_ID,
+            instance_id=_INSTANCE_ID,
             kind=SubjectKind.HUMAN,
+            handle="local-operator",
             display_name="Local operator",
             enabled=True,
             is_instance_admin=True,
+            version=1,
+            created_by=_SUBJECT_ID,
+            created_at=_NOW,
+            updated_at=_NOW,
         ),
         grant=ProjectGrant(
+            instance_id=_INSTANCE_ID,
             subject_id=_SUBJECT_ID,
             project_id=project.id,
             role=ProjectRole.OWNER,
+            version=1,
+            granted_by=_SUBJECT_ID,
+            created_at=project.created_at,
+            updated_at=project.created_at,
         ),
     )
 

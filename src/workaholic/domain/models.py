@@ -5,22 +5,26 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime  # noqa: TC003
-from enum import StrEnum
 from types import MappingProxyType
 from typing import cast
 
 from workaholic.domain.enums import (
     ApprovalRequirement,
     AttemptStatus,
+    AuditEventType,
     CriterionStatus,
     ObservationKind,
+    ProjectRole,
     ResultReviewStatus,
+    SubjectKind,
     TaskEventType,
     TaskState,
+    TokenStatus,
 )
 from workaholic.domain.errors import DomainValidationError
 from workaholic.domain.identifiers import (
     AttemptId,
+    AuditEventId,
     InstanceId,
     ProjectId,
     RequestId,
@@ -28,6 +32,7 @@ from workaholic.domain.identifiers import (
     SubjectId,
     TaskEventId,
     TaskId,
+    TokenId,
 )
 from workaholic.domain.rules import (
     ACCEPTANCE_CRITERIA_MAX_ITEMS,
@@ -45,12 +50,14 @@ from workaholic.domain.rules import (
     normalize_task_objective,
     normalize_task_title,
     validate_acceptance_criterion_id,
+    validate_audit_event_payload,
     validate_json_value,
     validate_lowercase_sha256,
     validate_media_type,
     validate_positive_integer,
     validate_profile_name,
     validate_project_key,
+    validate_subject_handle,
     validate_task_key,
     validate_task_priority,
     validate_uri_reference,
@@ -64,18 +71,6 @@ type JsonValue = JsonScalar | tuple[JsonValue, ...] | Mapping[str, JsonValue]
 
 _SUBJECT_DISPLAY_NAME_MIN_LENGTH = 1
 _SUBJECT_DISPLAY_NAME_MAX_LENGTH = 200
-
-
-class SubjectKind(StrEnum):
-    """Kinds of independently operating Phase 1 Subjects."""
-
-    HUMAN = "human"
-
-
-class ProjectRole(StrEnum):
-    """Project authorization roles available in Phase 1."""
-
-    OWNER = "owner"
 
 
 @dataclass(frozen=True, slots=True)
@@ -96,15 +91,23 @@ class Subject:
     """One attributable Human or Agent identity."""
 
     id: SubjectId
+    instance_id: InstanceId
     kind: SubjectKind
+    handle: str
     display_name: str
     enabled: bool
     is_instance_admin: bool
+    version: int
+    created_by: SubjectId
+    created_at: datetime
+    updated_at: datetime
 
     def __post_init__(self) -> None:
         """Validate and normalize the Subject invariant set."""
         _require_instance(self.id, SubjectId, label="Subject id")
+        _require_instance(self.instance_id, InstanceId, label="Subject instance_id")
         _require_instance(self.kind, SubjectKind, label="Subject kind")
+        object.__setattr__(self, "handle", validate_subject_handle(self.handle))
         object.__setattr__(
             self,
             "display_name",
@@ -115,6 +118,13 @@ class Subject:
             self.is_instance_admin,
             label="Subject is_instance_admin",
         )
+        validate_positive_integer(self.version, label="Subject version")
+        _require_instance(self.created_by, SubjectId, label="Subject created_by")
+        validate_utc_timestamp(self.created_at, label="Subject created_at")
+        validate_utc_timestamp(self.updated_at, label="Subject updated_at")
+        if self.updated_at < self.created_at:
+            message = "Subject updated_at must not precede created_at."
+            raise DomainValidationError(message)
 
 
 @dataclass(frozen=True, slots=True)
@@ -140,12 +150,22 @@ class Project:
 class ProjectGrant:
     """One Subject's role within one Project."""
 
+    instance_id: InstanceId
     subject_id: SubjectId
     project_id: ProjectId
     role: ProjectRole
+    version: int
+    granted_by: SubjectId
+    created_at: datetime
+    updated_at: datetime
 
     def __post_init__(self) -> None:
         """Validate the ProjectGrant invariant set."""
+        _require_instance(
+            self.instance_id,
+            InstanceId,
+            label="ProjectGrant instance_id",
+        )
         _require_instance(
             self.subject_id,
             SubjectId,
@@ -157,6 +177,229 @@ class ProjectGrant:
             label="ProjectGrant project_id",
         )
         _require_instance(self.role, ProjectRole, label="ProjectGrant role")
+        validate_positive_integer(self.version, label="ProjectGrant version")
+        _require_instance(
+            self.granted_by,
+            SubjectId,
+            label="ProjectGrant granted_by",
+        )
+        validate_utc_timestamp(self.created_at, label="ProjectGrant created_at")
+        validate_utc_timestamp(self.updated_at, label="ProjectGrant updated_at")
+        if self.updated_at < self.created_at:
+            message = "ProjectGrant updated_at must not precede created_at."
+            raise DomainValidationError(message)
+
+
+@dataclass(frozen=True, slots=True)
+class Token:
+    """One persisted bearer-credential record without its raw secret."""
+
+    id: TokenId
+    instance_id: InstanceId
+    subject_id: SubjectId
+    token_hash: str = field(repr=False)
+    created_by: SubjectId
+    created_at: datetime
+    activated_at: datetime | None
+    expires_at: datetime
+    revoked_at: datetime | None
+    revoked_by: SubjectId | None
+
+    def __post_init__(self) -> None:
+        """Validate Token identities, digest, and lifecycle timestamps."""
+        _require_instance(self.id, TokenId, label="Token id")
+        _require_instance(self.instance_id, InstanceId, label="Token instance_id")
+        _require_instance(self.subject_id, SubjectId, label="Token subject_id")
+        validate_lowercase_sha256(self.token_hash, label="Token SHA-256 hash")
+        _require_instance(self.created_by, SubjectId, label="Token created_by")
+        validate_utc_timestamp(self.created_at, label="Token created_at")
+        validate_utc_timestamp(self.expires_at, label="Token expires_at")
+        if self.expires_at <= self.created_at:
+            message = "Token expires_at must follow created_at."
+            raise DomainValidationError(message)
+        if self.activated_at is not None:
+            validate_utc_timestamp(self.activated_at, label="Token activated_at")
+            if self.activated_at < self.created_at:
+                message = "Token activated_at must not precede created_at."
+                raise DomainValidationError(message)
+            if self.activated_at >= self.expires_at:
+                message = "Token activated_at must precede expires_at."
+                raise DomainValidationError(message)
+        if self.revoked_at is not None:
+            validate_utc_timestamp(self.revoked_at, label="Token revoked_at")
+            if self.revoked_at < self.created_at:
+                message = "Token revoked_at must not precede created_at."
+                raise DomainValidationError(message)
+            if self.activated_at is not None and self.revoked_at < self.activated_at:
+                message = "Token revoked_at must not precede activated_at."
+                raise DomainValidationError(message)
+        if (self.revoked_at is None) != (self.revoked_by is None):
+            message = "Token revocation requires both revoked_at and revoked_by."
+            raise DomainValidationError(message)
+        if self.revoked_by is not None:
+            _require_instance(self.revoked_by, SubjectId, label="Token revoked_by")
+
+
+@dataclass(frozen=True, slots=True)
+class TokenSummary:
+    """Public non-secret metadata for one Token at an authoritative time."""
+
+    id: TokenId
+    subject_id: SubjectId
+    status: TokenStatus
+    created_by: SubjectId
+    created_at: datetime
+    activated_at: datetime | None
+    expires_at: datetime
+    revoked_at: datetime | None
+    revoked_by: SubjectId | None
+
+    def __post_init__(self) -> None:
+        """Validate the closed public Token metadata projection."""
+        _require_instance(self.id, TokenId, label="TokenSummary id")
+        _require_instance(
+            self.subject_id,
+            SubjectId,
+            label="TokenSummary subject_id",
+        )
+        _require_instance(self.status, TokenStatus, label="TokenSummary status")
+        _require_instance(
+            self.created_by,
+            SubjectId,
+            label="TokenSummary created_by",
+        )
+        validate_utc_timestamp(self.created_at, label="TokenSummary created_at")
+        validate_utc_timestamp(self.expires_at, label="TokenSummary expires_at")
+        if self.expires_at <= self.created_at:
+            message = "TokenSummary expires_at must follow created_at."
+            raise DomainValidationError(message)
+        if self.activated_at is not None:
+            validate_utc_timestamp(
+                self.activated_at,
+                label="TokenSummary activated_at",
+            )
+            if self.activated_at < self.created_at:
+                message = "TokenSummary activated_at must not precede created_at."
+                raise DomainValidationError(message)
+            if self.activated_at >= self.expires_at:
+                message = "TokenSummary activated_at must precede expires_at."
+                raise DomainValidationError(message)
+        if self.revoked_at is not None:
+            validate_utc_timestamp(self.revoked_at, label="TokenSummary revoked_at")
+            if self.revoked_at < self.created_at:
+                message = "TokenSummary revoked_at must not precede created_at."
+                raise DomainValidationError(message)
+            if self.activated_at is not None and self.revoked_at < self.activated_at:
+                message = "TokenSummary revoked_at must not precede activated_at."
+                raise DomainValidationError(message)
+        if (self.revoked_at is None) != (self.revoked_by is None):
+            message = "TokenSummary revocation requires revoked_at and revoked_by."
+            raise DomainValidationError(message)
+        if self.revoked_by is not None:
+            _require_instance(
+                self.revoked_by,
+                SubjectId,
+                label="TokenSummary revoked_by",
+            )
+        if self.status is TokenStatus.PENDING and (
+            self.activated_at is not None or self.revoked_at is not None
+        ):
+            message = "A pending TokenSummary must not be activated or revoked."
+            raise DomainValidationError(message)
+        if self.status is TokenStatus.REVOKED and self.revoked_at is None:
+            message = "A revoked TokenSummary requires revocation metadata."
+            raise DomainValidationError(message)
+        if self.status in (TokenStatus.ACTIVE, TokenStatus.EXPIRED) and (
+            self.activated_at is None or self.revoked_at is not None
+        ):
+            message = (
+                "An active or expired TokenSummary must be activated and not revoked."
+            )
+            raise DomainValidationError(message)
+
+
+@dataclass(frozen=True, slots=True)
+class AuthenticatedActor:
+    """Secret-free identity established by one valid Token."""
+
+    instance_id: InstanceId
+    subject_id: SubjectId
+    subject_kind: SubjectKind
+    token_id: TokenId
+
+    def __post_init__(self) -> None:
+        """Validate every authenticated identity component."""
+        _require_instance(
+            self.instance_id,
+            InstanceId,
+            label="AuthenticatedActor instance_id",
+        )
+        _require_instance(
+            self.subject_id,
+            SubjectId,
+            label="AuthenticatedActor subject_id",
+        )
+        _require_instance(
+            self.subject_kind,
+            SubjectKind,
+            label="AuthenticatedActor subject_kind",
+        )
+        _require_instance(
+            self.token_id,
+            TokenId,
+            label="AuthenticatedActor token_id",
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class AuditEvent:
+    """One append-only administrative mutation record."""
+
+    id: AuditEventId
+    cursor: int
+    instance_id: InstanceId
+    actor_subject_id: SubjectId
+    actor_kind: SubjectKind
+    actor_token_id: TokenId | None
+    request_id: RequestId
+    event_type: AuditEventType
+    occurred_at: datetime
+    payload: Mapping[str, JsonValue] = field(hash=False)
+
+    def __post_init__(self) -> None:
+        """Validate attribution and freeze the exact event payload."""
+        _require_instance(self.id, AuditEventId, label="AuditEvent id")
+        validate_positive_integer(self.cursor, label="AuditEvent cursor")
+        _require_instance(
+            self.instance_id,
+            InstanceId,
+            label="AuditEvent instance_id",
+        )
+        _require_instance(
+            self.actor_subject_id,
+            SubjectId,
+            label="AuditEvent actor_subject_id",
+        )
+        _require_instance(
+            self.actor_kind,
+            SubjectKind,
+            label="AuditEvent actor_kind",
+        )
+        if self.actor_token_id is not None:
+            _require_instance(
+                self.actor_token_id,
+                TokenId,
+                label="AuditEvent actor_token_id",
+            )
+        _require_instance(self.request_id, RequestId, label="AuditEvent request_id")
+        _require_instance(
+            self.event_type,
+            AuditEventType,
+            label="AuditEvent event_type",
+        )
+        validate_utc_timestamp(self.occurred_at, label="AuditEvent occurred_at")
+        validate_audit_event_payload(self.event_type, self.payload)
+        object.__setattr__(self, "payload", _freeze_event_payload(self.payload))
 
 
 @dataclass(frozen=True, slots=True)
@@ -881,6 +1124,9 @@ def _normalize_display_name(value: object) -> str:
             "Subject display_name must contain 1 through 200 Unicode characters "
             "after trimming."
         )
+        raise DomainValidationError(message)
+    if not all(character.isprintable() for character in normalized):
+        message = "Subject display_name must contain only printable characters."
         raise DomainValidationError(message)
     return normalized
 

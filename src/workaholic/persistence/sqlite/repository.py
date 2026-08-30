@@ -8,10 +8,40 @@ from typing import TYPE_CHECKING
 
 from workaholic.persistence.sqlite import _queries as sqlite_queries
 from workaholic.persistence.sqlite import _task_views as sqlite_task_views
+from workaholic.persistence.sqlite._audit_events import (
+    read_audit_events as _read_audit_events,
+)
+from workaholic.persistence.sqlite._authentication import (
+    authenticate_token as _authenticate_token,
+)
+from workaholic.persistence.sqlite._authentication import (
+    get_current_identity as _get_current_identity,
+)
+from workaholic.persistence.sqlite._authorization import (
+    authorize_actor as _authorize_actor,
+)
 from workaholic.persistence.sqlite._bootstrap import (
     bootstrap_local_project as _bootstrap_local_project,
 )
+from workaholic.persistence.sqlite._grants import (
+    assign_project_grant as _assign_project_grant,
+)
+from workaholic.persistence.sqlite._grants import (
+    list_project_grants as _list_project_grants,
+)
+from workaholic.persistence.sqlite._grants import (
+    revoke_project_grant as _revoke_project_grant,
+)
 from workaholic.persistence.sqlite._projects import create_project as _create_project
+from workaholic.persistence.sqlite._subjects import create_subject as _create_subject
+from workaholic.persistence.sqlite._subjects import list_subjects as _list_subjects
+from workaholic.persistence.sqlite._subjects import (
+    set_instance_admin as _set_instance_admin,
+)
+from workaholic.persistence.sqlite._subjects import (
+    set_subject_enabled as _set_subject_enabled,
+)
+from workaholic.persistence.sqlite._subjects import update_subject as _update_subject
 from workaholic.persistence.sqlite._task_claims import (
     claim_next_task as _claim_next_task,
 )
@@ -50,34 +80,63 @@ from workaholic.persistence.sqlite._task_results import (
     submit_human_result as _submit_human_result,
 )
 from workaholic.persistence.sqlite._tasks import create_task as _create_task
+from workaholic.persistence.sqlite._tokens import activate_token as _activate_token
+from workaholic.persistence.sqlite._tokens import (
+    issue_pending_token as _issue_pending_token,
+)
+from workaholic.persistence.sqlite._tokens import list_tokens as _list_tokens
+from workaholic.persistence.sqlite._tokens import recover_local as _recover_local
+from workaholic.persistence.sqlite._tokens import revoke_token as _revoke_token
 from workaholic.persistence.sqlite.schema import initialize_empty_store
 
 if TYPE_CHECKING:
     from workaholic.application import (
+        ActivateTokenMutation,
         AddTaskDependencyMutation,
         ApproveResultMutation,
+        AssignProjectGrantMutation,
+        AuditEventPage,
+        AuthenticateToken,
+        AuthorizeActor,
         BootstrapMutation,
         BootstrapResult,
         ClaimNextTaskMutation,
         ClaimTaskMutation,
         Clock,
+        CreateSubjectMutation,
+        CurrentIdentityResult,
+        GetCurrentIdentity,
         GetLocalStatus,
         GetProjectByKey,
         GetTask,
         GetTaskDetails,
+        IssueTokenMutation,
         ListInstanceTasks,
+        ListProjectGrants,
         ListProjects,
+        ListSubjects,
         ListTasks,
         ListTasksByView,
+        ListTokens,
         ProjectCreationMutation,
         ProjectCreationResult,
+        ProjectGrantPage,
+        ProjectGrantResult,
+        ReadAuditEvents,
         ReadTaskEvents,
+        RecoverLocalMutation,
         RejectResultMutation,
         ReleaseClaimMutation,
         RemoveTaskDependencyMutation,
         RenewClaimMutation,
         ReportTaskProgressMutation,
+        RevokeProjectGrantMutation,
+        RevokeTokenMutation,
+        SetInstanceAdminMutation,
+        SetSubjectEnabledMutation,
         StatusResult,
+        SubjectPage,
+        SubjectResult,
         SubmitAgentResultMutation,
         SubmitHumanResultMutation,
         TaskBlockMutation,
@@ -92,8 +151,11 @@ if TYPE_CHECKING:
         TaskSubmissionResult,
         TaskUnblockMutation,
         TaskUpdateMutation,
+        TokenPage,
+        TokenResult,
+        UpdateSubjectMutation,
     )
-    from workaholic.domain import Project, Task
+    from workaholic.domain import AuthenticatedActor, Project, Subject, Task
 
 
 class _UtcSystemClock:
@@ -111,7 +173,7 @@ class SQLiteRepository:
         """Bind the adapter to one absolute local database path.
 
         Args:
-            database_path: Absolute path to a schema-version-4 SQLite store.
+            database_path: Absolute path to a schema-version-5 SQLite store.
             clock: Optional authoritative clock for time-derived read views.
 
         Raises:
@@ -389,6 +451,254 @@ class SQLiteRepository:
         """
         return _create_project(self._database_path, mutation)
 
+    def create_subject(self, mutation: CreateSubjectMutation) -> SubjectResult:
+        """Create one enabled, non-administrative Subject atomically.
+
+        Args:
+            mutation: Authenticated Subject creation mutation.
+
+        Returns:
+            Committed or idempotently replayed Subject.
+
+        """
+        return _create_subject(self._database_path, mutation)
+
+    def list_subjects(self, command: ListSubjects) -> SubjectPage:
+        """List one stable handle-ordered page of Instance Subjects.
+
+        Args:
+            command: Authenticated actor-bound pagination query.
+
+        Returns:
+            Stable Subject page with an opaque continuation cursor.
+
+        """
+        return _list_subjects(
+            self._database_path,
+            command,
+            now=self._clock.now(),
+        )
+
+    def update_subject(self, mutation: UpdateSubjectMutation) -> SubjectResult:
+        """Update one Subject display name at its exact version.
+
+        Args:
+            mutation: Authenticated optimistic Subject update.
+
+        Returns:
+            Committed or idempotently replayed Subject.
+
+        """
+        return _update_subject(self._database_path, mutation)
+
+    def set_subject_enabled(
+        self,
+        mutation: SetSubjectEnabledMutation,
+    ) -> SubjectResult:
+        """Enable or disable one Subject at its exact version.
+
+        Args:
+            mutation: Authenticated optimistic state mutation.
+
+        Returns:
+            Committed or idempotently replayed Subject.
+
+        """
+        return _set_subject_enabled(self._database_path, mutation)
+
+    def set_instance_admin(
+        self,
+        mutation: SetInstanceAdminMutation,
+    ) -> SubjectResult:
+        """Grant or revoke Instance administration at an exact version.
+
+        Args:
+            mutation: Authenticated optimistic administrator mutation.
+
+        Returns:
+            Committed or idempotently replayed Subject.
+
+        """
+        return _set_instance_admin(self._database_path, mutation)
+
+    def authenticate_token(
+        self,
+        command: AuthenticateToken,
+    ) -> AuthenticatedActor:
+        """Authenticate one canonical Token digest at an explicit time.
+
+        Args:
+            command: Parsed Token identity, digest, expected Instance, and time.
+
+        Returns:
+            Secret-free authenticated actor context.
+
+        """
+        return _authenticate_token(self._database_path, command)
+
+    def get_current_identity(
+        self,
+        command: GetCurrentIdentity,
+    ) -> CurrentIdentityResult:
+        """Revalidate and return current non-secret identity metadata.
+
+        Args:
+            command: Previously authenticated actor query.
+
+        Returns:
+            Current enabled Subject and active Token metadata.
+
+        """
+        return _get_current_identity(
+            self._database_path,
+            command,
+            now=self._clock.now(),
+        )
+
+    def issue_pending_token(self, mutation: IssueTokenMutation) -> TokenResult:
+        """Persist one pending non-authenticating Token digest.
+
+        Args:
+            mutation: Authenticated pending-Token metadata mutation.
+
+        Returns:
+            Non-secret pending Token metadata.
+
+        """
+        return _issue_pending_token(self._database_path, mutation)
+
+    def activate_token(self, mutation: ActivateTokenMutation) -> TokenResult:
+        """Activate one pending Token after its credential sink succeeds.
+
+        Args:
+            mutation: Authenticated activation mutation.
+
+        Returns:
+            Non-secret active Token metadata.
+
+        """
+        return _activate_token(self._database_path, mutation)
+
+    def list_tokens(self, command: ListTokens) -> TokenPage:
+        """List one stable page of visible non-secret Token metadata.
+
+        Args:
+            command: Authenticated self or administrator query.
+
+        Returns:
+            Creation-ordered Token metadata page.
+
+        """
+        return _list_tokens(
+            self._database_path,
+            command,
+            now=self._clock.now(),
+        )
+
+    def revoke_token(self, mutation: RevokeTokenMutation) -> TokenResult:
+        """Monotonically revoke one visible Token.
+
+        Args:
+            mutation: Authenticated Token revocation mutation.
+
+        Returns:
+            Non-secret revoked Token metadata.
+
+        """
+        return _revoke_token(self._database_path, mutation)
+
+    def recover_local(
+        self,
+        mutation: RecoverLocalMutation,
+    ) -> CurrentIdentityResult:
+        """Replace every bootstrap-Human Token through confirmed recovery.
+
+        Args:
+            mutation: Exact tokenless local recovery mutation.
+
+        Returns:
+            Bootstrap Human and active replacement Token metadata.
+
+        """
+        return _recover_local(self._database_path, mutation)
+
+    def read_audit_events(self, command: ReadAuditEvents) -> AuditEventPage:
+        """Read one bounded ascending administrator-authorized audit page.
+
+        Args:
+            command: Authenticated Instance audit cursor query.
+
+        Returns:
+            Strictly ascending administrative events and next cursor.
+
+        """
+        return _read_audit_events(
+            self._database_path,
+            command,
+            now=self._clock.now(),
+        )
+
+    def authorize_actor(self, command: AuthorizeActor) -> Subject:
+        """Resolve one fresh authorization projection transactionally.
+
+        Args:
+            command: Actor, permission, scope, kind, and authoritative time.
+
+        Returns:
+            Current authorized Subject projection.
+
+        """
+        return _authorize_actor(self._database_path, command)
+
+    def assign_project_grant(
+        self,
+        mutation: AssignProjectGrantMutation,
+    ) -> ProjectGrantResult:
+        """Create or replace one cumulative ProjectGrant atomically.
+
+        Args:
+            mutation: Authenticated create-or-replace grant mutation.
+
+        Returns:
+            Committed or idempotently replayed grant snapshot.
+
+        """
+        return _assign_project_grant(self._database_path, mutation)
+
+    def list_project_grants(
+        self,
+        command: ListProjectGrants,
+    ) -> ProjectGrantPage:
+        """List one stable page of grants for an exact Project.
+
+        Args:
+            command: Authenticated Project-scoped pagination query.
+
+        Returns:
+            Current grant page with an opaque continuation cursor.
+
+        """
+        return _list_project_grants(
+            self._database_path,
+            command,
+            now=self._clock.now(),
+        )
+
+    def revoke_project_grant(
+        self,
+        mutation: RevokeProjectGrantMutation,
+    ) -> ProjectGrantResult:
+        """Revoke one exact current ProjectGrant atomically.
+
+        Args:
+            mutation: Authenticated optimistic grant revocation.
+
+        Returns:
+            Revoked grant snapshot or exact idempotent replay.
+
+        """
+        return _revoke_project_grant(self._database_path, mutation)
+
     def get_local_status(self, command: GetLocalStatus) -> StatusResult:
         """Read authorized local status without mutating storage.
 
@@ -399,7 +709,11 @@ class SQLiteRepository:
             Current local status.
 
         """
-        return sqlite_queries.get_local_status(self._database_path, command)
+        return sqlite_queries.get_local_status(
+            self._database_path,
+            command,
+            now=self._clock.now(),
+        )
 
     def list_projects(self, command: ListProjects) -> tuple[Project, ...]:
         """List authorized Projects by immutable key.
@@ -411,7 +725,11 @@ class SQLiteRepository:
             Authorized Projects ordered by key ascending.
 
         """
-        return sqlite_queries.list_projects(self._database_path, command)
+        return sqlite_queries.list_projects(
+            self._database_path,
+            command,
+            now=self._clock.now(),
+        )
 
     def get_project_by_key(self, command: GetProjectByKey) -> Project:
         """Read one authorized Project by immutable key.
@@ -423,7 +741,11 @@ class SQLiteRepository:
             Matching authorized Project.
 
         """
-        return sqlite_queries.get_project_by_key(self._database_path, command)
+        return sqlite_queries.get_project_by_key(
+            self._database_path,
+            command,
+            now=self._clock.now(),
+        )
 
     def list_tasks(self, command: ListTasks) -> TaskPage:
         """Read one deterministic Project-bound Task page.
@@ -435,7 +757,11 @@ class SQLiteRepository:
             Tasks ordered by Project-local number.
 
         """
-        return sqlite_queries.list_tasks(self._database_path, command)
+        return sqlite_queries.list_tasks(
+            self._database_path,
+            command,
+            now=self._clock.now(),
+        )
 
     def list_tasks_for_instance(self, command: ListInstanceTasks) -> TaskPage:
         """Read one Task page across authorized Projects in an Instance.
@@ -450,6 +776,7 @@ class SQLiteRepository:
         return sqlite_queries.list_tasks_for_instance(
             self._database_path,
             command,
+            now=self._clock.now(),
         )
 
     def get_task(self, command: GetTask) -> Task:
@@ -462,7 +789,11 @@ class SQLiteRepository:
             Matching immutable Task.
 
         """
-        return sqlite_queries.get_task(self._database_path, command)
+        return sqlite_queries.get_task(
+            self._database_path,
+            command,
+            now=self._clock.now(),
+        )
 
     def get_task_details(self, command: GetTaskDetails) -> TaskDetails:
         """Read complete Task details with authoritative derived readiness.
@@ -506,4 +837,8 @@ class SQLiteRepository:
             Polling-safe attributable events in cursor order.
 
         """
-        return sqlite_queries.read_task_events_after(self._database_path, command)
+        return sqlite_queries.read_task_events_after(
+            self._database_path,
+            command,
+            now=self._clock.now(),
+        )

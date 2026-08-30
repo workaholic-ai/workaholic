@@ -1,4 +1,4 @@
-"""Integration tests for the fixed Phase 4 SQLite schema boundary."""
+"""Integration tests for the fixed Phase 5 SQLite schema boundary."""
 
 from __future__ import annotations
 
@@ -7,6 +7,7 @@ import sqlite3
 import stat
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from threading import Event
 from typing import TYPE_CHECKING, Never, Protocol, cast
 
 import pytest
@@ -22,6 +23,7 @@ from workaholic.persistence.sqlite import (
     open_write_transaction,
     validate_store_schema,
 )
+from workaholic.persistence.sqlite import schema as sqlite_schema
 from workaholic.persistence.sqlite._driver import _connect
 from workaholic.persistence.sqlite._records import (
     EVENT_PAYLOAD_JSON_MAX_LENGTH,
@@ -36,6 +38,7 @@ _TIMESTAMP = "2026-07-30T10:30:00.000000Z"
 _LATER_TIMESTAMP = "2026-07-30T10:35:00.000000Z"
 _LEASE_EXPIRY = "2026-07-30T10:45:00.000000Z"
 _APPLICATION_TABLES = {
+    "audit_events",
     "idempotency_records",
     "instances",
     "project_grants",
@@ -48,6 +51,7 @@ _APPLICATION_TABLES = {
     "task_events",
     "task_results",
     "tasks",
+    "tokens",
 }
 _IDEMPOTENCY_OPERATIONS = (
     "bootstrap.local_project",
@@ -68,8 +72,31 @@ _IDEMPOTENCY_OPERATIONS = (
     "task.claim.release",
     "task.progress.report",
     "task.result.submit.agent",
+    "subject.create",
+    "subject.update",
+    "subject.enable",
+    "subject.disable",
+    "subject.admin.grant",
+    "subject.admin.revoke",
+    "project.grant.assign",
+    "project.grant.revoke",
+    "token.activate",
+    "token.revoke",
+    "auth.recover.local",
 )
 _EXPECTED_COLUMNS = {
+    "audit_events": (
+        "cursor",
+        "id",
+        "instance_id",
+        "actor_subject_id",
+        "actor_kind",
+        "actor_token_id",
+        "request_id",
+        "event_type",
+        "occurred_at",
+        "payload_json",
+    ),
     "idempotency_records": (
         "subject_scope",
         "operation",
@@ -79,7 +106,16 @@ _EXPECTED_COLUMNS = {
         "created_at",
     ),
     "instances": ("id", "created_at"),
-    "project_grants": ("subject_id", "project_id", "role"),
+    "project_grants": (
+        "instance_id",
+        "subject_id",
+        "project_id",
+        "role",
+        "version",
+        "granted_by",
+        "created_at",
+        "updated_at",
+    ),
     "projects": (
         "id",
         "instance_id",
@@ -91,10 +127,16 @@ _EXPECTED_COLUMNS = {
     "store_metadata": ("singleton", "schema_version"),
     "subjects": (
         "id",
+        "instance_id",
         "kind",
+        "handle",
         "display_name",
         "enabled",
         "is_instance_admin",
+        "version",
+        "created_by",
+        "created_at",
+        "updated_at",
     ),
     "task_dependencies": ("task_uid", "prerequisite_uid", "project_id"),
     "task_attempts": (
@@ -164,6 +206,18 @@ _EXPECTED_COLUMNS = {
         "created_by",
         "created_at",
         "updated_at",
+    ),
+    "tokens": (
+        "id",
+        "instance_id",
+        "subject_id",
+        "token_hash",
+        "created_by",
+        "created_at",
+        "activated_at",
+        "expires_at",
+        "revoked_at",
+        "revoked_by",
     ),
 }
 
@@ -256,10 +310,23 @@ def _seed_authorization_graph(connection: sqlite3.Connection) -> None:
     connection.execute(
         """
         INSERT INTO subjects (
-            id, kind, display_name, enabled, is_instance_admin
-        ) VALUES (?, ?, ?, ?, ?)
+            id, instance_id, kind, handle, display_name, enabled,
+            is_instance_admin, version, created_by, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
-        ("sub_local", "human", "Local operator", 1, 1),
+        (
+            "sub_local",
+            "ins_local",
+            "human",
+            "local-operator",
+            "Local operator",
+            1,
+            1,
+            1,
+            "sub_local",
+            _TIMESTAMP,
+            _TIMESTAMP,
+        ),
     )
     connection.execute(
         """
@@ -271,10 +338,21 @@ def _seed_authorization_graph(connection: sqlite3.Connection) -> None:
     )
     connection.execute(
         """
-        INSERT INTO project_grants (subject_id, project_id, role)
-        VALUES (?, ?, ?)
+        INSERT INTO project_grants (
+            instance_id, subject_id, project_id, role, version, granted_by,
+            created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         """,
-        ("sub_local", "prj_acme", "owner"),
+        (
+            "ins_local",
+            "sub_local",
+            "prj_acme",
+            "owner",
+            1,
+            "sub_local",
+            _TIMESTAMP,
+            _TIMESTAMP,
+        ),
     )
 
 
@@ -512,18 +590,33 @@ def test_empty_store_has_exact_columns_indexes_and_foreign_keys(
         assert strict_tables == dict.fromkeys(_APPLICATION_TABLES, 1)
 
         expected_unique_indexes = {
+            "audit_events": {("id",)},
             "idempotency_records": {
                 ("subject_scope", "operation", "caller_key"),
             },
             "instances": {("id",)},
-            "project_grants": {("subject_id", "project_id")},
-            "projects": {("id",), ("instance_id", "key")},
+            "project_grants": {
+                ("subject_id", "project_id"),
+                ("instance_id", "subject_id", "project_id"),
+            },
+            "projects": {
+                ("id",),
+                ("id", "instance_id"),
+                ("instance_id", "key"),
+            },
             "store_metadata": set(),
-            "subjects": {("id",), ("id", "kind")},
+            "subjects": {
+                ("id",),
+                ("id", "kind"),
+                ("id", "instance_id"),
+                ("id", "instance_id", "kind"),
+                ("instance_id", "handle"),
+            },
             "task_dependencies": {("task_uid", "prerequisite_uid")},
             "task_attempts": {
                 ("id",),
                 ("id", "task_uid", "subject_id"),
+                ("id", "task_uid", "project_id"),
                 ("id", "task_uid", "project_id", "subject_id"),
             },
             "task_claims": {("task_uid",), ("attempt_id",)},
@@ -535,6 +628,11 @@ def test_empty_store_has_exact_columns_indexes_and_foreign_keys(
                 ("project_id", "number"),
                 ("uid",),
                 ("uid", "project_id"),
+            },
+            "tokens": {
+                ("id",),
+                ("id", "instance_id", "subject_id"),
+                ("token_hash",),
             },
         }
         actual_unique_indexes: dict[str, set[tuple[str, ...]]] = {}
@@ -560,6 +658,24 @@ def test_empty_store_has_exact_columns_indexes_and_foreign_keys(
         assert actual_unique_indexes == expected_unique_indexes
 
         expected_query_indexes = {
+            "idx_audit_events_instance_cursor": ("instance_id", "cursor"),
+            "idx_project_grants_project_subject": (
+                "instance_id",
+                "project_id",
+                "subject_id",
+            ),
+            "idx_project_grants_subject_project": (
+                "instance_id",
+                "subject_id",
+                "project_id",
+            ),
+            "idx_subjects_instance_admin": (
+                "instance_id",
+                "enabled",
+                "is_instance_admin",
+                "id",
+            ),
+            "idx_subjects_instance_handle": ("instance_id", "handle", "id"),
             "idx_task_attempts_active_lease": (
                 "status",
                 "lease_expires_at",
@@ -583,6 +699,19 @@ def test_empty_store_has_exact_columns_indexes_and_foreign_keys(
                 "available_at",
                 "priority",
                 "number",
+            ),
+            "idx_tokens_active_expiry": (
+                "instance_id",
+                "activated_at",
+                "revoked_at",
+                "expires_at",
+                "id",
+            ),
+            "idx_tokens_subject_created": (
+                "instance_id",
+                "subject_id",
+                "created_at",
+                "id",
             ),
         }
         actual_query_indexes = {
@@ -627,9 +756,63 @@ def test_empty_store_has_exact_columns_indexes_and_foreign_keys(
             )
         }
         assert actual_foreign_keys == {
+            ("audit_events", "actor_kind", "subjects", "kind", "RESTRICT"),
+            (
+                "audit_events",
+                "actor_subject_id",
+                "subjects",
+                "id",
+                "RESTRICT",
+            ),
+            (
+                "audit_events",
+                "actor_subject_id",
+                "tokens",
+                "subject_id",
+                "RESTRICT",
+            ),
+            ("audit_events", "actor_token_id", "tokens", "id", "RESTRICT"),
+            (
+                "audit_events",
+                "instance_id",
+                "subjects",
+                "instance_id",
+                "RESTRICT",
+            ),
+            (
+                "audit_events",
+                "instance_id",
+                "tokens",
+                "instance_id",
+                "RESTRICT",
+            ),
+            ("project_grants", "granted_by", "subjects", "id", "RESTRICT"),
+            (
+                "project_grants",
+                "instance_id",
+                "projects",
+                "instance_id",
+                "RESTRICT",
+            ),
+            (
+                "project_grants",
+                "instance_id",
+                "subjects",
+                "instance_id",
+                "RESTRICT",
+            ),
             ("project_grants", "project_id", "projects", "id", "RESTRICT"),
             ("project_grants", "subject_id", "subjects", "id", "RESTRICT"),
             ("projects", "instance_id", "instances", "id", "RESTRICT"),
+            ("subjects", "created_by", "subjects", "id", "RESTRICT"),
+            ("subjects", "instance_id", "instances", "id", "RESTRICT"),
+            (
+                "subjects",
+                "instance_id",
+                "subjects",
+                "instance_id",
+                "RESTRICT",
+            ),
             ("task_attempts", "project_id", "tasks", "project_id", "RESTRICT"),
             ("task_attempts", "subject_id", "subjects", "id", "RESTRICT"),
             ("task_attempts", "task_uid", "tasks", "uid", "RESTRICT"),
@@ -672,13 +855,6 @@ def test_empty_store_has_exact_columns_indexes_and_foreign_keys(
                 "project_id",
                 "RESTRICT",
             ),
-            (
-                "task_events",
-                "actor_subject_id",
-                "task_attempts",
-                "subject_id",
-                "RESTRICT",
-            ),
             ("task_events", "task_uid", "tasks", "uid", "RESTRICT"),
             ("task_events", "task_uid", "task_attempts", "task_uid", "RESTRICT"),
             ("task_results", "attempt_id", "task_attempts", "id", "RESTRICT"),
@@ -703,6 +879,16 @@ def test_empty_store_has_exact_columns_indexes_and_foreign_keys(
             ("tasks", "current_result_id", "task_results", "id", "RESTRICT"),
             ("tasks", "project_id", "projects", "id", "RESTRICT"),
             ("tasks", "uid", "task_results", "task_uid", "RESTRICT"),
+            ("tokens", "created_by", "subjects", "id", "RESTRICT"),
+            (
+                "tokens",
+                "instance_id",
+                "subjects",
+                "instance_id",
+                "RESTRICT",
+            ),
+            ("tokens", "revoked_by", "subjects", "id", "RESTRICT"),
+            ("tokens", "subject_id", "subjects", "id", "RESTRICT"),
         }
 
 
@@ -806,19 +992,34 @@ def test_checked_boolean_enum_and_project_key_constraints(tmp_path: Path) -> Non
         _seed_authorization_graph(connection)
         connection.commit()
         invalid_subject_rows = [
-            ("sub_agent", "agent", "Agent", 1, 0),
-            ("sub_disabled", "human", "Disabled", 2, 0),
-            ("sub_admin", "human", "Admin", 1, -1),
+            ("sub_kind", "robot", "invalid-kind", "Invalid kind", 1, 0, 1),
+            ("sub_disabled", "human", "disabled", "Disabled", 2, 0, 1),
+            ("sub_admin", "human", "admin", "Admin", 1, -1, 1),
+            ("sub_version", "agent", "version", "Version", 1, 0, 0),
         ]
         for row in invalid_subject_rows:
             with pytest.raises(sqlite3.IntegrityError):
                 connection.execute(
                     """
                     INSERT INTO subjects (
-                        id, kind, display_name, enabled, is_instance_admin
-                    ) VALUES (?, ?, ?, ?, ?)
+                        id, instance_id, kind, handle, display_name, enabled,
+                        is_instance_admin, version, created_by, created_at,
+                        updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
-                    row,
+                    (
+                        row[0],
+                        "ins_local",
+                        row[1],
+                        row[2],
+                        row[3],
+                        row[4],
+                        row[5],
+                        row[6],
+                        row[0],
+                        _TIMESTAMP,
+                        _TIMESTAMP,
+                    ),
                 )
             connection.rollback()
 
@@ -968,10 +1169,21 @@ def test_phase_three_dependency_constraints_enforce_identity_and_project(
         )
         connection.execute(
             """
-            INSERT INTO project_grants (subject_id, project_id, role)
-            VALUES (?, ?, ?)
+            INSERT INTO project_grants (
+                instance_id, subject_id, project_id, role, version, granted_by,
+                created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            ("sub_local", "prj_other", "owner"),
+            (
+                "ins_local",
+                "sub_local",
+                "prj_other",
+                "owner",
+                1,
+                "sub_local",
+                _TIMESTAMP,
+                _TIMESTAMP,
+            ),
         )
         _insert_task(connection)
         _insert_task(connection, uid="tsk_second", number=2, key="ACME-2")
@@ -1027,10 +1239,23 @@ def test_phase_four_attempt_state_and_claim_ownership_constraints(
         connection.execute(
             """
             INSERT INTO subjects (
-                id, kind, display_name, enabled, is_instance_admin
-            ) VALUES (?, ?, ?, ?, ?)
+                id, instance_id, kind, handle, display_name, enabled,
+                is_instance_admin, version, created_by, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            ("sub_other", "human", "Other operator", 1, 0),
+            (
+                "sub_other",
+                "ins_local",
+                "human",
+                "other-operator",
+                "Other operator",
+                1,
+                0,
+                1,
+                "sub_local",
+                _TIMESTAMP,
+                _TIMESTAMP,
+            ),
         )
         _insert_attempt(connection)
         _insert_claim(connection)
@@ -1677,13 +1902,13 @@ def _build_invalid_store(database_path: Path, scenario: str) -> None:
 
 @pytest.mark.parametrize(
     "scenario",
-    ["missing", "malformed", "multiple", "0", "1", "2", "3", "4", "5"],
+    ["missing", "malformed", "multiple", "0", "1", "2", "3", "4", "6"],
 )
 def test_schema_validation_rejects_without_modifying_the_store(
     scenario: str,
     tmp_path: Path,
 ) -> None:
-    """Missing, malformed-v4, older, and newer stores remain unchanged."""
+    """Missing, malformed, older, and newer stores remain unchanged."""
     database_path = tmp_path / f"{scenario}.db"
     _build_invalid_store(database_path, scenario)
     original_bytes = database_path.read_bytes()
@@ -1755,7 +1980,7 @@ def test_normal_open_rejects_an_unsupported_store(
 def test_concurrent_first_initialization_produces_one_valid_schema(
     tmp_path: Path,
 ) -> None:
-    """Concurrent creators serialize into a single complete version-3 store."""
+    """Concurrent creators serialize into a single complete version-5 store."""
     database_path = tmp_path / "concurrent" / "local.db"
 
     with ThreadPoolExecutor(max_workers=4) as executor:
@@ -1773,6 +1998,47 @@ def test_concurrent_first_initialization_produces_one_valid_schema(
         assert connection.execute("SELECT count(*) FROM store_metadata").fetchone() == (
             1,
         )
+
+
+def test_reader_cannot_observe_uncommitted_initialization(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """A reader waits for the complete schema instead of seeing an empty file."""
+    database_path = tmp_path / "concurrent" / "local.db"
+    schema_creation_started = Event()
+    allow_schema_creation = Event()
+    reader_finished = Event()
+    create_schema = sqlite_schema._create_schema
+
+    def pause_before_schema(connection: sqlite3.Connection) -> None:
+        """Expose the post-connect, pre-schema window to the concurrent reader."""
+        schema_creation_started.set()
+        assert allow_schema_creation.wait(timeout=5)
+        create_schema(connection)
+
+    def read_initialized_store() -> int:
+        """Read only after initialization publishes one complete schema."""
+        try:
+            with open_read_connection(database_path) as connection:
+                row = connection.execute(
+                    "SELECT schema_version FROM store_metadata"
+                ).fetchone()
+                assert row is not None
+                return cast("int", row[0])
+        finally:
+            reader_finished.set()
+
+    monkeypatch.setattr(sqlite_schema, "_create_schema", pause_before_schema)
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        initializer = executor.submit(initialize_empty_store, database_path)
+        assert schema_creation_started.wait(timeout=5)
+        reader = executor.submit(read_initialized_store)
+        assert not reader_finished.wait(timeout=0.1)
+        allow_schema_creation.set()
+
+        assert initializer.result(timeout=5) is None
+        assert reader.result(timeout=5) == SCHEMA_VERSION
 
 
 def test_initialization_failure_rolls_back_every_schema_object(

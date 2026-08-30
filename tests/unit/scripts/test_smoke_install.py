@@ -11,7 +11,7 @@ import pytest
 
 _PROJECT_ROOT = Path(__file__).parents[3]
 _SMOKE_SCRIPT = _PROJECT_ROOT / "scripts" / "smoke-install.sh"
-_EXPECTED_VERSION = "0.4.0a1"
+_EXPECTED_VERSION = "0.5.0a1"
 
 
 def _write_executable(path: Path, source: str) -> None:

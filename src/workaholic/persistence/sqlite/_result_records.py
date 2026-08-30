@@ -1,4 +1,4 @@
-"""Canonical Phase 4 TaskResult serialization and strict row codecs."""
+"""Canonical authenticated TaskResult serialization and strict row codecs."""
 
 from __future__ import annotations
 
@@ -382,7 +382,7 @@ def read_idempotent_result_outcome(
     Args:
         connection: Active validated write transaction.
         operation: Closed semantic operation name.
-        actor_subject_id: Authenticated Human scope.
+        actor_subject_id: Authenticated Subject scope.
         caller_key: Optional caller-provided idempotency key.
         request_fingerprint: Canonical semantic-input digest.
 
@@ -450,7 +450,7 @@ def record_idempotent_result_outcome(  # noqa: PLR0913 - durable contract.
     Args:
         connection: Active validated write transaction.
         operation: Closed semantic operation name.
-        actor_subject_id: Authenticated Human scope.
+        actor_subject_id: Authenticated Subject scope.
         caller_key: Optional caller-provided idempotency key.
         request_fingerprint: Canonical semantic-input digest.
         occurred_at: Authoritative operation timestamp.

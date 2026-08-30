@@ -22,7 +22,9 @@ from workaholic.application import (
 )
 from workaholic.domain import (
     DomainValidationError,
+    ProjectId,
     ProjectRole,
+    SubjectId,
     SubjectKind,
     Task,
     TaskEvent,
@@ -32,6 +34,10 @@ from workaholic.domain import (
     TaskTransition,
     build_task_key,
     transition_task_state,
+)
+from workaholic.persistence.sqlite._authorization import (
+    require_task_agent,
+    require_task_operator,
 )
 from workaholic.persistence.sqlite._claim_state import (
     end_human_claim,
@@ -72,10 +78,10 @@ if TYPE_CHECKING:
     from workaholic.domain import (
         AcceptanceCriterion,
         ApprovalRequirement,
+        AuthenticatedActor,
         ContextReference,
         JsonValue,
         RequestId,
-        SubjectId,
         TaskEventId,
     )
 
@@ -91,12 +97,13 @@ class _TaskEventMutation(Protocol):
 
     event_id: TaskEventId
     actor_subject_id: SubjectId
+    actor: AuthenticatedActor | None
     request_id: RequestId
     occurred_at: datetime
 
 
 class _ClaimGuardedMutation(Protocol):
-    """Attribution and conditional-expiry identity for Human Task writes."""
+    """Attribution and conditional-expiry identity for Operator Task writes."""
 
     claim_expired_event_id: TaskEventId
     actor_subject_id: SubjectId
@@ -265,6 +272,8 @@ def _execute_mutation(
                 task_uid=mutation.task_uid,
                 project_id=str(mutation.project_id),
                 actor_subject_id=str(mutation.actor_subject_id),
+                actor=mutation.actor,
+                occurred_at=mutation.occurred_at,
             )
             replay = _read_idempotent_mutation(
                 connection,
@@ -288,6 +297,11 @@ def _execute_mutation(
                 request_id=mutation.request_id,
                 occurred_at=mutation.occurred_at,
                 claim_expired_event_id=mutation.claim_expired_event_id,
+                actor_kind=(
+                    SubjectKind.HUMAN
+                    if mutation.actor is None
+                    else mutation.actor.subject_kind
+                ),
             )
             if current.version != mutation.expected_version:
                 raise VersionConflictError
@@ -549,20 +563,26 @@ def _context_mapping(values: Sequence[ContextReference]) -> list[dict[str, objec
     return [{"uri": item.uri, "version": item.version} for item in values]
 
 
-def _load_authorized_task(
+def _load_authorized_task(  # noqa: PLR0913 - explicit authorization boundary.
     connection: sqlite3.Connection,
     *,
     task_uid: TaskId,
     project_id: str,
     actor_subject_id: str,
+    actor: AuthenticatedActor | None = None,
+    occurred_at: datetime | None = None,
+    required_kind: SubjectKind | None = None,
 ) -> Task:
-    """Authorize one Human Owner and hydrate the complete scoped Task.
+    """Authorize one Operator and hydrate the complete scoped Task.
 
     Args:
         connection: Active validated write transaction.
         task_uid: Canonical Task identity.
         project_id: Canonical Project identity text.
         actor_subject_id: Authenticated Subject identity text.
+        actor: Authenticated actor context, or the tokenless build bridge.
+        occurred_at: Authoritative authentication time when ``actor`` is set.
+        required_kind: Optional exact Subject-kind constraint.
 
     Returns:
         Complete persisted Task including ordered dependencies.
@@ -572,6 +592,20 @@ def _load_authorized_task(
         TaskNotFoundError: If the authorized scoped Task does not exist.
 
     """
+    authorized = require_task_operator(
+        connection,
+        actor=actor,
+        actor_subject_id=SubjectId(actor_subject_id),
+        project_id=ProjectId(project_id),
+        occurred_at=occurred_at,
+        required_kind=required_kind,
+    )
+    if authorized is not None:
+        return _load_scoped_task(
+            connection,
+            task_uid=task_uid,
+            project_id=authorized.project.id,
+        )
     row = connection.execute(
         """
         SELECT
@@ -606,6 +640,104 @@ def _load_authorized_task(
         project_id=project_id,
     )
     task = task_from_row(row[4:], depends_on=dependencies)
+    if task.key != build_task_key(require_text(row[0]), task.number):
+        raise StorageUnavailableError
+    return task
+
+
+def _load_agent_task(  # noqa: PLR0913 - explicit authorization boundary.
+    connection: sqlite3.Connection,
+    *,
+    task_uid: TaskId,
+    project_id: ProjectId,
+    actor_subject_id: SubjectId,
+    actor: AuthenticatedActor | None,
+    occurred_at: datetime,
+) -> Task:
+    """Authorize one exact Agent execution and hydrate its scoped Task.
+
+    Args:
+        connection: Active validated write transaction.
+        task_uid: Canonical Task identity.
+        project_id: Exact Project execution scope.
+        actor_subject_id: Mutation attribution identity bound to the actor.
+        actor: Authenticated Agent context or the tokenless build bridge.
+        occurred_at: Authoritative authentication time.
+
+    Returns:
+        Complete persisted Task including ordered dependencies.
+
+    Raises:
+        PermissionDeniedError: If Agent authorization is absent.
+        TaskNotFoundError: If the authorized scoped Task does not exist.
+
+    """
+    authorized = require_task_agent(
+        connection,
+        actor=actor,
+        actor_subject_id=actor_subject_id,
+        project_id=project_id,
+        occurred_at=occurred_at,
+    )
+    if authorized is not None:
+        return _load_scoped_task(
+            connection,
+            task_uid=task_uid,
+            project_id=authorized.project.id,
+        )
+    return _load_authorized_task(
+        connection,
+        task_uid=task_uid,
+        project_id=str(project_id),
+        actor_subject_id=str(actor_subject_id),
+    )
+
+
+def _load_scoped_task(
+    connection: sqlite3.Connection,
+    *,
+    task_uid: TaskId,
+    project_id: ProjectId,
+) -> Task:
+    """Hydrate one Task after authorization in the caller's transaction.
+
+    Args:
+        connection: Active validated write transaction.
+        task_uid: Canonical Task identity.
+        project_id: Already-authorized Project identity.
+
+    Returns:
+        Complete persisted Task including ordered dependencies.
+
+    Raises:
+        TaskNotFoundError: If the scoped Task does not exist.
+        StorageUnavailableError: If persisted Task data is malformed.
+
+    """
+    row = connection.execute(
+        """
+        SELECT
+            p.key,
+            t.uid, t.project_id, t.number, t.key, t.title, t.objective,
+            t.state, t.priority, t.available_at, t.approval,
+            t.acceptance_json, t.context_json, t.blocking_reason,
+            t.current_result_id, t.version, t.created_by, t.created_at,
+            t.updated_at
+        FROM projects AS p
+        LEFT JOIN tasks AS t
+          ON t.project_id = p.id AND t.uid = ?
+        WHERE p.id = ?
+        """,
+        (str(task_uid), str(project_id)),
+    ).fetchone()
+    if row is None or row[1] is None:
+        raise TaskNotFoundError
+    dependencies = _load_dependencies(
+        connection,
+        task_uid=task_uid,
+        project_id=str(project_id),
+    )
+    task = task_from_row(row[1:], depends_on=dependencies)
     if task.key != build_task_key(require_text(row[0]), task.number):
         raise StorageUnavailableError
     return task
@@ -685,7 +817,10 @@ def _insert_task_event(
     event_type: TaskEventType,
     payload: Mapping[str, JsonValue],
 ) -> TaskEventRecord:
-    """Append one Human-attributed TaskEvent inside the owning transaction."""
+    """Append one authenticated TaskEvent inside the owning transaction."""
+    actor_kind = (
+        SubjectKind.HUMAN if mutation.actor is None else mutation.actor.subject_kind
+    )
     inserted = connection.execute(
         """
         INSERT INTO task_events (
@@ -698,7 +833,7 @@ def _insert_task_event(
             str(task.uid),
             str(task.project_id),
             str(mutation.actor_subject_id),
-            SubjectKind.HUMAN.value,
+            actor_kind.value,
             None,
             str(mutation.request_id),
             event_type.value,
@@ -718,7 +853,7 @@ def _insert_task_event(
             occurred_at=mutation.occurred_at,
             payload=payload,
         ),
-        actor_kind=SubjectKind.HUMAN,
+        actor_kind=actor_kind,
         attempt_id=None,
     )
 

@@ -11,6 +11,7 @@ from pydantic import (
     BaseModel,
     ConfigDict,
     Field,
+    ValidationInfo,
     field_validator,
     model_validator,
 )
@@ -26,26 +27,34 @@ from workaholic.domain import (
     ApprovalRequirement,
     ArtifactReference,
     AttemptId,
+    AuthenticatedActor,
     ContextReference,
     CriterionOutcome,
     CriterionStatus,
     DomainValidationError,
     InstanceId,
+    Permission,
     ProjectId,
+    ProjectRole,
     ProposedFollowUp,
     RequestId,
     ResultId,
     SubjectId,
+    SubjectKind,
     TaskEventId,
     TaskId,
     TaskProgress,
+    TokenId,
     normalize_bounded_printable_text,
     normalize_project_name,
     normalize_task_objective,
     normalize_task_title,
     resolve_lease_duration,
+    validate_lowercase_sha256,
+    validate_positive_integer,
     validate_profile_name,
     validate_project_key,
+    validate_subject_handle,
     validate_task_key,
     validate_task_priority,
     validate_utc_timestamp,
@@ -56,6 +65,7 @@ _CURSOR_MAX_LENGTH = 2_048
 _TASK_SELECTOR_MAX_LENGTH = 256
 _DEFAULT_PAGE_SIZE = 100
 _MAX_PAGE_SIZE = 500
+_SUBJECT_DISPLAY_NAME_MAX_LENGTH = 200
 
 
 class _CommandModel(BaseModel):
@@ -151,6 +161,7 @@ class GetLocalStatus(_CommandModel):
     instance_id: InstanceId
     project_id: ProjectId
     subject_id: SubjectId
+    actor: AuthenticatedActor | None = Field(default=None, exclude=True, repr=False)
 
     @field_validator("profile", mode="before")
     @classmethod
@@ -172,6 +183,7 @@ class ListProjects(_CommandModel):
 
     instance_id: InstanceId
     subject_id: SubjectId
+    actor: AuthenticatedActor | None = Field(default=None, exclude=True, repr=False)
 
 
 class GetProjectByKey(_CommandModel):
@@ -180,6 +192,7 @@ class GetProjectByKey(_CommandModel):
     instance_id: InstanceId
     subject_id: SubjectId
     project_key: str
+    actor: AuthenticatedActor | None = Field(default=None, exclude=True, repr=False)
 
     @field_validator("project_key", mode="before")
     @classmethod
@@ -424,6 +437,7 @@ class ListTasks(_CommandModel):
     profile: str = "local"
     project_id: ProjectId
     subject_id: SubjectId
+    actor: AuthenticatedActor | None = Field(default=None, exclude=True, repr=False)
     cursor: str | None = None
     limit: int = Field(default=_DEFAULT_PAGE_SIZE, ge=1, le=_MAX_PAGE_SIZE)
 
@@ -467,6 +481,7 @@ class ListInstanceTasks(_CommandModel):
     profile: str = "local"
     instance_id: InstanceId
     subject_id: SubjectId
+    actor: AuthenticatedActor | None = Field(default=None, exclude=True, repr=False)
     cursor: str | None = None
     limit: int = Field(default=_DEFAULT_PAGE_SIZE, ge=1, le=_MAX_PAGE_SIZE)
 
@@ -510,6 +525,7 @@ class GetTask(_CommandModel):
     project_id: ProjectId
     subject_id: SubjectId
     task: TaskId | str
+    actor: AuthenticatedActor | None = Field(default=None, exclude=True, repr=False)
 
     @field_validator("task", mode="before")
     @classmethod
@@ -637,6 +653,7 @@ class ProjectCreationMutation(_CommandModel):
     request_id: RequestId
     instance_id: InstanceId
     actor_subject_id: SubjectId
+    actor: AuthenticatedActor | None = Field(default=None, exclude=True, repr=False)
     occurred_at: datetime
     project_key: str
     project_name: str
@@ -712,6 +729,7 @@ class TaskCreationMutation(_CommandModel):
     request_id: RequestId
     project_id: ProjectId
     actor_subject_id: SubjectId
+    actor: AuthenticatedActor | None = Field(default=None, exclude=True, repr=False)
     occurred_at: datetime
     title: str
     objective: str
@@ -1286,6 +1304,7 @@ class GetTaskDetails(_CommandModel):
     project_id: ProjectId
     subject_id: SubjectId
     task: TaskId | str
+    actor: AuthenticatedActor | None = Field(default=None, exclude=True, repr=False)
 
     @field_validator("task", mode="before")
     @classmethod
@@ -1307,6 +1326,7 @@ class ListTasksByView(_CommandModel):
 
     profile: str = "local"
     subject_id: SubjectId
+    actor: AuthenticatedActor | None = Field(default=None, exclude=True, repr=False)
     project_id: ProjectId | None = None
     instance_id: InstanceId | None = None
     view: TaskListView = TaskListView.ALL
@@ -1391,6 +1411,7 @@ class ReadTaskEvents(_CommandModel):
     project_id: ProjectId
     subject_id: SubjectId
     task: TaskId | str
+    actor: AuthenticatedActor | None = Field(default=None, exclude=True, repr=False)
     after: int = Field(default=0, ge=0)
     limit: int = Field(default=_DEFAULT_PAGE_SIZE, ge=1, le=_MAX_PAGE_SIZE)
 
@@ -1415,6 +1436,7 @@ class _ExistingTaskMutation(_CommandModel):
     task_uid: TaskId
     project_id: ProjectId
     actor_subject_id: SubjectId
+    actor: AuthenticatedActor | None = Field(default=None, exclude=True, repr=False)
     request_id: RequestId
     occurred_at: datetime
     expected_version: int
@@ -1652,6 +1674,7 @@ class _ClaimOperationMutation(_CommandModel):
 
     project_id: ProjectId
     actor_subject_id: SubjectId
+    actor: AuthenticatedActor | None = Field(default=None, exclude=True, repr=False)
     request_id: RequestId
     occurred_at: datetime
     idempotency_key: str | None = None
@@ -1846,6 +1869,582 @@ class SubmitAgentResultMutation(_ExistingTaskMutation):
         return self
 
 
+class AuthenticateToken(_CommandModel):
+    """Authenticate one parsed Token digest for an expected Instance."""
+
+    token_id: TokenId
+    token_digest: str = Field(repr=False, exclude=True)
+    expected_instance_id: InstanceId
+    occurred_at: datetime
+
+    @field_validator("token_digest", mode="before")
+    @classmethod
+    def _validate_token_digest(cls, value: object) -> str:
+        """Validate a canonical Token digest without accepting raw material.
+
+        Args:
+            value: Candidate lowercase SHA-256 digest.
+
+        Returns:
+            The validated digest.
+
+        """
+        return validate_lowercase_sha256(value, label="Token digest")
+
+    @field_validator("occurred_at", mode="before")
+    @classmethod
+    def _validate_occurred_at(cls, value: object) -> datetime:
+        """Validate the explicit authentication transaction time.
+
+        Args:
+            value: Candidate authoritative time.
+
+        Returns:
+            The validated UTC timestamp.
+
+        """
+        return validate_utc_timestamp(value, label="Authentication occurred_at")
+
+
+class GetCurrentIdentity(_CommandModel):
+    """Read non-secret metadata for one authenticated identity."""
+
+    actor: AuthenticatedActor
+
+
+class AuthorizeActor(_CommandModel):
+    """Request a fresh authorization projection for one operation."""
+
+    actor: AuthenticatedActor
+    permission: Permission
+    project_id: ProjectId | None = None
+    required_kind: SubjectKind | None = None
+    occurred_at: datetime
+
+    @field_validator("occurred_at", mode="before")
+    @classmethod
+    def _validate_occurred_at(cls, value: object) -> datetime:
+        """Validate the explicit authorization transaction time.
+
+        Args:
+            value: Candidate authoritative time.
+
+        Returns:
+            The validated UTC timestamp.
+
+        """
+        return validate_utc_timestamp(value, label="Authorization occurred_at")
+
+    @model_validator(mode="after")
+    def _validate_scope(self) -> AuthorizeActor:
+        """Require a Project exactly for Project-scoped permissions.
+
+        Returns:
+            The internally consistent authorization command.
+
+        Raises:
+            ValueError: If Instance and Project permission scopes are mixed.
+
+        """
+        instance_permission = self.permission is Permission.MANAGE_INSTANCE
+        if instance_permission == (self.project_id is not None):
+            message = (
+                "Instance permission requires no Project; Project permission "
+                "requires one Project."
+            )
+            raise ValueError(message)
+        return self
+
+
+class _IdentityPageCommand(_CommandModel):
+    """Shared actor-bound cursor contract for identity metadata lists."""
+
+    actor: AuthenticatedActor
+    cursor: str | None = None
+    limit: int = Field(default=_DEFAULT_PAGE_SIZE, ge=1, le=_MAX_PAGE_SIZE)
+
+    @field_validator("cursor", mode="before")
+    @classmethod
+    def _validate_cursor(cls, value: object) -> str | None:
+        """Validate one optional bounded opaque continuation cursor.
+
+        Args:
+            value: Candidate cursor.
+
+        Returns:
+            The validated cursor or null.
+
+        """
+        return _validate_opaque_token(
+            value,
+            label="Identity cursor",
+            maximum=_CURSOR_MAX_LENGTH,
+            optional=True,
+        )
+
+
+class ListSubjects(_IdentityPageCommand):
+    """List Instance Subjects as an authenticated administrator."""
+
+
+class ListProjectGrants(_IdentityPageCommand):
+    """List Project grants visible to an authorized administrator."""
+
+    project: ProjectId | str
+
+    @field_validator("project", mode="before")
+    @classmethod
+    def _validate_project(cls, value: object) -> ProjectId | str:
+        """Validate an exact typed ID or canonical Project key.
+
+        Args:
+            value: Candidate Project selector.
+
+        Returns:
+            A typed ID or validated key.
+
+        """
+        return _validate_project_selector(value)
+
+
+class ListTokens(_IdentityPageCommand):
+    """List self or administrator-visible non-secret Token metadata."""
+
+    subject: SubjectId | str | None = None
+
+    @field_validator("subject", mode="before")
+    @classmethod
+    def _validate_subject(cls, value: object) -> SubjectId | str | None:
+        """Validate an optional exact Subject ID or handle.
+
+        Args:
+            value: Candidate Subject selector or null for self.
+
+        Returns:
+            A typed ID, validated handle, or null.
+
+        """
+        if value is None:
+            return None
+        return _validate_subject_selector(value)
+
+
+class ReadAuditEvents(_CommandModel):
+    """Read one bounded ascending page of administrative AuditEvents."""
+
+    actor: AuthenticatedActor
+    after: int = Field(default=0, ge=0)
+    limit: int = Field(default=_DEFAULT_PAGE_SIZE, ge=1, le=_MAX_PAGE_SIZE)
+
+
+class _IdentityMutation(_CommandModel):
+    """Shared authenticated metadata for administrative mutations."""
+
+    actor: AuthenticatedActor
+    request_id: RequestId
+    occurred_at: datetime
+    idempotency_key: str | None = None
+
+    @field_validator("occurred_at", mode="before")
+    @classmethod
+    def _validate_occurred_at(cls, value: object) -> datetime:
+        """Validate an explicit authoritative mutation timestamp.
+
+        Args:
+            value: Candidate UTC time.
+
+        Returns:
+            The validated timestamp.
+
+        """
+        return validate_utc_timestamp(value, label="Identity mutation occurred_at")
+
+    @field_validator("idempotency_key", mode="before")
+    @classmethod
+    def _validate_idempotency_key(cls, value: object) -> str | None:
+        """Validate an optional bounded caller idempotency key.
+
+        Args:
+            value: Candidate key.
+
+        Returns:
+            The validated key or null.
+
+        """
+        return _validate_opaque_token(
+            value,
+            label="Idempotency key",
+            maximum=_IDEMPOTENCY_KEY_MAX_LENGTH,
+            optional=True,
+        )
+
+
+class CreateSubjectMutation(_IdentityMutation):
+    """Create one enabled non-administrative Human or Agent Subject."""
+
+    subject_id: SubjectId
+    kind: SubjectKind
+    handle: str
+    display_name: str
+
+    @model_validator(mode="before")
+    @classmethod
+    def _default_display_name(cls, value: object) -> object:
+        """Default an omitted display name to the immutable handle.
+
+        Args:
+            value: Candidate model input.
+
+        Returns:
+            A copied mapping with the explicit display-name default.
+
+        """
+        if not isinstance(value, Mapping):
+            return value
+        copied = dict(value)
+        if copied.get("display_name") is None and "handle" in copied:
+            copied["display_name"] = copied["handle"]
+        return copied
+
+    @field_validator("handle", mode="before")
+    @classmethod
+    def _validate_handle(cls, value: object) -> str:
+        """Validate the immutable exact Subject handle.
+
+        Args:
+            value: Candidate handle.
+
+        Returns:
+            The validated handle.
+
+        """
+        return validate_subject_handle(value)
+
+    @field_validator("display_name", mode="before")
+    @classmethod
+    def _validate_display_name(cls, value: object) -> str:
+        """Normalize one mutable printable Subject display name.
+
+        Args:
+            value: Candidate display name.
+
+        Returns:
+            The normalized display name.
+
+        """
+        return normalize_bounded_printable_text(
+            value,
+            label="Subject display_name",
+            maximum=_SUBJECT_DISPLAY_NAME_MAX_LENGTH,
+        )
+
+
+class _ExistingSubjectMutation(_IdentityMutation):
+    """Shared optimistic contract for one existing Subject mutation."""
+
+    subject: SubjectId | str
+    expected_version: int
+
+    @field_validator("subject", mode="before")
+    @classmethod
+    def _validate_subject(cls, value: object) -> SubjectId | str:
+        """Validate an exact Subject ID or immutable handle.
+
+        Args:
+            value: Candidate Subject selector.
+
+        Returns:
+            A typed ID or validated handle.
+
+        """
+        return _validate_subject_selector(value)
+
+    @field_validator("expected_version", mode="before")
+    @classmethod
+    def _validate_expected_version(cls, value: object) -> int:
+        """Validate strict positive optimistic identity version.
+
+        Args:
+            value: Candidate version.
+
+        Returns:
+            The validated positive integer.
+
+        """
+        return validate_positive_integer(value, label="Expected identity version")
+
+
+class UpdateSubjectMutation(_ExistingSubjectMutation):
+    """Update only one Subject's mutable display name."""
+
+    display_name: str
+
+    @field_validator("display_name", mode="before")
+    @classmethod
+    def _validate_display_name(cls, value: object) -> str:
+        """Normalize one mutable printable Subject display name.
+
+        Args:
+            value: Candidate display name.
+
+        Returns:
+            The normalized display name.
+
+        """
+        return normalize_bounded_printable_text(
+            value,
+            label="Subject display_name",
+            maximum=_SUBJECT_DISPLAY_NAME_MAX_LENGTH,
+        )
+
+
+class SetSubjectEnabledMutation(_ExistingSubjectMutation):
+    """Enable or disable one existing Subject at its exact version."""
+
+    enabled: bool
+
+
+class SetInstanceAdminMutation(_ExistingSubjectMutation):
+    """Grant or revoke Instance-administrator status at an exact version."""
+
+    is_instance_admin: bool
+
+
+class _ProjectGrantMutation(_IdentityMutation):
+    """Shared exact Subject and Project selectors for grant mutations."""
+
+    subject: SubjectId | str
+    project: ProjectId | str
+
+    @field_validator("subject", mode="before")
+    @classmethod
+    def _validate_subject(cls, value: object) -> SubjectId | str:
+        """Validate the exact granted Subject selector.
+
+        Args:
+            value: Candidate Subject ID or handle.
+
+        Returns:
+            The validated selector.
+
+        """
+        return _validate_subject_selector(value)
+
+    @field_validator("project", mode="before")
+    @classmethod
+    def _validate_project(cls, value: object) -> ProjectId | str:
+        """Validate the exact governed Project selector.
+
+        Args:
+            value: Candidate Project ID or key.
+
+        Returns:
+            The validated selector.
+
+        """
+        return _validate_project_selector(value)
+
+
+class AssignProjectGrantMutation(_ProjectGrantMutation):
+    """Create or replace one cumulative Project grant."""
+
+    role: ProjectRole
+    expected_version: int | None = None
+
+    @field_validator("expected_version", mode="before")
+    @classmethod
+    def _validate_expected_version(cls, value: object) -> int | None:
+        """Validate optional create-versus-replace concurrency input.
+
+        Args:
+            value: Candidate current version or null for absent-grant creation.
+
+        Returns:
+            The validated version or null.
+
+        """
+        if value is None:
+            return None
+        return validate_positive_integer(value, label="Expected grant version")
+
+
+class RevokeProjectGrantMutation(_ProjectGrantMutation):
+    """Revoke one exact current Project grant."""
+
+    expected_version: int
+
+    @field_validator("expected_version", mode="before")
+    @classmethod
+    def _validate_expected_version(cls, value: object) -> int:
+        """Validate the exact current grant version.
+
+        Args:
+            value: Candidate positive version.
+
+        Returns:
+            The validated current version.
+
+        """
+        return validate_positive_integer(value, label="Expected grant version")
+
+
+class IssueTokenMutation(_IdentityMutation):
+    """Persist one pending Token using only its canonical digest."""
+
+    token_id: TokenId
+    subject: SubjectId | str
+    token_digest: str = Field(repr=False, exclude=True)
+    expires_at: datetime
+
+    @field_validator("subject", mode="before")
+    @classmethod
+    def _validate_subject(cls, value: object) -> SubjectId | str:
+        """Validate the Token target Subject selector.
+
+        Args:
+            value: Candidate Subject ID or handle.
+
+        Returns:
+            The validated selector.
+
+        """
+        return _validate_subject_selector(value)
+
+    @field_validator("token_digest", mode="before")
+    @classmethod
+    def _validate_token_digest(cls, value: object) -> str:
+        """Validate the non-reversible canonical Token digest.
+
+        Args:
+            value: Candidate lowercase SHA-256 digest.
+
+        Returns:
+            The validated digest.
+
+        """
+        return validate_lowercase_sha256(value, label="Token digest")
+
+    @field_validator("expires_at", mode="before")
+    @classmethod
+    def _validate_expires_at(cls, value: object) -> datetime:
+        """Validate the explicit exclusive Token expiry boundary.
+
+        Args:
+            value: Candidate UTC expiry.
+
+        Returns:
+            The validated timestamp.
+
+        """
+        return validate_utc_timestamp(value, label="Token expires_at")
+
+    @model_validator(mode="after")
+    def _validate_lifetime(self) -> IssueTokenMutation:
+        """Require expiry to follow Token creation time.
+
+        Returns:
+            The validated pending-Token mutation.
+
+        Raises:
+            ValueError: If expiry is not later than creation.
+
+        """
+        if self.expires_at <= self.occurred_at:
+            message = "Token expires_at must follow creation time."
+            raise ValueError(message)
+        return self
+
+
+class ActivateTokenMutation(_IdentityMutation):
+    """Activate one pending Token after its credential sink succeeds."""
+
+    token_id: TokenId
+
+
+class RevokeTokenMutation(_IdentityMutation):
+    """Monotonically revoke one public Token identity."""
+
+    token_id: TokenId
+
+
+class RecoverLocalMutation(_CommandModel):
+    """Perform the exact tokenless bootstrap-Human recovery operation."""
+
+    instance_id: InstanceId
+    bootstrap_handle: str
+    token_id: TokenId
+    token_digest: str = Field(repr=False, exclude=True)
+    request_id: RequestId
+    occurred_at: datetime
+    expires_at: datetime
+
+    @field_validator("bootstrap_handle", mode="before")
+    @classmethod
+    def _validate_bootstrap_handle(cls, value: object) -> str:
+        """Require the immutable canonical bootstrap handle.
+
+        Args:
+            value: Candidate confirmed handle.
+
+        Returns:
+            The exact bootstrap handle.
+
+        Raises:
+            ValueError: If another valid handle is supplied.
+
+        """
+        handle = validate_subject_handle(value)
+        if handle != "local-operator":
+            message = "Local recovery requires the bootstrap Subject handle."
+            raise ValueError(message)
+        return handle
+
+    @field_validator("token_digest", mode="before")
+    @classmethod
+    def _validate_token_digest(cls, value: object) -> str:
+        """Validate the replacement Token digest.
+
+        Args:
+            value: Candidate lowercase SHA-256 digest.
+
+        Returns:
+            The validated digest.
+
+        """
+        return validate_lowercase_sha256(value, label="Token digest")
+
+    @field_validator("occurred_at", "expires_at", mode="before")
+    @classmethod
+    def _validate_timestamp(cls, value: object, info: ValidationInfo) -> datetime:
+        """Validate one explicit recovery lifecycle timestamp.
+
+        Args:
+            value: Candidate UTC timestamp.
+            info: Pydantic validation metadata naming the field.
+
+        Returns:
+            The validated timestamp.
+
+        """
+        return validate_utc_timestamp(value, label=f"Recovery {info.field_name}")
+
+    @model_validator(mode="after")
+    def _validate_lifetime(self) -> RecoverLocalMutation:
+        """Require replacement expiry to follow recovery time.
+
+        Returns:
+            The validated recovery mutation.
+
+        Raises:
+            ValueError: If the lifetime is empty or negative.
+
+        """
+        if self.expires_at <= self.occurred_at:
+            message = "Recovery Token expires_at must follow recovery time."
+            raise ValueError(message)
+        return self
+
+
 def _validate_lease_duration_seconds(
     value: object,
     *,
@@ -1891,6 +2490,47 @@ def _validate_distinct_event_ids(
     if len(set(supplied)) != len(supplied):
         message = f"{label} event identities must be distinct."
         raise ValueError(message)
+
+
+def _validate_subject_selector(value: object) -> SubjectId | str:
+    """Validate an exact Subject ID or immutable handle without ambiguity.
+
+    Args:
+        value: Candidate typed ID or serialized selector.
+
+    Returns:
+        A typed SubjectId or exact validated handle.
+
+    Raises:
+        DomainValidationError: If a typed-prefix string is malformed or the
+            handle contract is violated.
+
+    """
+    if isinstance(value, SubjectId):
+        return value
+    if isinstance(value, str) and value.startswith("sub_"):
+        return SubjectId(value)
+    return validate_subject_handle(value)
+
+
+def _validate_project_selector(value: object) -> ProjectId | str:
+    """Validate an exact Project ID or immutable uppercase key.
+
+    Args:
+        value: Candidate typed ID or serialized selector.
+
+    Returns:
+        A typed ProjectId or exact validated Project key.
+
+    Raises:
+        DomainValidationError: If the selector is malformed.
+
+    """
+    if isinstance(value, ProjectId):
+        return value
+    if isinstance(value, str) and value.startswith("prj_"):
+        return ProjectId(value)
+    return validate_project_key(value)
 
 
 def _validate_opaque_token(

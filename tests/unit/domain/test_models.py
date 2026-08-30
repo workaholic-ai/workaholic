@@ -74,10 +74,35 @@ def _subject() -> Subject:
     """
     return Subject(
         id=SubjectId("sub_local"),
+        instance_id=InstanceId("ins_local"),
         kind=SubjectKind.HUMAN,
+        handle="local-operator",
         display_name="Local operator",
         enabled=True,
         is_instance_admin=True,
+        version=1,
+        created_by=SubjectId("sub_local"),
+        created_at=_NOW,
+        updated_at=_NOW,
+    )
+
+
+def _grant() -> ProjectGrant:
+    """Build a valid bootstrap Owner grant.
+
+    Returns:
+        A valid immutable ProjectGrant.
+
+    """
+    return ProjectGrant(
+        instance_id=InstanceId("ins_local"),
+        subject_id=SubjectId("sub_local"),
+        project_id=ProjectId("prj_acme"),
+        role=ProjectRole.OWNER,
+        version=1,
+        granted_by=SubjectId("sub_local"),
+        created_at=_NOW,
+        updated_at=_NOW,
     )
 
 
@@ -150,11 +175,7 @@ def _event(payload: Mapping[str, JsonValue] | None = None) -> TaskEvent:
         (_subject(), "id"),
         (_project(), "id"),
         (
-            ProjectGrant(
-                subject_id=SubjectId("sub_local"),
-                project_id=ProjectId("prj_acme"),
-                role=ProjectRole.OWNER,
-            ),
+            _grant(),
             "subject_id",
         ),
         (
@@ -207,11 +228,7 @@ def test_subject_normalizes_name_and_validates_runtime_fields() -> None:
 def test_project_and_grant_validate_keys_types_and_roles() -> None:
     """Project and ProjectGrant constructors enforce identity and role categories."""
     project = replace(_project(), name="  Cafe\u0301  ")
-    grant = ProjectGrant(
-        subject_id=_subject().id,
-        project_id=project.id,
-        role=ProjectRole.OWNER,
-    )
+    grant = _grant()
 
     assert project.name == "Café"
     assert grant.role is ProjectRole.OWNER
@@ -229,11 +246,7 @@ def test_real_subject_and_grant_satisfy_owner_authorization_contract() -> None:
     """Concrete domain entities implement the pure authorization rule boundary."""
     subject = _subject()
     project = _project()
-    grant = ProjectGrant(
-        subject_id=subject.id,
-        project_id=project.id,
-        role=ProjectRole.OWNER,
-    )
+    grant = _grant()
 
     require_phase_one_owner(
         subject=subject,
