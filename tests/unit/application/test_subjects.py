@@ -342,3 +342,104 @@ def test_repository_errors_pass_through_and_constructor_checks_dependencies() ->
             clock=cast("Clock", _Clock()),
             identifiers=cast("IdentityIdentifierFactory", _Identifiers()),
         )
+
+
+def test_create_rejects_identifier_failure_and_invalid_subject_input() -> None:
+    """Subject creation maps dependency and caller failures to stable errors."""
+
+    class _FailingIdentifiers(_Identifiers):
+        """Identifier factory that cannot allocate a Subject identity."""
+
+        def new_subject_id(self) -> SubjectId:
+            """Raise the simulated allocation failure."""
+            message = "identifier source unavailable"
+            raise RuntimeError(message)
+
+    repository = _Repository()
+    with pytest.raises(ApplicationError) as dependency_error:
+        _application(repository, identifiers=_FailingIdentifiers()).create(
+            actor=_ACTOR,
+            kind=SubjectKind.AGENT,
+            handle="worker",
+        )
+    with pytest.raises(ApplicationError) as input_error:
+        _application(repository).create(
+            actor=_ACTOR,
+            kind=cast("SubjectKind", "robot"),
+            handle="worker",
+        )
+
+    assert dependency_error.value.code is ApplicationErrorCode.INTERNAL_ERROR
+    assert input_error.value.code is ApplicationErrorCode.INVALID_INPUT
+    assert repository.calls == []
+
+
+def test_subject_queries_and_mutations_reject_invalid_commands() -> None:
+    """Every public Subject operation validates its runtime command contract."""
+    application = _application(_Repository())
+
+    invalid_calls = (
+        lambda: application.list(actor=_ACTOR, limit=0),
+        lambda: application.set_enabled(
+            actor=_ACTOR,
+            subject="worker",
+            expected_version=0,
+            enabled=False,
+        ),
+        lambda: application.set_instance_admin(
+            actor=_ACTOR,
+            subject="worker",
+            expected_version=0,
+            is_instance_admin=True,
+        ),
+    )
+    for invalid_call in invalid_calls:
+        with pytest.raises(ApplicationError) as captured:
+            invalid_call()
+        assert captured.value.code is ApplicationErrorCode.INVALID_INPUT
+
+
+@pytest.mark.parametrize("operation", ["update", "enabled", "admin"])
+def test_existing_subject_mutations_reject_malformed_repository_output(
+    operation: str,
+) -> None:
+    """Optimistic Subject mutations fail closed on a malformed result type."""
+    repository = _Repository()
+    repository.result = object()
+    application = _application(repository)
+
+    operation_calls = {
+        "update": lambda: application.update(
+            actor=_ACTOR,
+            subject="worker",
+            expected_version=1,
+            display_name="Renamed",
+        ),
+        "enabled": lambda: application.set_enabled(
+            actor=_ACTOR,
+            subject="worker",
+            expected_version=1,
+            enabled=False,
+        ),
+        "admin": lambda: application.set_instance_admin(
+            actor=_ACTOR,
+            subject="worker",
+            expected_version=1,
+            is_instance_admin=True,
+        ),
+    }
+    with pytest.raises(ApplicationError) as captured:
+        operation_calls[operation]()
+
+    assert captured.value.code is ApplicationErrorCode.INTERNAL_ERROR
+
+
+def test_subject_list_rejects_malformed_repository_output() -> None:
+    """Subject listing rejects a repository value outside its result contract."""
+    repository = _Repository()
+    repository.page = object()
+
+    with pytest.raises(ApplicationError) as captured:
+        _application(repository).list(actor=_ACTOR)
+
+    assert captured.value.code is ApplicationErrorCode.INTERNAL_ERROR

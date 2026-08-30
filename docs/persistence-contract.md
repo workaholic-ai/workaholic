@@ -830,6 +830,12 @@ must not duplicate a mutation.
 
 These constraints do not make physical layout part of the contract.
 
+SQLite empty-store initialization holds a bounded exclusive transaction until
+the complete schema commits. Concurrent initializers and readers therefore
+cannot observe or accept the newly created database file in a partial state;
+ordinary initialized-store reads and writes retain their existing transaction
+and lock behavior.
+
 ## Conformance suite
 
 Every supported adapter must pass the same observable-behavior suite. The suite

@@ -36,6 +36,8 @@ from workaholic.domain import (
 )
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from workaholic.application import Clock, IdentityIdentifierFactory, TokenRepository
 
 _NOW = datetime(2026, 8, 29, 12, tzinfo=UTC)
@@ -383,4 +385,118 @@ def test_recovery_rejects_mismatched_repository_identity() -> None:
             token_digest=_DIGEST,
             expires_at=_EXPIRES,
         )
+    assert captured.value.code is ApplicationErrorCode.INTERNAL_ERROR
+
+
+@pytest.mark.parametrize("operation", ["activate", "list", "revoke", "recover"])
+def test_token_operations_reject_invalid_runtime_input(operation: str) -> None:
+    """Every Token entry point validates runtime values before persistence."""
+    repository = _Repository()
+    application = _application(repository)
+
+    operation_calls: dict[str, Callable[[], object]] = {
+        "activate": lambda: application.activate(
+            actor=_ACTOR,
+            token_id=cast("TokenId", "tok_invalid"),
+        ),
+        "list": lambda: application.list(actor=_ACTOR, limit=0),
+        "revoke": lambda: application.revoke(
+            actor=_ACTOR,
+            token_id=cast("TokenId", "tok_invalid"),
+        ),
+        "recover": lambda: application.recover_local(
+            instance_id=_ACTOR.instance_id,
+            bootstrap_handle="local-operator",
+            token_id=_TOKEN_ID,
+            token_digest=_DIGEST[:4],
+            expires_at=_EXPIRES,
+        ),
+    }
+    with pytest.raises(ApplicationError) as captured:
+        operation_calls[operation]()
+
+    assert captured.value.code is ApplicationErrorCode.INVALID_INPUT
+    assert repository.calls == []
+
+
+@pytest.mark.parametrize("operation", ["issue", "activate", "list", "revoke"])
+def test_token_operations_reject_malformed_repository_result(operation: str) -> None:
+    """Token operations fail closed when repositories return unknown values."""
+    repository = _Repository()
+    repository.result = object()
+    repository.page = object()
+
+    with pytest.raises(ApplicationError) as captured:
+        _invoke_token_operation(_application(repository), operation)
+
+    assert captured.value.code is ApplicationErrorCode.INTERNAL_ERROR
+
+
+def test_self_token_listing_rejects_another_subjects_tokens() -> None:
+    """An implicit self-list cannot expose another Subject's Token metadata."""
+    repository = _Repository()
+    repository.page = TokenPage(
+        tokens=(_token(TokenStatus.ACTIVE, subject_id=SubjectId("sub_other")),),
+        next_cursor=None,
+    )
+
+    with pytest.raises(ApplicationError) as captured:
+        _application(repository).list(actor=_ACTOR)
+
+    assert captured.value.code is ApplicationErrorCode.INTERNAL_ERROR
+
+
+@pytest.mark.parametrize(
+    "result",
+    [
+        object(),
+        CurrentIdentityResult.model_construct(
+            subject=replace(_recovered_identity().subject, handle="other-operator"),
+            token=_recovered_identity().token,
+        ),
+        CurrentIdentityResult.model_construct(
+            subject=replace(
+                _recovered_identity().subject,
+                kind=SubjectKind.AGENT,
+            ),
+            token=_recovered_identity().token,
+        ),
+        CurrentIdentityResult.model_construct(
+            subject=_recovered_identity().subject,
+            token=replace(
+                _recovered_identity().token,
+                id=TokenId("tok_other"),
+            ),
+        ),
+        CurrentIdentityResult.model_construct(
+            subject=_recovered_identity().subject,
+            token=replace(
+                _recovered_identity().token,
+                subject_id=SubjectId("sub_other"),
+            ),
+        ),
+        CurrentIdentityResult.model_construct(
+            subject=_recovered_identity().subject,
+            token=replace(
+                _recovered_identity().token,
+                status=TokenStatus.PENDING,
+                activated_at=None,
+            ),
+        ),
+    ],
+)
+def test_recovery_rejects_every_mismatched_output(result: object) -> None:
+    """Recovery validates every identity and Token lifecycle invariant."""
+    repository = _Repository()
+    repository.recovery_result = result
+
+    with pytest.raises(ApplicationError) as captured:
+        _application(repository).recover_local(
+            instance_id=_ACTOR.instance_id,
+            bootstrap_handle="local-operator",
+            token_id=_TOKEN_ID,
+            token_digest=_DIGEST,
+            expires_at=_EXPIRES,
+        )
+
     assert captured.value.code is ApplicationErrorCode.INTERNAL_ERROR

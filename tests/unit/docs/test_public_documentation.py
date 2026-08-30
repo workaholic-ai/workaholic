@@ -312,14 +312,16 @@ def test_readme_publishes_current_checks_and_clean_state_gate() -> None:
         "scripts/verify-phase-2.sh",
         "scripts/verify-phase-3.sh",
         "scripts/verify-phase-4.sh",
+        "scripts/verify-phase-5.sh",
+        "scripts/smoke-phase-5-wheel.sh",
     ):
         assert command in readme
     for guarantee in (
         "## Current clean-state acceptance gate",
         "active virtual environment",
         "refuses a dirty checkout",
-        "temporary config, data, and Workspace roots",
-        "Phase 4 wheel journey",
+        "temporary config, credential, data, Token-file, and Workspace roots",
+        "Phase 5 identity journey",
     ):
         assert guarantee in readme
 

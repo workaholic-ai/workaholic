@@ -320,3 +320,50 @@ def test_constructor_runtime_validates_repository_contract() -> None:
             clock=cast("Clock", _Clock()),
             identifiers=cast("IdentityIdentifierFactory", _Identifiers()),
         )
+
+
+def test_assign_and_list_reject_invalid_runtime_input() -> None:
+    """Grant commands validate roles and pagination before persistence."""
+    repository = _Repository()
+    application = _application(repository)
+
+    with pytest.raises(ApplicationError) as invalid_assignment:
+        application.assign(
+            actor=_ACTOR,
+            subject=_SUBJECT_ID,
+            project=_PROJECT_ID,
+            role=cast("ProjectRole", "superuser"),
+        )
+    with pytest.raises(ApplicationError) as invalid_listing:
+        application.list(actor=_ACTOR, project=_PROJECT_ID, limit=0)
+
+    assert invalid_assignment.value.code is ApplicationErrorCode.INVALID_INPUT
+    assert invalid_listing.value.code is ApplicationErrorCode.INVALID_INPUT
+    assert repository.calls == []
+
+
+@pytest.mark.parametrize("operation", ["assign", "list", "revoke"])
+def test_grant_operations_reject_malformed_repository_result(operation: str) -> None:
+    """All grant operations fail closed when adapters violate result types."""
+    repository = _Repository()
+    repository.result = object()
+    repository.page = object()
+
+    with pytest.raises(ApplicationError) as captured:
+        _invoke_grant_operation(_application(repository), operation)
+
+    assert captured.value.code is ApplicationErrorCode.INTERNAL_ERROR
+
+
+def test_grant_listing_rejects_cross_instance_output() -> None:
+    """Grant pages cannot leak rows from another Instance."""
+    repository = _Repository()
+    repository.page = ProjectGrantPage(
+        grants=(replace(_grant(), instance_id=InstanceId("ins_other")),),
+        next_cursor=None,
+    )
+
+    with pytest.raises(ApplicationError) as captured:
+        _application(repository).list(actor=_ACTOR, project="LOCAL")
+
+    assert captured.value.code is ApplicationErrorCode.INTERNAL_ERROR

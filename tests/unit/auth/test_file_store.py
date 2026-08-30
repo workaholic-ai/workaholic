@@ -5,7 +5,7 @@ from __future__ import annotations
 import stat
 import tempfile
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 import pytest
 
@@ -13,8 +13,17 @@ from tests.unit.auth.test_credentials import _credential
 
 if TYPE_CHECKING:
     from os import PathLike
+
+    from workaholic.auth import HumanCredential
 from workaholic.application import CredentialUnavailableError, InvalidInputError
 from workaholic.auth import FileCredentialStore
+from workaholic.auth.file_store import (
+    _ensure_protected_directory,
+    _optional_safe_file_metadata,
+    _require_same_directory,
+    _safe_lstat,
+    _serialize_document,
+)
 
 
 def _store(tmp_path: Path) -> FileCredentialStore:
@@ -211,3 +220,117 @@ def test_concurrent_target_change_is_rejected_before_replace(
         store.replace(_credential("staging"))
     assert store.credentials_file.read_text(encoding="utf-8") == "attacker change"
     assert not tuple(store.credentials_file.parent.glob(".credentials.*"))
+
+
+@pytest.mark.parametrize(
+    ("directory", "credential_file"),
+    [
+        ("relative", "relative/credentials.toml"),
+        (Path("relative"), Path("relative/credentials.toml")),
+        (Path.cwd() / "credentials", Path.cwd() / "other.toml"),
+    ],
+)
+def test_file_store_constructor_rejects_invalid_path_contract(
+    directory: object,
+    credential_file: object,
+) -> None:
+    """The protected file location requires exact absolute Path operands."""
+    with pytest.raises(InvalidInputError):
+        FileCredentialStore(
+            cast("Path", directory),
+            cast("Path", credential_file),
+        )
+
+
+@pytest.mark.parametrize("forbidden_root", ["not-a-path", Path("relative")])
+def test_file_store_rejects_invalid_forbidden_roots(
+    forbidden_root: object,
+    tmp_path: Path,
+) -> None:
+    """Forbidden roots themselves must be trusted absolute Path values."""
+    directory = tmp_path / "credentials"
+    with pytest.raises(InvalidInputError):
+        FileCredentialStore(
+            directory,
+            directory / "credentials.toml",
+            forbidden_roots=(cast("Path", forbidden_root),),
+        )
+
+
+def test_file_store_replace_rejects_malformed_credential(tmp_path: Path) -> None:
+    """The file adapter does not accept a credential-shaped arbitrary object."""
+    with pytest.raises(InvalidInputError):
+        _store(tmp_path).replace(cast("HumanCredential", object()))
+
+
+def test_file_store_rejects_non_directory_and_unsafe_directory_mode(
+    tmp_path: Path,
+) -> None:
+    """The protected root must remain a real account-only directory."""
+    file_path = tmp_path / "not-a-directory"
+    file_path.write_text("content", encoding="utf-8")
+    with pytest.raises(CredentialUnavailableError):
+        _ensure_protected_directory(file_path)
+
+    directory = tmp_path / "unsafe-directory"
+    directory.mkdir(mode=0o700)
+    directory.chmod(0o755)
+    with pytest.raises(CredentialUnavailableError):
+        _ensure_protected_directory(directory)
+
+
+def test_file_store_internal_metadata_errors_are_mapped(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Filesystem inspection failures never escape as raw operating-system errors."""
+    missing = tmp_path / "missing"
+
+    def fail_lstat(_path: Path) -> object:
+        """Raise a simulated private metadata failure."""
+        message = "private metadata failure"
+        raise PermissionError(message)
+
+    monkeypatch.setattr(Path, "lstat", fail_lstat)
+    with pytest.raises(CredentialUnavailableError):
+        _safe_lstat(missing)
+    with pytest.raises(CredentialUnavailableError):
+        _optional_safe_file_metadata(missing)
+
+
+def test_file_store_detects_changed_directory_identity(tmp_path: Path) -> None:
+    """Atomic writes reject a directory whose identity changes mid-operation."""
+    first = tmp_path / "first"
+    second = tmp_path / "second"
+    first.mkdir(mode=0o700)
+    second.mkdir(mode=0o700)
+
+    with pytest.raises(CredentialUnavailableError):
+        _require_same_directory(first.stat(), second.stat())
+
+
+def test_file_store_serializer_rejects_profile_key_mismatch() -> None:
+    """Registry serialization binds each entry to its exact profile key."""
+    with pytest.raises(CredentialUnavailableError):
+        _serialize_document({"staging": _credential("local")})
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        b'version = 1\ncredentials = "invalid"\n',
+        b'version = 1\n[credentials.local]\ninstance_id = "ins_local"\n',
+    ],
+)
+def test_file_store_rejects_malformed_credential_entries(
+    content: bytes,
+    tmp_path: Path,
+) -> None:
+    """Every persisted profile entry must match the exact closed schema."""
+    store = _store(tmp_path)
+    store.credentials_file.parent.mkdir(parents=True, mode=0o700)
+    store.credentials_file.write_bytes(content)
+    store.credentials_file.chmod(0o600)
+
+    with pytest.raises(CredentialUnavailableError):
+        store.load("local")

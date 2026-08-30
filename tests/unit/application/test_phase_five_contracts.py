@@ -503,6 +503,54 @@ def test_identity_pages_validate_scope_order_and_cursor_shape() -> None:
         )
 
 
+def test_identity_pages_reject_every_scope_and_order_violation() -> None:
+    """Identity pages enforce uniqueness, order, and one exact target scope."""
+    first_subject = _subject(subject_id=SubjectId("sub_a"), handle="alpha")
+    cross_instance_subject = replace(
+        _subject(subject_id=SubjectId("sub_b"), handle="bravo"),
+        instance_id=InstanceId("ins_other"),
+    )
+    duplicate_grant = _grant()
+    cross_project_grant = replace(_grant(), project_id=ProjectId("prj_other"))
+    first_token = _token(token_id=TokenId("tok_a"))
+    earlier_token = _token(
+        token_id=TokenId("tok_b"),
+        created_at=_NOW - timedelta(seconds=1),
+    )
+
+    invalid_pages = (
+        lambda: SubjectPage(
+            subjects=(first_subject, first_subject),
+            next_cursor=None,
+        ),
+        lambda: SubjectPage(
+            subjects=(first_subject, cross_instance_subject),
+            next_cursor=None,
+        ),
+        lambda: ProjectGrantPage(
+            grants=(duplicate_grant, duplicate_grant),
+            next_cursor=None,
+        ),
+        lambda: ProjectGrantPage(
+            grants=(duplicate_grant, cross_project_grant),
+            next_cursor=None,
+        ),
+        lambda: TokenPage(
+            tokens=(first_token, earlier_token),
+            next_cursor=None,
+        ),
+        lambda: TokenPage(
+            tokens=(first_token, first_token),
+            next_cursor=None,
+        ),
+    )
+    for invalid_page in invalid_pages:
+        with pytest.raises(ValidationError):
+            invalid_page()
+
+    assert ProjectGrantPage(grants=(), next_cursor=None).grants == ()
+
+
 def test_audit_results_freeze_payload_and_require_ascending_instance_page() -> None:
     """Administrative audit results are closed, immutable, and cursor ordered."""
     event = AuditEventResult(
@@ -529,6 +577,39 @@ def test_audit_results_freeze_payload_and_require_ascending_instance_page() -> N
         page.events[0].payload["handle"] = "changed"  # type: ignore[index]
     with pytest.raises(ValidationError):
         AuditEventPage(events=(event,), next_cursor=2)
+
+
+def test_audit_page_rejects_invalid_cursor_order_and_instance_scope() -> None:
+    """Audit pages bind ascending unique cursors to one Instance and final cursor."""
+    first = AuditEventResult(
+        id=AuditEventId("aev_first"),
+        cursor=1,
+        instance_id=_INSTANCE_ID,
+        actor_subject_id=_SUBJECT_ID,
+        actor_kind=SubjectKind.HUMAN,
+        actor_token_id=_TOKEN_ID,
+        request_id=RequestId("req_first"),
+        event_type=AuditEventType.SUBJECT_CREATED,
+        occurred_at=_NOW,
+        payload={
+            "subject_id": "sub_agent",
+            "handle": "build-agent",
+            "kind": "agent",
+            "version": 1,
+        },
+    )
+    second = first.model_copy(update={"id": AuditEventId("aev_second"), "cursor": 2})
+    cross_instance = second.model_copy(update={"instance_id": InstanceId("ins_other")})
+
+    assert AuditEventPage(events=(), next_cursor=0).events == ()
+    for values in (
+        {"events": (second, first), "next_cursor": 1},
+        {"events": (first, first), "next_cursor": 1},
+        {"events": (first, cross_instance), "next_cursor": 2},
+        {"events": (first,), "next_cursor": True},
+    ):
+        with pytest.raises(ValidationError):
+            AuditEventPage.model_validate(values)
 
 
 def test_phase_five_ports_are_narrow_explicit_and_secret_free() -> None:

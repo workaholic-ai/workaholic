@@ -73,12 +73,22 @@ from workaholic.persistence.sqlite._records import (
     parse_timestamp,
     project_from_mapping,
     project_from_row,
+    project_grant_from_mapping,
+    project_grant_from_row,
+    project_grant_to_mapping,
     project_to_mapping,
     require_boolean,
     require_integer,
     require_optional_text,
     require_text,
     serialize_timestamp,
+    subject_from_mapping,
+    subject_from_row,
+    subject_to_mapping,
+    token_from_row,
+    token_summary_from_mapping,
+    token_summary_to_mapping,
+    token_to_summary,
 )
 from workaholic.persistence.sqlite._result_records import (
     TASK_RESULT_FIELDS,
@@ -364,6 +374,44 @@ def test_project_serializer_runtime_validates_input() -> None:
     """The record writer does not trust its Project type hint."""
     with pytest.raises(StorageUnavailableError):
         project_to_mapping(cast("Project", object()))
+
+
+def test_identity_record_codecs_reject_unknown_runtime_values() -> None:
+    """Phase 5 identity codecs validate exact mapping, row, and entity types."""
+    for serializer in (
+        project_grant_to_mapping,
+        subject_to_mapping,
+        token_summary_to_mapping,
+    ):
+        with pytest.raises(StorageUnavailableError):
+            serializer(object())  # type: ignore[arg-type]
+
+    for mapping_loader in (
+        project_grant_from_mapping,
+        subject_from_mapping,
+        token_summary_from_mapping,
+    ):
+        with pytest.raises(StorageUnavailableError):
+            mapping_loader(cast("dict[str, object]", object()))
+        with pytest.raises(StorageUnavailableError):
+            mapping_loader({})
+
+    for row_loader in (
+        project_grant_from_row,
+        subject_from_row,
+        token_from_row,
+    ):
+        with pytest.raises(StorageUnavailableError):
+            row_loader(cast("tuple[object, ...]", "not-a-row"))
+        with pytest.raises(StorageUnavailableError):
+            row_loader(())
+
+    with pytest.raises(StorageUnavailableError):
+        token_to_summary(object(), now=_NOW)  # type: ignore[arg-type]
+    with pytest.raises(StorageUnavailableError):
+        token_to_summary(object(), now=cast("datetime", object()))  # type: ignore[arg-type]
+    with pytest.raises(StorageUnavailableError):
+        canonical_json(cast("dict[str, object]", object()))
 
 
 def test_complete_task_record_round_trips_mapping_and_sqlite_row() -> None:

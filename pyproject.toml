@@ -97,6 +97,8 @@ source = [
 exclude_also = [
   "if TYPE_CHECKING:",
   "if __name__ == .__main__.:",
+  "^\\s*\\.\\.\\.$",
+  "raise NotImplementedError",
 ]
 precision = 2
 show_missing = true
@@ -104,6 +106,7 @@ skip_covered = true
 
 [tool.coverage.run]
 branch = true
+patch = ["subprocess"]
 relative_files = true
 source = ["workaholic"]
 

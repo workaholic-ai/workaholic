@@ -266,3 +266,34 @@ def test_token_help_documents_protected_output_and_is_side_effect_free() -> None
     assert "raw bearer Tokens" in unstyle(revoke.stdout)
     assert "accepted" in unstyle(revoke.stdout)
     assert provider.call_count == 0
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        ["revoke-token", "tok_cli"],
+    ],
+)
+def test_token_mutations_reject_invalid_session_results(arguments: list[str]) -> None:
+    """Token renderers reject untyped Session results without disclosure."""
+    session = RecordingSession()
+    session.token_result = object()  # type: ignore[assignment]
+
+    result = _RUNNER.invoke(
+        create_app(SessionProviderSpy(session)),
+        ["auth", *arguments, "--json"],
+    )
+
+    require_error(_completed(result), expected_code="INTERNAL_ERROR")
+
+
+def test_token_and_audit_lists_reject_invalid_session_pages() -> None:
+    """Token and audit pagination accept only their exact validated page types."""
+    for command, attribute in (
+        (["auth", "list-tokens", "--json"], "token_page_result"),
+        (["auth", "events", "--json"], "audit_event_page_result"),
+    ):
+        session = RecordingSession()
+        setattr(session, attribute, object())
+        result = _RUNNER.invoke(create_app(SessionProviderSpy(session)), command)
+        require_error(_completed(result), expected_code="INTERNAL_ERROR")

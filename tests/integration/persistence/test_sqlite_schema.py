@@ -7,6 +7,7 @@ import sqlite3
 import stat
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from threading import Event
 from typing import TYPE_CHECKING, Never, Protocol, cast
 
 import pytest
@@ -22,6 +23,7 @@ from workaholic.persistence.sqlite import (
     open_write_transaction,
     validate_store_schema,
 )
+from workaholic.persistence.sqlite import schema as sqlite_schema
 from workaholic.persistence.sqlite._driver import _connect
 from workaholic.persistence.sqlite._records import (
     EVENT_PAYLOAD_JSON_MAX_LENGTH,
@@ -1996,6 +1998,47 @@ def test_concurrent_first_initialization_produces_one_valid_schema(
         assert connection.execute("SELECT count(*) FROM store_metadata").fetchone() == (
             1,
         )
+
+
+def test_reader_cannot_observe_uncommitted_initialization(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """A reader waits for the complete schema instead of seeing an empty file."""
+    database_path = tmp_path / "concurrent" / "local.db"
+    schema_creation_started = Event()
+    allow_schema_creation = Event()
+    reader_finished = Event()
+    create_schema = sqlite_schema._create_schema
+
+    def pause_before_schema(connection: sqlite3.Connection) -> None:
+        """Expose the post-connect, pre-schema window to the concurrent reader."""
+        schema_creation_started.set()
+        assert allow_schema_creation.wait(timeout=5)
+        create_schema(connection)
+
+    def read_initialized_store() -> int:
+        """Read only after initialization publishes one complete schema."""
+        try:
+            with open_read_connection(database_path) as connection:
+                row = connection.execute(
+                    "SELECT schema_version FROM store_metadata"
+                ).fetchone()
+                assert row is not None
+                return cast("int", row[0])
+        finally:
+            reader_finished.set()
+
+    monkeypatch.setattr(sqlite_schema, "_create_schema", pause_before_schema)
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        initializer = executor.submit(initialize_empty_store, database_path)
+        assert schema_creation_started.wait(timeout=5)
+        reader = executor.submit(read_initialized_store)
+        assert not reader_finished.wait(timeout=0.1)
+        allow_schema_creation.set()
+
+        assert initializer.result(timeout=5) is None
+        assert reader.result(timeout=5) == SCHEMA_VERSION
 
 
 def test_initialization_failure_rolls_back_every_schema_object(

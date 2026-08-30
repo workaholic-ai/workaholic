@@ -2,18 +2,18 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 import pytest
 from keyring.errors import KeyringError
 
 from tests.unit.auth.test_credentials import _credential
-from workaholic.application import CredentialUnavailableError
-from workaholic.auth import KeyringCredentialStore
+from workaholic.application import CredentialUnavailableError, InvalidInputError
+from workaholic.auth import HumanCredential, KeyringCredentialStore
 from workaholic.auth.credentials import serialize_credential_json
 
 if TYPE_CHECKING:
-    from workaholic.auth import HumanCredential
+    from workaholic.auth.keyring_store import KeyringProvider
 
 
 class _FakeKeyring:
@@ -123,3 +123,58 @@ def test_malformed_or_cross_profile_keyring_value_fails_closed() -> None:
     )
     with pytest.raises(CredentialUnavailableError):
         store.load("local")
+
+
+def test_keyring_constructor_and_replace_validate_runtime_protocols() -> None:
+    """Keyring boundaries reject incomplete providers and malformed credentials."""
+    with pytest.raises(InvalidInputError):
+        KeyringCredentialStore(cast("KeyringProvider", object()))
+    with pytest.raises(InvalidInputError):
+        KeyringCredentialStore(_FakeKeyring()).replace(
+            cast("HumanCredential", object())
+        )
+
+
+def test_system_keyring_discovery_maps_backend_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """System discovery returns a valid provider or one stable safe error."""
+    provider = _FakeKeyring()
+    monkeypatch.setattr(
+        "workaholic.auth.keyring_store.keyring.get_keyring", lambda: provider
+    )
+    assert KeyringCredentialStore.system().is_available()
+
+    def fail_discovery() -> object:
+        """Raise a simulated private keyring discovery failure."""
+        message = "private discovery failure"
+        raise KeyringError(message)
+
+    monkeypatch.setattr(
+        "workaholic.auth.keyring_store.keyring.get_keyring",
+        fail_discovery,
+    )
+    with pytest.raises(CredentialUnavailableError):
+        KeyringCredentialStore.system()
+
+
+def test_keyring_availability_rejects_failure_and_invalid_priority() -> None:
+    """Availability requires a readable numeric provider priority."""
+
+    class _FailingPriority(_FakeKeyring):
+        """Provider whose priority lookup fails operationally."""
+
+        def __getattribute__(self, name: str) -> object:
+            """Fail only the simulated priority lookup."""
+            if name == "priority":
+                message = "private priority failure"
+                raise KeyringError(message)
+            return super().__getattribute__(name)
+
+    invalid_priority = _FakeKeyring()
+    invalid_priority.priority = cast("float", "high")
+
+    with pytest.raises(CredentialUnavailableError):
+        KeyringCredentialStore(_FailingPriority()).is_available()
+    with pytest.raises(CredentialUnavailableError):
+        KeyringCredentialStore(invalid_priority).is_available()

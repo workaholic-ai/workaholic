@@ -6,7 +6,8 @@ import ast
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import TYPE_CHECKING
+from types import SimpleNamespace
+from typing import TYPE_CHECKING, Any, cast
 
 import pytest
 
@@ -37,7 +38,9 @@ from workaholic.domain import (
     require_permission,
     require_subject_kind,
     validate_audit_event_payload,
+    validate_json_value,
     validate_subject_handle,
+    validate_uri_reference,
 )
 
 if TYPE_CHECKING:
@@ -457,6 +460,335 @@ def test_every_audit_payload_schema_accepts_one_exact_example() -> None:
     assert set(payloads) == set(AuditEventType)
     for event_type, payload in payloads.items():
         validate_audit_event_payload(event_type, payload)
+
+
+@pytest.mark.parametrize(
+    ("event_type", "payload", "message"),
+    [
+        ("token_revoked", {}, "event_type"),
+        (AuditEventType.TOKEN_REVOKED, [], "mapping"),
+        (
+            AuditEventType.TOKEN_REVOKED,
+            {"token_id": 1, "subject_id": "sub_operator"},
+            "token_id",
+        ),
+        (
+            AuditEventType.TOKEN_REVOKED,
+            {"token_id": "not-a-token", "subject_id": "sub_operator"},
+            "token_id",
+        ),
+        (
+            AuditEventType.PROJECT_CREATED,
+            {
+                "project_id": "prj_acme",
+                "project_key": "lowercase",
+                "owner_subject_id": "sub_operator",
+            },
+            "Project key",
+        ),
+        (
+            AuditEventType.SUBJECT_CREATED,
+            {
+                "subject_id": "sub_operator",
+                "handle": "Bad Handle",
+                "kind": "human",
+                "version": 1,
+            },
+            "Subject handle",
+        ),
+        (
+            AuditEventType.SUBJECT_CREATED,
+            {
+                "subject_id": "sub_operator",
+                "handle": "local-operator",
+                "kind": 1,
+                "version": 1,
+            },
+            "kind must be a string",
+        ),
+        (
+            AuditEventType.SUBJECT_CREATED,
+            {
+                "subject_id": "sub_operator",
+                "handle": "local-operator",
+                "kind": "robot",
+                "version": 1,
+            },
+            "kind is invalid",
+        ),
+        (
+            AuditEventType.PROJECT_GRANT_ASSIGNED,
+            {
+                "project_id": "prj_acme",
+                "subject_id": "sub_operator",
+                "role": "administrator",
+                "version": 1,
+            },
+            "role is invalid",
+        ),
+        (
+            AuditEventType.SUBJECT_ENABLED,
+            {"subject_id": "sub_operator", "version": 0},
+            "version",
+        ),
+        (
+            AuditEventType.TOKEN_ISSUED,
+            {
+                "token_id": "tok_example",
+                "subject_id": "sub_operator",
+                "expires_at": "tomorrow",
+            },
+            "expires_at",
+        ),
+    ],
+)
+def test_audit_payload_rejects_each_untrusted_field_boundary(
+    event_type: object,
+    payload: object,
+    message: str,
+) -> None:
+    """Administrative audit parsing fails closed at every typed field boundary."""
+    with pytest.raises(DomainValidationError, match=message):
+        validate_audit_event_payload(event_type, payload)
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        float("inf"),
+        "x" * 65_537,
+        {"": None},
+        {"x" * 129: None},
+        {str(index): None for index in range(257)},
+        [None] * 1_025,
+        object(),
+    ],
+)
+def test_audit_json_rejects_nonfinite_and_bounded_values(value: object) -> None:
+    """Audit JSON cannot smuggle unsupported or resource-exhausting values."""
+    with pytest.raises(DomainValidationError):
+        validate_json_value(value, label="payload")
+
+
+def test_audit_json_rejects_excessive_recursive_depth() -> None:
+    """Recursive audit JSON has a deterministic maximum nesting depth."""
+    value: object = None
+    for _index in range(18):
+        value = [value]
+
+    with pytest.raises(DomainValidationError, match="maximum JSON depth"):
+        validate_json_value(value, label="payload")
+
+
+@pytest.mark.parametrize("value", ["https://[invalid", "relative/path", "x:%ZZ"])
+def test_uri_references_fail_closed_without_dereferencing(value: str) -> None:
+    """Malformed external references are rejected as inert data."""
+    with pytest.raises(DomainValidationError, match="URI"):
+        validate_uri_reference(value, label="Artifact URI")
+
+
+def test_authorization_rules_reject_malformed_and_cross_scope_inputs() -> None:
+    """Permission checks reject malformed state before evaluating authority."""
+    subject = _subject()
+    grant = _grant()
+
+    invalid_calls = [
+        {"subject": object(), "permission": Permission.MANAGE_INSTANCE},
+        {"subject": subject, "permission": "manage_instance"},
+        {
+            "subject": subject,
+            "permission": Permission.MANAGE_INSTANCE,
+            "target_instance_id": "ins_local",
+        },
+        {
+            "subject": subject,
+            "permission": Permission.VIEW_PROJECT,
+            "target_project_id": None,
+        },
+    ]
+    for overrides in invalid_calls:
+        arguments: dict[str, object] = {
+            "subject": subject,
+            "grant": grant,
+            "permission": Permission.MANAGE_INSTANCE,
+            "target_instance_id": _INSTANCE_ID,
+        }
+        arguments.update(overrides)
+        with pytest.raises(DomainValidationError):
+            require_permission(**arguments)
+
+    unsafe_subject = SimpleNamespace(
+        id=_SUBJECT_ID,
+        instance_id=_INSTANCE_ID,
+        kind=SubjectKind.HUMAN,
+        enabled=1,
+        is_instance_admin=True,
+    )
+    with pytest.raises(DomainValidationError, match="booleans"):
+        require_permission(
+            subject=unsafe_subject,
+            grant=grant,
+            permission=Permission.MANAGE_INSTANCE,
+            target_instance_id=_INSTANCE_ID,
+        )
+    with pytest.raises(DomainPermissionError):
+        require_permission(
+            subject=replace(subject, instance_id=InstanceId("ins_other")),
+            grant=grant,
+            permission=Permission.MANAGE_INSTANCE,
+            target_instance_id=_INSTANCE_ID,
+        )
+    with pytest.raises(DomainPermissionError):
+        require_permission(
+            subject=subject,
+            grant=replace(grant, project_id=ProjectId("prj_other")),
+            permission=Permission.VIEW_PROJECT,
+            target_instance_id=_INSTANCE_ID,
+            target_project_id=_PROJECT_ID,
+        )
+
+
+def test_subject_kind_and_role_rules_reject_loose_runtime_values() -> None:
+    """Role and Subject-kind policy inputs require their exact enum types."""
+    with pytest.raises(DomainValidationError, match="Project role"):
+        project_role_implies("owner", Permission.VIEW_PROJECT)
+    with pytest.raises(DomainValidationError, match="Permission"):
+        project_role_implies(ProjectRole.OWNER, "view_project")
+    with pytest.raises(DomainValidationError, match="Subject value"):
+        require_subject_kind(object(), SubjectKind.HUMAN)
+    with pytest.raises(DomainValidationError, match="Required Subject kind"):
+        require_subject_kind(_subject(), "human")
+    with pytest.raises(DomainPermissionError):
+        require_subject_kind(replace(_subject(), enabled=False), SubjectKind.HUMAN)
+
+
+def test_token_status_rejects_malformed_projections_and_times() -> None:
+    """Token status never trusts a loose projection or non-datetime clock value."""
+    with pytest.raises(DomainValidationError, match="lifecycle value"):
+        derive_token_status(object(), now=_NOW)
+    with pytest.raises(DomainValidationError, match="must be a datetime"):
+        derive_token_status(_token(), now="2026-09-01T09:00:00Z")
+
+
+def test_identity_survival_guards_reject_malformed_collections() -> None:
+    """Last-admin and last-Owner guards validate complete typed prospective sets."""
+    with pytest.raises(DomainValidationError):
+        require_enabled_instance_administrator(
+            [_subject()],
+            instance_id=cast("InstanceId", "ins_local"),
+        )
+    with pytest.raises(DomainValidationError):
+        require_enabled_instance_administrator(
+            cast("list[object]", None),
+            instance_id=_INSTANCE_ID,
+        )
+    with pytest.raises(DomainValidationError):
+        require_enabled_instance_administrator(
+            [object()],
+            instance_id=_INSTANCE_ID,
+        )
+
+    with pytest.raises(DomainValidationError, match="instance_id"):
+        require_enabled_project_owner(
+            [_subject()],
+            [_grant()],
+            instance_id=cast("InstanceId", "ins_local"),
+            project_id=_PROJECT_ID,
+        )
+    with pytest.raises(DomainValidationError, match="project_id"):
+        require_enabled_project_owner(
+            [_subject()],
+            [_grant()],
+            instance_id=_INSTANCE_ID,
+            project_id=cast("ProjectId", "prj_acme"),
+        )
+    with pytest.raises(DomainValidationError, match="iterable"):
+        require_enabled_project_owner(
+            cast("list[object]", None),
+            [_grant()],
+            instance_id=_INSTANCE_ID,
+            project_id=_PROJECT_ID,
+        )
+    with pytest.raises(DomainValidationError, match="iterable"):
+        require_enabled_project_owner(
+            [_subject()],
+            cast("list[object]", None),
+            instance_id=_INSTANCE_ID,
+            project_id=_PROJECT_ID,
+        )
+    with pytest.raises(DomainValidationError):
+        require_enabled_project_owner(
+            [object()],
+            [_grant()],
+            instance_id=_INSTANCE_ID,
+            project_id=_PROJECT_ID,
+        )
+    with pytest.raises(DomainValidationError):
+        require_enabled_project_owner(
+            [_subject()],
+            [object()],
+            instance_id=_INSTANCE_ID,
+            project_id=_PROJECT_ID,
+        )
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"expires_at": _NOW},
+        {"activated_at": _NOW - timedelta(seconds=1)},
+        {"activated_at": _NOW + timedelta(days=1)},
+        {"revoked_at": _NOW - timedelta(seconds=1), "revoked_by": _SUBJECT_ID},
+        {
+            "activated_at": _NOW + timedelta(seconds=2),
+            "revoked_at": _NOW + timedelta(seconds=1),
+            "revoked_by": _SUBJECT_ID,
+        },
+        {"revoked_by": "sub_operator", "revoked_at": _NOW},
+    ],
+)
+def test_token_entity_rejects_invalid_lifecycle_ordering(
+    changes: dict[str, object],
+) -> None:
+    """Persisted Tokens enforce activation, expiry, and revocation ordering."""
+    with pytest.raises(DomainValidationError):
+        replace(_token(), **cast("Any", changes))
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"expires_at": _NOW},
+        {"activated_at": _NOW - timedelta(seconds=1)},
+        {"activated_at": _NOW + timedelta(days=1)},
+        {"revoked_at": _NOW - timedelta(seconds=1), "revoked_by": _SUBJECT_ID},
+        {
+            "activated_at": _NOW + timedelta(seconds=2),
+            "revoked_at": _NOW + timedelta(seconds=1),
+            "revoked_by": _SUBJECT_ID,
+        },
+        {"status": TokenStatus.PENDING},
+        {"status": TokenStatus.REVOKED},
+    ],
+)
+def test_token_summary_rejects_inconsistent_public_lifecycle(
+    changes: dict[str, object],
+) -> None:
+    """Public Token metadata cannot contradict its visible status."""
+    token = _token()
+    summary = TokenSummary(
+        id=token.id,
+        subject_id=token.subject_id,
+        status=TokenStatus.ACTIVE,
+        created_by=token.created_by,
+        created_at=token.created_at,
+        activated_at=token.activated_at,
+        expires_at=token.expires_at,
+        revoked_at=None,
+        revoked_by=None,
+    )
+    with pytest.raises(DomainValidationError):
+        replace(summary, **cast("Any", changes))
 
 
 def test_domain_import_graph_remains_dependency_free() -> None:

@@ -23,6 +23,10 @@ public versioning begins.
 - Cumulative Phase 5 repository and `LocalSession` contracts plus a
   fresh-process golden journey covering a Human operator and two independently
   authenticated Agents.
+- A fail-fast Phase 5 clean-state gate and isolated installed-wheel journey
+  covering Human/two-Agent identity, all four Project roles, cross-scope and
+  cross-Attempt denial, revocation, disablement, restart audit attribution, and
+  unchanged rejection of disposable schema version `4`.
 
 ### Changed
 
@@ -30,6 +34,8 @@ public versioning begins.
   `5`; schema version `4` is rejected unchanged and has no migration path.
 - Authenticated every normal operation as one active Token and enabled Subject,
   with authorization revalidated inside each persistence transaction.
+- Made empty-store initialization exclusive so concurrent first-run readers
+  cannot observe SQLite before its complete schema transaction commits.
 - Recorded real Subject identity and immutable Human or Agent kind in TaskEvent
   history while retaining exact Claim and Attempt ownership semantics.
 

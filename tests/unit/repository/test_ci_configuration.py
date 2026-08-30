@@ -263,7 +263,7 @@ def test_wheel_smoke_job_cannot_fall_back_to_an_editable_install() -> None:
 
     assert commands == (
         "scripts/smoke-install.sh dist/workaholic_ai-*.whl",
-        "scripts/smoke-phase-4-wheel.sh dist/workaholic_ai-*.whl",
+        "scripts/smoke-phase-5-wheel.sh dist/workaholic_ai-*.whl",
     )
     assert all("uv sync" not in command for command in commands)
     assert all("uv run" not in command for command in commands)

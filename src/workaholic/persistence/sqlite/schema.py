@@ -823,8 +823,9 @@ _EXPECTED_SCHEMA_SIGNATURE: Final = _schema_signature_from_statements(
 def initialize_empty_store(database_path: Path) -> None:
     """Atomically create or accept one empty Phase 5 SQLite store.
 
-    Concurrent callers serialize through a bounded immediate transaction. An
-    existing nonempty store is validated and never repaired or migrated.
+    Concurrent callers and pre-authentication readers serialize through a
+    bounded exclusive transaction. An existing nonempty store is validated and
+    never repaired or migrated.
 
     Args:
         database_path: Absolute target path for the SQLite database.

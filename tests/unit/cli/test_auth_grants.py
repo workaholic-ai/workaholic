@@ -10,7 +10,19 @@ from tests.golden import require_error, require_object, require_success
 from tests.unit.cli.fakes import RecordingSession, SessionProviderSpy
 from typer.testing import CliRunner, Result
 
-from workaholic.application import ApplicationError, ApplicationErrorCode
+from workaholic.application import (
+    ApplicationError,
+    ApplicationErrorCode,
+    ProjectGrantPage,
+    SubjectPage,
+)
+from workaholic.cli.auth_admin import (
+    _find_grant,
+    _find_subject,
+    _is_interactive_mode,
+    _require_grant_page,
+    _require_subject_page,
+)
 from workaholic.cli.main import create_app
 from workaholic.domain import ProjectId, ProjectRole, SubjectId
 from workaholic.session import (
@@ -292,3 +304,158 @@ def test_grant_help_is_complete_and_side_effect_free() -> None:
     assert "--cursor" in unstyle(listing.stdout)
     assert "--expected-version" in unstyle(revoke.stdout)
     assert provider.call_count == 0
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        ["grant", "sub_local", "viewer", "--project", "ACME"],
+        ["revoke-grant", "sub_local", "--project", "ACME", "--expected-version", "1"],
+    ],
+)
+def test_grant_mutations_reject_invalid_session_results(arguments: list[str]) -> None:
+    """Grant renderers reject output that did not cross the typed Session boundary."""
+    session = RecordingSession()
+    session.project_grant_result = object()  # type: ignore[assignment]
+
+    result = _RUNNER.invoke(
+        create_app(SessionProviderSpy(session)),
+        ["auth", *arguments, "--json", "--non-interactive"],
+    )
+
+    require_error(_completed(result), expected_code="INTERNAL_ERROR")
+
+
+def test_grant_listing_rejects_invalid_session_page() -> None:
+    """Grant pagination fails closed on an unvalidated Session page."""
+    session = RecordingSession()
+    session.project_grant_page_result = object()  # type: ignore[assignment]
+
+    result = _RUNNER.invoke(
+        create_app(SessionProviderSpy(session)),
+        ["auth", "list-grants", "--project", "ACME", "--json"],
+    )
+
+    require_error(_completed(result), expected_code="INTERNAL_ERROR")
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        ["grant", "sub_local", "viewer"],
+        ["list-grants"],
+        ["revoke-grant", "sub_local", "--expected-version", "1"],
+    ],
+)
+def test_grant_commands_reject_missing_project_before_session(
+    arguments: list[str],
+) -> None:
+    """Every grant command requires an explicit Project scope."""
+    provider = SessionProviderSpy(RecordingSession())
+
+    result = _RUNNER.invoke(
+        create_app(provider),
+        ["auth", *arguments, "--json", "--non-interactive"],
+    )
+
+    assert result.exit_code == 2
+    assert "--project" in result.stderr
+    assert provider.call_count == 0
+
+
+@pytest.mark.parametrize("command", ["grant", "revoke-grant"])
+def test_interactive_grant_change_can_be_cancelled(
+    command: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Interactive grant convenience performs no mutation after cancellation."""
+    monkeypatch.setattr(
+        "workaholic.cli.auth_admin._is_interactive_mode",
+        lambda **_kwargs: True,
+    )
+    session = RecordingSession()
+    arguments = ["auth", command, "local-operator"]
+    if command == "grant":
+        arguments.append("viewer")
+    arguments.extend(("--project", "ACME"))
+
+    result = _RUNNER.invoke(
+        create_app(SessionProviderSpy(session)),
+        arguments,
+        input="n\n",
+    )
+
+    assert result.exit_code == 0
+    assert result.stdout.endswith("No changes made.\n")
+    assert session.grant_assign_requests == []
+    assert session.grant_revoke_requests == []
+
+
+def test_interactive_revoke_reports_missing_grant(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Interactive revocation maps an absent current grant to its stable error."""
+    monkeypatch.setattr(
+        "workaholic.cli.auth_admin._is_interactive_mode",
+        lambda **_kwargs: True,
+    )
+    session = RecordingSession()
+    session.project_grant_page_result = ProjectGrantPage(
+        grants=(),
+        next_cursor=None,
+    )
+
+    result = _RUNNER.invoke(
+        create_app(SessionProviderSpy(session)),
+        ["auth", "revoke-grant", "local-operator", "--project", "ACME", "--json"],
+    )
+
+    require_error(_completed(result), expected_code="GRANT_NOT_FOUND")
+    assert session.grant_revoke_requests == []
+
+
+def test_interactive_lookup_helpers_reject_invalid_and_cyclic_pages() -> None:
+    """Bounded convenience lookup terminates on malformed or repeated cursors."""
+    session = RecordingSession()
+    session.subject_page_result = SubjectPage(subjects=(), next_cursor=None)
+    with pytest.raises(ApplicationError) as missing_subject:
+        _find_subject(session, subject="missing", profile=None)
+    assert missing_subject.value.code is ApplicationErrorCode.SUBJECT_NOT_FOUND
+
+    session.subject_page_result = SubjectPage(subjects=(), next_cursor="v5.repeat")
+    with pytest.raises(TypeError):
+        _find_subject(session, subject="missing", profile=None)
+
+    session.project_grant_page_result = ProjectGrantPage(
+        grants=(),
+        next_cursor="v5.repeat",
+    )
+    with pytest.raises(TypeError):
+        _find_grant(
+            session,
+            subject_id=SubjectId("sub_missing"),
+            project="ACME",
+            profile=None,
+        )
+
+    with pytest.raises(TypeError):
+        _require_subject_page(object())
+    with pytest.raises(TypeError):
+        _require_grant_page(object())
+
+
+def test_interactive_mode_maps_terminal_detection_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Human convenience remains disabled when terminal inspection fails."""
+
+    class _Input:
+        """Input stream whose terminal inspection fails."""
+
+        def isatty(self) -> bool:
+            """Raise a simulated terminal inspection failure."""
+            message = "private terminal failure"
+            raise OSError(message)
+
+    monkeypatch.setattr("workaholic.cli.auth_admin.sys.stdin", _Input())
+    assert not _is_interactive_mode(json_mode=False, non_interactive=False)

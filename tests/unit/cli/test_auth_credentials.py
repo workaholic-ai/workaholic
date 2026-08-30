@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import base64
 from subprocess import CompletedProcess
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 import pytest
 from click import unstyle
@@ -14,6 +14,12 @@ from typer.testing import CliRunner, Result
 
 from workaholic.application import ApplicationError, ApplicationErrorCode
 from workaholic.auth import RawToken
+from workaholic.cli.auth import (
+    TokenInputError,
+    _is_interactive_terminal,
+    _load_login_token,
+    _read_bounded_stdin,
+)
 from workaholic.cli.main import create_app
 from workaholic.domain import InstanceId
 from workaholic.session import (
@@ -390,3 +396,149 @@ def test_auth_help_is_side_effect_free_and_documents_safe_inputs() -> None:
     assert "--instance" in unstyle(recovery.stdout)
     assert "--subject" in unstyle(recovery.stdout)
     assert provider.call_count == 0
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        ["auth", "whoami"],
+        [
+            "auth",
+            "recover-local",
+            "--instance",
+            "ins_local",
+            "--subject",
+            "local-operator",
+            "--non-interactive",
+        ],
+    ],
+)
+def test_identity_rendering_rejects_invalid_session_results(command: list[str]) -> None:
+    """Credential commands fail safely when a Session violates its result type."""
+    session = RecordingSession()
+    session.current_identity_result = object()  # type: ignore[assignment]
+
+    result = _RUNNER.invoke(
+        create_app(SessionProviderSpy(session)),
+        [*command, "--json"],
+    )
+
+    require_error(_completed(result), expected_code="INTERNAL_ERROR")
+
+
+@pytest.mark.parametrize("command", ["whoami", "logout"])
+def test_credential_commands_reject_invalid_profile_before_session(
+    command: str,
+) -> None:
+    """Credential commands validate profile names before acquiring a Session."""
+    provider = SessionProviderSpy(RecordingSession())
+
+    result = _RUNNER.invoke(
+        create_app(provider),
+        ["auth", command, "--profile", "invalid profile", "--json"],
+    )
+
+    require_error(_completed(result), expected_code="INVALID_INPUT")
+    assert provider.call_count == 0
+
+
+@pytest.mark.parametrize("operation", ["whoami", "logout"])
+def test_credential_commands_redact_unexpected_session_failure(operation: str) -> None:
+    """Unknown credential Session failures remain safe at the CLI boundary."""
+    session = RecordingSession()
+    session.failures[operation] = RuntimeError("private credential failure")
+
+    result = _RUNNER.invoke(
+        create_app(SessionProviderSpy(session)),
+        ["auth", operation, "--json"],
+    )
+
+    require_error(_completed(result), expected_code="INTERNAL_ERROR")
+    assert "private credential failure" not in result.stdout + result.stderr
+
+
+def test_login_redacts_unexpected_token_loader_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Unexpected Token source errors cannot escape through login diagnostics."""
+
+    def fail_load(_source: str) -> RawToken:
+        """Raise the simulated private input failure."""
+        message = "private input failure"
+        raise RuntimeError(message)
+
+    monkeypatch.setattr("workaholic.cli.auth._load_login_token", fail_load)
+    result = _RUNNER.invoke(
+        create_app(SessionProviderSpy(RecordingSession())),
+        ["auth", "login", "--token-file", "ignored", "--json"],
+    )
+
+    require_error(_completed(result), expected_code="INTERNAL_ERROR")
+    assert "private input failure" not in result.stdout + result.stderr
+
+
+def test_login_token_loader_rejects_invalid_runtime_source() -> None:
+    """The Token loader rejects empty, NUL-containing, and untyped paths."""
+    for source in ("", "bad\x00path", cast("str", object())):
+        with pytest.raises(TokenInputError):
+            _load_login_token(source)
+
+
+@pytest.mark.parametrize("binary_result", ["not-bytes", OSError("private read")])
+def test_bounded_stdin_rejects_invalid_binary_reader(
+    monkeypatch: pytest.MonkeyPatch,
+    binary_result: object,
+) -> None:
+    """Explicit stdin rejects reader failures and non-byte return values."""
+
+    class _Binary:
+        """Binary reader returning or raising one injected value."""
+
+        def read(self, _maximum: int) -> object:
+            """Return or raise the configured test value."""
+            if isinstance(binary_result, Exception):
+                raise binary_result
+            return binary_result
+
+    class _Input:
+        """Input wrapper exposing the injected binary reader."""
+
+        buffer = _Binary()
+
+    monkeypatch.setattr("workaholic.cli.auth.sys.stdin", _Input())
+    with pytest.raises(TokenInputError):
+        _read_bounded_stdin()
+
+
+def test_bounded_stdin_rejects_invalid_text_reader(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Text-only stdin must return a string and map read failures safely."""
+
+    class _Input:
+        """Text input returning a deliberately invalid runtime value."""
+
+        def read(self, _maximum: int) -> object:
+            """Return a non-string value."""
+            return object()
+
+    monkeypatch.setattr("workaholic.cli.auth.sys.stdin", _Input())
+    with pytest.raises(TokenInputError):
+        _read_bounded_stdin()
+
+
+def test_interactive_terminal_detection_maps_stream_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Terminal detection returns false when stream inspection fails."""
+
+    class _Input:
+        """Input stream whose terminal check fails."""
+
+        def isatty(self) -> bool:
+            """Raise the simulated stream failure."""
+            message = "private terminal failure"
+            raise OSError(message)
+
+    monkeypatch.setattr("workaholic.cli.auth.sys.stdin", _Input())
+    assert not _is_interactive_terminal()

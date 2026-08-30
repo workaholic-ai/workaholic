@@ -276,3 +276,44 @@ def test_subject_help_inventory_is_complete_and_side_effect_free() -> None:
         assert command in rendered
     assert "--expected-version" in unstyle(update.stdout)
     assert provider.call_count == 0
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        ["create-agent", "build-agent"],
+        [
+            "update-subject",
+            "sub_local",
+            "--display-name",
+            "Operator",
+            "--expected-version",
+            "1",
+        ],
+        ["disable-subject", "sub_local", "--expected-version", "1"],
+    ],
+)
+def test_subject_commands_reject_invalid_session_results(arguments: list[str]) -> None:
+    """Every Subject renderer fails closed on a Session result type violation."""
+    session = RecordingSession()
+    session.subject_result = object()  # type: ignore[assignment]
+
+    result = _RUNNER.invoke(
+        create_app(SessionProviderSpy(session)),
+        ["auth", *arguments, "--json", "--non-interactive"],
+    )
+
+    require_error(_completed(result), expected_code="INTERNAL_ERROR")
+
+
+def test_subject_listing_rejects_invalid_session_page() -> None:
+    """Subject pagination never serializes an unvalidated Session object."""
+    session = RecordingSession()
+    session.subject_page_result = object()  # type: ignore[assignment]
+
+    result = _RUNNER.invoke(
+        create_app(SessionProviderSpy(session)),
+        ["auth", "list-subjects", "--json"],
+    )
+
+    require_error(_completed(result), expected_code="INTERNAL_ERROR")

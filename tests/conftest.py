@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from typing import TYPE_CHECKING, Protocol, cast
 
 import pytest
@@ -39,6 +40,9 @@ def pytest_configure(config: pytest.Config) -> None:
         config: Active pytest configuration.
 
     """
+    if os.environ.get("COVERAGE_PROCESS_CONFIG"):
+        os.environ["COVERAGE_FILE"] = str(config.rootpath / ".coverage")
+
     marker_expression: object = config.getoption("markexpr")
     if marker_expression == "golden":
         config.option.cov_fail_under = 0

@@ -15,6 +15,13 @@ from workaholic.auth import (
     RawToken,
     select_credential_store,
 )
+from workaholic.auth.credentials import (
+    credential_from_mapping,
+    credential_to_mapping,
+    parse_credential_json,
+    serialize_credential_json,
+    validate_credential_profile,
+)
 from workaholic.domain import InstanceId, SubjectId
 
 
@@ -151,3 +158,51 @@ def test_selector_runtime_checks_store_protocols() -> None:
             keyring_store=cast("_MemoryStore", object()),
             file_store=store,
         )
+    with pytest.raises(InvalidInputError):
+        select_credential_store(
+            CredentialBackend.AUTO,
+            keyring_store=store,
+            file_store=cast("CredentialStore", object()),
+        )
+
+
+def test_credential_serialization_round_trip_has_a_closed_schema() -> None:
+    """Protected serialization round-trips only the exact credential fields."""
+    credential = _credential()
+
+    serialized = serialize_credential_json(credential)
+
+    assert parse_credential_json(serialized) == credential
+    assert credential_from_mapping(credential_to_mapping(credential)) == credential
+
+
+@pytest.mark.parametrize(
+    "operation",
+    [
+        lambda: serialize_credential_json(cast("HumanCredential", object())),
+        lambda: credential_to_mapping(cast("HumanCredential", object())),
+        lambda: validate_credential_profile("invalid profile"),
+    ],
+)
+def test_credential_helpers_reject_invalid_runtime_input(operation: object) -> None:
+    """Secret-bearing helper boundaries do not trust caller annotations."""
+    assert callable(operation)
+    with pytest.raises(InvalidInputError):
+        operation()
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        None,
+        "not-json",
+        "[]",
+        '{"profile":"local"}',
+        '{"instance_id":"ins_local","profile":"invalid profile",'
+        '"subject_id":"sub_local","token":"invalid"}',
+    ],
+)
+def test_credential_parser_rejects_malformed_protected_values(value: object) -> None:
+    """Malformed, open, and invalid credential records fail closed."""
+    with pytest.raises(CredentialUnavailableError):
+        parse_credential_json(value)

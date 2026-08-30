@@ -157,6 +157,16 @@ repos:
         files: ^((CHANGELOG|README)\.md|scripts/(smoke-phase-4-wheel|verify-phase-4)\.sh|tests/e2e/test_phase_4_distribution\.py|tests/unit/scripts/test_(smoke_phase_four_wheel|verify_phase_four)\.py)$
         pass_filenames: false
 
+      - id: phase-five-contracts
+        name: Phase 5 acceptance and wheel identity contracts
+        entry: >-
+          uv run --frozen pytest --no-cov
+          tests/unit/scripts/test_smoke_phase_five_wheel.py
+          tests/unit/scripts/test_verify_phase_five.py
+        language: system
+        files: ^((CHANGELOG|README)\.md|pyproject\.toml|scripts/(smoke-phase-5-wheel|verify-phase-5)\.sh|tests/(conftest\.py|e2e/test_phase_[0-5]_distribution\.py|unit/scripts/test_(smoke_phase_five_wheel|verify_phase_five)\.py))$
+        pass_filenames: false
+
       - id: pytest
         name: pytest with coverage
         entry: uv run --frozen pytest

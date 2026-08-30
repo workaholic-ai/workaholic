@@ -272,23 +272,24 @@ uv run pre-commit run --all-files
 uv run pytest
 uv build --no-progress
 scripts/smoke-install.sh dist/*.whl
+scripts/smoke-phase-5-wheel.sh dist/*.whl
 ```
 
 ## Current clean-state acceptance gate
 
-Until the Phase 5 distribution gate is published, the latest complete
-clean-checkout distribution gate remains:
+Run the complete authenticated source-to-wheel exit gate from a clean checkout:
 
 ```bash
-scripts/verify-phase-4.sh
+scripts/verify-phase-5.sh
 ```
 
 It refuses a dirty checkout, an active virtual environment, pre-existing build
-output, or inherited Workaholic selectors. It runs the source checks and the
-installed Phase 4 wheel journey in temporary config, data, and Workspace roots.
-Earlier milestone gates remain available as `scripts/verify-phase-0.sh`,
-`scripts/verify-phase-1.sh`, `scripts/verify-phase-2.sh`, and
-`scripts/verify-phase-3.sh`.
+output, or inherited config, credential, data, profile, or Token selectors. It
+runs the source checks and the installed Phase 5 identity journey in temporary
+config, credential, data, Token-file, and Workspace roots. Earlier milestone
+gates remain available as `scripts/verify-phase-0.sh`,
+`scripts/verify-phase-1.sh`, `scripts/verify-phase-2.sh`,
+`scripts/verify-phase-3.sh`, and `scripts/verify-phase-4.sh`.
 
 ## Project documents
 
