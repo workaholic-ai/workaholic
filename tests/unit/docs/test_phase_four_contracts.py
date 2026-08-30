@@ -48,28 +48,21 @@ def _section(path: Path, start: str, end: str) -> str:
     return " ".join(document[start_index:end_index].split())
 
 
-def test_phase_four_is_the_current_public_alpha() -> None:
-    """Publish only verified Phase 4 behavior and its honest limitations."""
+def test_phase_four_behavior_remains_cumulative_in_phase_five() -> None:
+    """Retain the verified Phase 4 execution contract after Phase 5 ships."""
     readme = _read_normalized(_README)
 
-    for path in (
-        _README,
-        _ARCHITECTURE,
-        _CLI_CONTRACT,
-        _PERSISTENCE_CONTRACT,
-        _THREAT_MODEL,
-    ):
-        assert "`0.4.0a1`" in _read_normalized(path), path
+    assert "`0.5.0a1`" in readme
+    assert "Phase 5 Identity and Authorization Alpha implements" in (
+        _read_normalized(_ARCHITECTURE)
+    )
     for phrase in (
-        "24 Project, context, Task, Claim, and Agent execution operations",
         "schema version `4`",
-        "Human Claims and Results record `attempt_id = null`",
-        "a non-null Attempt identifies local Agent execution",
         "`NO_TASK_AVAILABLE`",
         "`TASK_LOCKED`",
         "`LEASE_LOST`",
     ):
-        assert phrase in readme
+        assert phrase in _read_normalized(_CLI_CONTRACT), phrase
     for command in (
         "workaholic task claim",
         "workaholic task renew",
@@ -80,9 +73,6 @@ def test_phase_four_is_the_current_public_alpha() -> None:
     ):
         assert command in readme
     for limitation in (
-        "distinct Agent identities",
-        "Tokens",
-        "authentication",
         "remote profiles",
         "`RemoteSession`",
         "JSON or PostgreSQL persistence adapters",
@@ -92,6 +82,11 @@ def test_phase_four_is_the_current_public_alpha() -> None:
         "force interruption",
     ):
         assert limitation in readme
+
+    persistence = _read_normalized(_PERSISTENCE_CONTRACT)
+    assert "## Phase 4 SQLite contract" in persistence
+    assert "Human Claims and Results had a null Attempt" in persistence
+    assert "exact current non-null Attempt" in persistence
 
 
 def test_phase_four_decision_is_accepted_and_linked() -> None:

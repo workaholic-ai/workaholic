@@ -1,6 +1,6 @@
 # Workaholic AI Persistence Contract
 
-- Status: Accepted v1 contract through Phase 5 with Phase 4 SQLite implementation
+- Status: Accepted v1 contract through Phase 5 with Phase 5 SQLite implementation
 - Decision date: 2026-07-29
 - Contract scope: Observable semantics shared by JSON, SQLite, and PostgreSQL
 - Public API status: Internal architecture contract, not a third-party API
@@ -8,21 +8,20 @@
 ## Current implementation notice
 
 This document specifies persistence semantics implemented incrementally across
-v1. The current `0.4.0a1` development package implements the Phase 4 SQLite
-adapter and disposable schema version `4`, including multiple Projects,
-optimistic Task mutations, dependencies, readiness, structured Human Results,
-review, exclusive Claims, Attempts, bounded Leases, Agent progress and
-submission, attributable TaskEvents, idempotency, deterministic ordering, and
-selection-bound cursors. JSON and PostgreSQL adapters and schema migration
-remain unavailable.
+v1. The current `0.5.0a1` development package implements the Phase 5 SQLite
+adapter and disposable schema version `5`. It extends the cumulative Project,
+Task, Result, Claim, Attempt, Lease, TaskEvent, idempotency, ordering, and
+pagination state with distinct Subjects, hash-only Tokens, cumulative
+ProjectGrants, administrative AuditEvents, authenticated attribution, and
+transaction-scoped authorization. JSON and PostgreSQL adapters and schema
+migration remain unavailable.
 
-An unsupported alpha store, including Phase 3 schema version `3`, is rejected
+An unsupported alpha store, including Phase 4 schema version `4`, is rejected
 unchanged. Preserve any needed information outside Workaholic, verify the exact
 disposable profile data and Workspace contexts, remove only those verified
 alpha artifacts, and run `workaholic up` again. There is no in-place reset,
-automatic migration, backend conversion, import, or export command in Phase 4.
-Phase 4 never migrates, converts, or reinterprets version `3`.
-Version `3` is rejected unchanged by the implemented Phase 4 adapter.
+automatic migration, backend conversion, import, or export command in Phase 5.
+Phase 5 never migrates, converts, or reinterprets version `4`.
 
 ## Normative language
 
@@ -217,6 +216,22 @@ version, operation-specific transition, event payload, and idempotency inside
 one write transaction. Clients never supply actor kind, authoritative time,
 request identity, Result identity, event identity, Attempt identity, or event
 cursor through task or Result payloads.
+
+## Phase 4 SQLite contract
+
+Phase 4 replaced the disposable Phase 3 layout with clean-store SQLite schema
+version `4`. Exact version `4` was required for every normal read or mutation.
+Version `3`, malformed, missing, older, and newer stores returned
+`SCHEMA_UNSUPPORTED` unchanged; Phase 4 had no migration, conversion, import,
+export, or automatic reset path.
+
+The version `4` layout extended the cumulative Project, Task, dependency,
+Result, review, TaskEvent, and idempotency state with exclusive Claims, Agent
+Attempts, bounded Leases, and structured Agent progress. Phase 4 operations
+reused the bootstrap Subject; Human Claims and Results had a null Attempt,
+while Agent execution required the exact current non-null Attempt. The
+implemented ownership, expiry, event, and retry semantics remain cumulative in
+Phase 5.
 
 ## Phase 5 SQLite contract
 

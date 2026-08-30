@@ -163,6 +163,7 @@ def _clean_environment(tmp_path: Path) -> dict[str, str]:
             "PRE_COMMIT_HOME": str(tmp_path.parent / "phase-one-pre-commit"),
             "UV_CACHE_DIR": str(tmp_path.parent / "phase-one-uv"),
             "UV_LINK_MODE": "copy",
+            "WORKAHOLIC_CREDENTIAL_BACKEND": "file",
             "WORKAHOLIC_DATA_DIR": str(tmp_path / "workaholic-data"),
         }
     )

@@ -1,6 +1,6 @@
 # Workaholic AI Threat Model
 
-- Status: Accepted v1 model through Phase 5 with Phase 4 implementation
+- Status: Accepted v1 model through Phase 5 with Phase 5 implementation
 - Decision date: 2026-07-29
 - Scope: Embedded and shared-server behavior required for v1
 - Security contact: [pg@ithesion.com](mailto:pg@ithesion.com)
@@ -9,14 +9,14 @@
 
 This threat model turns the accepted v1 security boundary into explicit
 engineering constraints and verification targets. It covers planned behavior;
-the current `0.4.0a1` development package implements trusted embedded profiles,
-canonical upward Workspace discovery, safe binding, multi-project
-authorization checks, local SQLite schema version `4`, optimistic Task
-mutations, exclusive Human and Agent Claims, bounded Leases, Agent progress and
-submission, Human Result and review attribution, and append-only TaskEvents. It
-rejects schema version `3` unchanged. It reuses the bootstrap Subject and does
-not implement distinct Agent identities, bearer authentication, remote
-profiles, credentials, `RemoteSession`, or network services.
+the current `0.5.0a1` development package implements trusted embedded profiles
+and credentials, canonical upward Workspace discovery, safe binding, distinct
+Human and Agent Subjects, hash-only bearer Token storage, cumulative
+ProjectGrants, transactional authentication and authorization, local SQLite
+schema version `5`, the complete Task/Claim/Attempt workflow, attributable
+TaskEvents, administrative AuditEvents, and local recovery. It rejects schema
+version `4` unchanged and does not implement remote profiles, `RemoteSession`,
+network services, public multi-tenancy, or cross-organization isolation.
 
 Terms such as Subject, ProjectGrant, Token, Claim, Attempt, Lease, TaskEvent, and
 AuditEvent use their canonical definitions in the [glossary](glossary.md).
@@ -304,10 +304,10 @@ windows defined in the CLI contract.
   Workspace-root containment, safe binding replacement, trusted embedded
   profile storage ownership, schema version `1` rejection without mutation,
   remote-configuration rejection, and malicious `.workaholic.env` input.
-- Phase 3 tests schema version `2` rejection, optimistic Task versions,
-  transition and dependency atomicity, Human Result attribution with null
-  Attempt, bounded structured input, review behavior, event ordering, and
-  idempotent lifecycle replay.
+- Phase 3 uses exact SQLite schema version `3`, rejects version `2` unchanged,
+  and tests optimistic Task versions, transition and dependency atomicity,
+  Human Result attribution with null Attempt, bounded structured input, review
+  behavior, event ordering, and idempotent lifecycle replay.
 - Phase 4 tests atomic Human and Agent Claims, exclusive mutation locks, Human
   renewal, current Attempt ownership, Lease expiry, version stability, stale
   submissions, terminal Attempt states, idempotent Results, and bounded Agent

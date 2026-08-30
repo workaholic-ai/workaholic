@@ -53,7 +53,7 @@ def _wheel(tmp_path: Path, *, suffix: str = ".whl") -> Path:
 
     """
     tmp_path.mkdir(parents=True, exist_ok=True)
-    wheel = tmp_path / f"workaholic_ai-0.4.0a1-py3-none-any{suffix}"
+    wheel = tmp_path / f"workaholic_ai-0.5.0a1-py3-none-any{suffix}"
     wheel.touch()
     return wheel
 

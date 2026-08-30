@@ -1,6 +1,6 @@
 # Workaholic AI CLI Automation Contract
 
-- Status: Accepted v1 contract through Phase 5 with Phase 4 implementation
+- Status: Accepted v1 contract through Phase 5 with Phase 5 implementation
 - Decision date: 2026-07-29
 - Contract family: `workaholic.cli/v1`
 - Public surface: Documented JSON output of the `workaholic` executable
@@ -8,22 +8,23 @@
 ## Current implementation notice
 
 This document specifies the accepted v1 automation contract through its Phase 8
-freeze. The current `0.4.0a1` development package implements the versioned
-envelopes and all 24 Phase 4 operations through an injected Session boundary.
-Its default executable composes the embedded `LocalSession`, trusted local
-profiles, canonical upward Workspace discovery, and SQLite schema version `4`.
-It includes existing-Task mutations, dependencies, readiness views, Human
-Results and review, exclusive Human and Agent Claims, bounded Leases, Agent
-Attempts, heartbeat, progress, release and submission, and TaskEvent history.
-No compatibility guarantee applies before `1.0.0`.
+freeze. The current `0.5.0a1` development package implements the cumulative
+Phase 1 through Phase 5 versioned envelopes and operations through an injected
+Session boundary. Its default executable composes the authenticated embedded
+`LocalSession`, trusted local profiles and credentials, canonical upward
+Workspace discovery, and disposable SQLite schema version `5`. It includes
+distinct Human and Agent Subjects, independently revocable Tokens, cumulative
+Project roles, administrative AuditEvents, existing-Task mutations,
+dependencies, readiness views, Human Results and review, exclusive Claims,
+bounded Leases, Agent Attempts and progress, and attributable TaskEvent
+history. No compatibility guarantee applies before `1.0.0`.
 
-The alpha reuses one bootstrap Subject for Human and Agent command paths. It
-does not issue Tokens, distinguish Agent identities, use remote profiles or
-credentials, use `RemoteSession`, start a server, schedule by capability,
-archive Projects, force-interrupt execution, migrate schemas, or select JSON or
-PostgreSQL adapters. Human Results always carry a null Attempt identity; a
-non-null Attempt identifies local Agent execution. Proposed follow-ups never
-create Tasks automatically.
+The alpha does not use remote profiles, `RemoteSession`, or a server; schedule
+by capability; provide custom roles or SSO/OAuth; archive Projects;
+force-interrupt execution; migrate schemas; or select JSON or PostgreSQL
+adapters. Human Results always carry a null Attempt identity; a non-null
+Attempt identifies Agent execution. Proposed follow-ups never create Tasks
+automatically.
 
 ## Normative language
 
@@ -1550,7 +1551,8 @@ import, export, or silent reset.
 This section is the normative delivery contract for Phase 5. It extends the
 Phase 4 CLI without adding a server, remote profile, `RemoteSession`, network
 protocol, capability scheduling, SSO/OAuth, refresh Token, or schema migration.
-README continues to describe Phase 4 until the Phase 5 golden journey passes.
+The public README and executable golden journey describe and verify this
+implemented Phase 5 surface.
 
 All normal commands against an initialized Instance authenticate exactly one
 bearer Token. Authentication derives the Instance, Subject, immutable Subject

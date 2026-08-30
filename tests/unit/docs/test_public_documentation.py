@@ -46,36 +46,7 @@ _BASH_BLOCK_PATTERN = re.compile(
 _VERSION_OUTPUT_PATTERN = re.compile(
     r"The version command prints:\n\n```text\n(?P<output>[^\n]+)\n```"
 )
-_EXPECTED_QUICK_START = (
-    "uv sync --frozen\n"
-    'export WORKAHOLIC_CONFIG_DIR="$(mktemp -d "'
-    '${TMPDIR:-/tmp}/workaholic-quickstart-config.XXXXXX")"\n'
-    "export WORKAHOLIC_CREDENTIAL_BACKEND=file\n"
-    'export WORKAHOLIC_DATA_DIR="$(mktemp -d "'
-    '${TMPDIR:-/tmp}/workaholic-quickstart-data.XXXXXX")"\n'
-    "workaholic_source_directory=$PWD\n"
-    'workaholic_workspace_directory="$(mktemp -d "'
-    '${TMPDIR:-/tmp}/workaholic-quickstart-workspace.XXXXXX")"\n'
-    "(\n"
-    '  cd "$workaholic_workspace_directory"\n'
-    '  uv run --project "$workaholic_source_directory" workaholic up '
-    '--project-key ACME --project-name "Acme delivery"\n'
-    '  uv run --project "$workaholic_source_directory" workaholic task add '
-    '"Human-owned delivery"\n'
-    '  uv run --project "$workaholic_source_directory" workaholic task claim '
-    "ACME-1 --lease 8h\n"
-    '  uv run --project "$workaholic_source_directory" workaholic task renew '
-    "ACME-1 --lease 12h\n"
-    '  uv run --project "$workaholic_source_directory" workaholic task update '
-    "ACME-1 --priority 80 --expected-version 1\n"
-    '  uv run --project "$workaholic_source_directory" workaholic task submit '
-    'ACME-1 --comment "Implemented manually." --expected-version 2\n'
-    '  uv run --project "$workaholic_source_directory" workaholic task show '
-    "ACME-1\n"
-    '  uv run --project "$workaholic_source_directory" workaholic task events '
-    "ACME-1\n"
-    ")"
-)
+_RAW_TOKEN_PATTERN = re.compile(r"tok_[A-Za-z0-9_-]+\.[A-Za-z0-9_-]{43}")
 _REQUIRED_GLOSSARY_TERMS = frozenset(
     {
         "Agent",
@@ -190,21 +161,54 @@ def test_threat_model_covers_required_boundaries_and_attack_scenarios() -> None:
         assert boundary in threat_model
 
 
-def test_readme_quick_start_contains_the_exact_authenticated_human_journey() -> None:
-    """The quick start is the exact verified authenticated Human sequence."""
+def _read_quick_start_script() -> str:
+    """Return the one literal public quick-start shell block.
+
+    Returns:
+        Shell source copied directly from the README quick-start section.
+
+    """
     readme = _README.read_text(encoding="utf-8")
     quick_start_match = _QUICK_START_PATTERN.search(readme)
 
     assert quick_start_match is not None
     bash_blocks = _BASH_BLOCK_PATTERN.findall(quick_start_match.group("section"))
-    assert bash_blocks == [_EXPECTED_QUICK_START]
+    assert len(bash_blocks) == 1
+    script = bash_blocks[0]
+    assert isinstance(script, str)
+    return script
+
+
+def test_readme_quick_start_is_the_authenticated_human_two_agent_journey() -> None:
+    """The literal quick start keeps its required identity and safety steps."""
+    quick_start = _read_quick_start_script()
+
+    for fragment in (
+        "(\n  set -eu",
+        "uv sync --frozen",
+        "export WORKAHOLIC_CREDENTIAL_BACKEND=file",
+        "workaholic up --project-key ACME",
+        "workaholic auth create-agent agent-one",
+        "workaholic auth create-agent agent-two",
+        "workaholic auth grant agent-one agent --project ACME",
+        "workaholic auth grant agent-two agent --project ACME",
+        'WORKAHOLIC_TOKEN_FILE="$agent_one_token_file"',
+        'WORKAHOLIC_TOKEN_FILE="$agent_two_token_file"',
+        "workaholic task claim --json --non-interactive",
+        "workaholic task submit ACME-1 --attempt",
+        "workaholic task submit ACME-2 --attempt",
+        "workaholic auth events",
+    ):
+        assert fragment in quick_start
+    assert "WORKAHOLIC_TOKEN=" not in quick_start
+    assert _RAW_TOKEN_PATTERN.search(quick_start) is None
 
 
 @pytest.mark.requires_uv
 def test_readme_quick_start_executes_in_an_isolated_source_checkout(
     tmp_path: Path,
 ) -> None:
-    """The literal quick-start shell block selects its own isolated state."""
+    """Execute the literal Human/two-Agent quick start in isolated state."""
     checkout = tmp_path / "checkout"
     checkout.mkdir()
     for filename in ("LICENSE", "README.md", "pyproject.toml", "uv.lock"):
@@ -233,7 +237,7 @@ def test_readme_quick_start_executes_in_an_isolated_source_checkout(
     )
 
     result = subprocess.run(
-        ["/bin/sh", "-eu", "-c", _EXPECTED_QUICK_START],
+        ["/bin/sh", "-eu", "-c", _read_quick_start_script()],
         check=False,
         cwd=checkout,
         env=environment,
@@ -245,19 +249,35 @@ def test_readme_quick_start_executes_in_an_isolated_source_checkout(
     assert result.returncode == 0, f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
     assert "Traceback" not in result.stderr
     assert "ACME-1" in result.stdout
-    assert "Human-owned delivery" in result.stdout
+    assert "ACME-2" in result.stdout
+    assert "Agent one delivery" in result.stdout
+    assert "Agent two delivery" in result.stdout
     assert "task_completed" in result.stdout
+    assert "token_issued" in result.stdout
+    assert _RAW_TOKEN_PATTERN.search(result.stdout) is None
+    assert _RAW_TOKEN_PATTERN.search(result.stderr) is None
     config_directories = tuple(tmp_path.glob("workaholic-quickstart-config.*"))
     data_directories = tuple(tmp_path.glob("workaholic-quickstart-data.*"))
+    token_directories = tuple(tmp_path.glob("workaholic-quickstart-tokens.*"))
     workspace_directories = tuple(tmp_path.glob("workaholic-quickstart-workspace.*"))
     assert len(config_directories) == 1
     assert len(data_directories) == 1
+    assert len(token_directories) == 1
     assert len(workspace_directories) == 1
     assert (data_directories[0] / "local.db").is_file()
     assert (workspace_directories[0] / ".workaholic.env").is_file()
     credential_file = config_directories[0] / "credentials" / "credentials.toml"
     assert credential_file.is_file()
     assert stat.S_IMODE(credential_file.stat().st_mode) == 0o600
+    assert stat.S_IMODE(token_directories[0].stat().st_mode) == 0o700
+    token_files = tuple(sorted(token_directories[0].glob("*.token")))
+    assert tuple(path.name for path in token_files) == (
+        "agent-one.token",
+        "agent-two.token",
+    )
+    for token_file in token_files:
+        assert stat.S_IMODE(token_file.stat().st_mode) == 0o600
+        assert _RAW_TOKEN_PATTERN.fullmatch(token_file.read_text().strip()) is not None
     assert (inherited_config_directory / "profiles.toml").read_text(
         encoding="utf-8"
     ) == "not valid TOML = ["
@@ -277,8 +297,8 @@ def test_readme_version_output_matches_installed_distribution() -> None:
     )
 
 
-def test_readme_publishes_current_checks_and_clean_state_gates() -> None:
-    """Public guidance exposes current checks and the Phase 4 exit gate."""
+def test_readme_publishes_current_checks_and_clean_state_gate() -> None:
+    """Public guidance exposes current checks and the latest complete gate."""
     readme = " ".join(_README.read_text(encoding="utf-8").split())
 
     assert "## Development checks" in _README.read_text(encoding="utf-8")
@@ -292,30 +312,27 @@ def test_readme_publishes_current_checks_and_clean_state_gates() -> None:
         "scripts/verify-phase-2.sh",
         "scripts/verify-phase-3.sh",
         "scripts/verify-phase-4.sh",
-        "scripts/smoke-phase-4-wheel.sh",
     ):
         assert command in readme
     for guarantee in (
-        "## Phase 4 acceptance gate",
-        "no active virtual environment",
+        "## Current clean-state acceptance gate",
+        "active virtual environment",
         "refuses a dirty checkout",
         "temporary config, data, and Workspace roots",
-        "Lease expiry and reclaim",
-        "lock failures",
-        "attributable ordered TaskEvents",
+        "Phase 4 wheel journey",
     ):
         assert guarantee in readme
 
 
-def test_phase_four_status_and_limitations_are_explicit() -> None:
-    """Public implementation notices distinguish Phase 4 from planned v1."""
+def test_phase_five_status_and_limitations_are_explicit() -> None:
+    """Public implementation notices distinguish Phase 5 from planned v1."""
     readme = " ".join(_README.read_text(encoding="utf-8").split())
     architecture = " ".join(_ARCHITECTURE.read_text(encoding="utf-8").split())
     cli_contract = " ".join(_CLI_CONTRACT.read_text(encoding="utf-8").split())
     persistence = " ".join(_PERSISTENCE_CONTRACT.read_text(encoding="utf-8").split())
 
     for document in (readme, architecture, cli_contract, persistence):
-        assert "`0.4.0a1`" in document
+        assert "`0.5.0a1`" in document
     for command in (
         "workaholic up",
         "workaholic status",
@@ -345,17 +362,18 @@ def test_phase_four_status_and_limitations_are_explicit() -> None:
         assert command in readme
     for implemented in (
         "upward Workspace discovery",
-        "multiple named Projects",
+        "multiple Projects",
         "trusted embedded profiles",
         "schema version `5`",
-        "structured Human Results",
-        "exclusive Human and Agent Claims",
-        "Agent progress and submission",
+        "structured progress and Results",
+        "exclusive Claims",
+        "Agent Attempts",
+        "authenticating as distinct Subjects",
+        "least-privilege Project roles",
+        "administrative audit",
     ):
         assert implemented in readme
     for unavailable in (
-        "distinct Agent identities",
-        "Tokens",
         "`RemoteSession`",
         "JSON or PostgreSQL persistence adapters",
         "schema migration",
@@ -370,7 +388,7 @@ def test_phase_four_status_and_limitations_are_explicit() -> None:
     assert "JSON and PostgreSQL adapters and schema migration remain unavailable" in (
         persistence
     )
-    assert "including Phase 3 schema version `3`, is rejected unchanged" in persistence
+    assert "including Phase 4 schema version `4`, is rejected unchanged" in persistence
 
 
 def test_foundation_scope_decisions_are_consistent_across_public_documents() -> None:

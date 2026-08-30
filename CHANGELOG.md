@@ -8,6 +8,52 @@ public versioning begins.
 
 ## Unreleased
 
+## [0.5.0a1] - 2026-08-30
+
+### Added
+
+- Distinct Human and Agent Subjects, independently expiring and revocable
+  bearer Tokens, protected Human credential enrollment, and embedded local
+  recovery.
+- Cumulative Viewer, Agent, Operator, and Owner Project roles plus independent
+  Instance-administrator authority and atomic last-administrator/Owner
+  safeguards.
+- Identity, Token, grant, recovery, and administrative audit CLI commands with
+  stable JSON envelopes and explicit optimistic versions.
+- Cumulative Phase 5 repository and `LocalSession` contracts plus a
+  fresh-process golden journey covering a Human operator and two independently
+  authenticated Agents.
+
+### Changed
+
+- Replaced the disposable Phase 4 store with clean-store SQLite schema version
+  `5`; schema version `4` is rejected unchanged and has no migration path.
+- Authenticated every normal operation as one active Token and enabled Subject,
+  with authorization revalidated inside each persistence transaction.
+- Recorded real Subject identity and immutable Human or Agent kind in TaskEvent
+  history while retaining exact Claim and Attempt ownership semantics.
+
+### Security
+
+- Store only SHA-256 Token digests and reveal each raw Token once through a
+  protected credential sink; normal output, events, persistence projections,
+  and diagnostics exclude raw credentials and hashes.
+- Enforce explicit Agent credential-source precedence, account-only file modes,
+  immediate revocation/disablement/grant effects, Project isolation, and
+  non-disclosing authentication failures.
+- Preserve active Claims when credentials are revoked or Subjects disabled;
+  ownership remains exclusive until normal release, submission, or Lease
+  expiry.
+
+### Known limitations
+
+- The alpha remains embedded-only, SQLite-only, single-organization software.
+  It has no server, remote profile, `RemoteSession`, or distributed-team mode.
+- JSON/PostgreSQL adapters, schema migration, capability scheduling, custom
+  roles, SSO/OAuth, Project archival, force interruption, and parent/child Task
+  hierarchy remain unavailable.
+- Stores and pre-release automation remain disposable.
+
 ## [0.4.0a1] - 2026-08-27
 
 ### Added

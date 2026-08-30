@@ -21,25 +21,26 @@ Python package: workaholic-ai
 Executable:     workaholic
 ```
 
-## Current implementation: `0.4.0a1`
+## Current implementation: `0.5.0a1`
 
-The Phase 4 Local Agent Alpha implements the embedded `LocalSession`,
-trusted embedded profiles, canonical upward `.workaholic.env` discovery,
-multiple named Projects, safe Workspace binding, and SQLite schema version
-`4`. Its 24 local operations cover complete Task definitions, optimistic
-updates, explicit state transitions, dependencies, readiness, structured Human
-Results and review, exclusive Human and Agent Claims, bounded Leases, Agent
-Attempts, heartbeat, progress, release, submission, and attributable event
-history. Each CLI invocation composes these adapters in-process, performs one
-operation, and exits; no daemon is started.
+The Phase 5 Identity and Authorization Alpha implements the embedded
+`LocalSession`, trusted embedded profiles, canonical upward `.workaholic.env`
+discovery, multiple named Projects, safe Workspace binding, and disposable
+SQLite schema version `5`. It extends the complete Phase 4 Task, Result,
+Claim, Attempt, Lease, and TaskEvent behavior with distinct Human and Agent
+Subjects, independently revocable bearer Tokens, protected Human credentials,
+cumulative Project roles, transactional authentication and authorization,
+administrative AuditEvents, and local recovery. Each CLI invocation composes
+these adapters in-process, performs one authenticated operation, and exits; no
+daemon is started.
 
 The remaining diagrams and decisions describe the accepted v1 destination, not
-the current feature inventory. `0.4.0a1` reuses the bootstrap Subject and does
-not implement distinct Agent identities, Tokens, remote profiles, credentials,
+the current feature inventory. `0.5.0a1` does not implement remote profiles,
 `RemoteSession`, a server, JSON/PostgreSQL adapters, capability-based
-scheduling, Project archival, force interruption, parent/child Task hierarchy,
-or schema migration. Proposed Result follow-ups never create Tasks
-automatically. Alpha storage and automation remain disposable.
+scheduling, custom roles, SSO/OAuth, Project archival, force interruption,
+parent/child Task hierarchy, or schema migration. Proposed Result follow-ups
+never create Tasks automatically. Alpha storage and automation remain
+disposable.
 
 ## 1. Architectural decisions
 
@@ -966,11 +967,12 @@ SQLite is the default for local use.
 
 Each CLI invocation opens a short-lived connection. Compound operations such as number allocation, claiming, event creation, and idempotency recording occur in one write transaction.
 
-Phase 4 uses disposable SQLite schema version `4` for lifecycle state,
+Phase 4 used disposable SQLite schema version `4` for lifecycle state,
 dependencies, Claims, Attempts, Leases, Results, reviews, and expanded events.
-It rejects Phase 3 version `3` unchanged and provides no migration, conversion,
-import, export, or automatic reset. This is the exact schema used by the
-current `0.4.0a1` implementation.
+The current Phase 5 implementation uses exact schema version `5` and adds
+Subjects, Tokens, ProjectGrants, AuditEvents, and authenticated attribution. It
+rejects version `4` and every other unsupported version unchanged and provides
+no migration, conversion, import, export, or automatic reset.
 
 ### PostgreSQL backend
 

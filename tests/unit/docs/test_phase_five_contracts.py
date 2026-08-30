@@ -81,22 +81,29 @@ def test_phase_five_decision_is_accepted_and_linked() -> None:
     )
 
 
-def test_readme_remains_on_verified_phase_four_behavior() -> None:
-    """Do not publish unimplemented Phase 5 behavior in the public README."""
+def test_readme_publishes_verified_phase_five_behavior() -> None:
+    """Publish implemented Phase 5 behavior without claiming Phase 6."""
     readme = _read_normalized(_README)
 
-    assert "`0.4.0a1`" in readme
-    assert "schema version `4`" in readme
-    assert "distinct Agent identities" in readme
-    assert "Tokens" in readme
-    assert "authentication" in readme
+    assert "`0.5.0a1`" in readme
+    assert "schema version `5`" in readme
+    assert "distinct Subjects" in readme
+    assert "Raw Tokens appear exactly once" in readme
+    assert "viewer < agent < operator < owner" in readme.casefold()
     for command in (
         "workaholic auth login",
         "workaholic auth create-agent",
         "workaholic auth create-token",
         "workaholic auth recover-local",
     ):
-        assert command not in readme
+        assert command in readme
+    for deferred in (
+        "`RemoteSession`, a server, remote profiles",
+        "JSON or PostgreSQL persistence adapters",
+        "capability-based scheduling",
+        "SSO/OAuth",
+    ):
+        assert deferred in readme
 
 
 def test_subject_handles_and_cumulative_roles_are_exact() -> None:

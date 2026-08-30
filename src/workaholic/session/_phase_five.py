@@ -305,10 +305,7 @@ class PhaseFiveRuntime:
             message = "PhaseFiveRuntime forbidden roots must be absolute Paths."
             raise TypeError(message)
         lock_path: object = self.credential_lock_path
-        if (
-            not isinstance(lock_path, Path)
-            or not lock_path.is_absolute()
-        ):
+        if not isinstance(lock_path, Path) or not lock_path.is_absolute():
             message = "PhaseFiveRuntime credential lock path must be absolute."
             raise TypeError(message)
 

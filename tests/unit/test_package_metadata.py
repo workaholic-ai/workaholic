@@ -36,7 +36,7 @@ def test_source_metadata_matches_foundation_decisions() -> None:
     project = _project_metadata()
 
     assert project["name"] == _DISTRIBUTION_NAME
-    assert project["version"] == "0.4.0a1"
+    assert project["version"] == "0.5.0a1"
     assert project["version"] == __version__
     assert project["readme"] == "README.md"
     assert project["requires-python"] == ">=3.14"
@@ -94,7 +94,7 @@ def test_phase_five_trusted_process_inputs_are_safely_documented() -> None:
         "WORKAHOLIC_CREDENTIAL_BACKEND=",
     ):
         assert key in environment_example
-    assert environment_example.endswith("WORKAHOLIC_CREDENTIAL_BACKEND=\n")
+    assert environment_example.endswith("WORKAHOLIC_CREDENTIAL_BACKEND=auto\n")
     assert "never copy it into .workaholic.env" in environment_example
     for unsupported in (
         "Remote URLs",

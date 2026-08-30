@@ -282,7 +282,7 @@ def test_phase_three_json_input_objects_cursors_and_errors_are_exact() -> None:
 
 
 def test_phase_three_schema_security_contract_remains_documented() -> None:
-    """Keep the Phase 3 contract while publishing Phase 4 as current."""
+    """Keep the Phase 3 contract while publishing Phase 5 as current."""
     architecture = _read_normalized(_ARCHITECTURE)
     cli_contract = _read_normalized(_CLI_CONTRACT)
     persistence = _read_normalized(_PERSISTENCE_CONTRACT)
@@ -302,14 +302,14 @@ def test_phase_three_schema_security_contract_remains_documented() -> None:
         persistence
     )
     for document in (architecture, cli_contract, persistence, threat_model, readme):
-        assert "`0.4.0a1`" in document
+        assert "`0.5.0a1`" in document
     assert "implemented normative contract for `0.3.0a1`" in cli_contract
-    assert "Phase 4 Local Agent Alpha implements" in architecture
+    assert "Phase 5 Identity and Authorization Alpha implements" in architecture
     assert "Task updates" in architecture
     assert "`workaholic task update`" in readme
-    assert "Human Claims and Results record `attempt_id = null`" in readme
-    assert "do not create Tasks, dependencies, or a hierarchy automatically" in (readme)
-    assert "schema version `2`" in readme
+    assert "Human Claims and Results had a null Attempt" in persistence
+    assert "automatic Task creation from proposed follow-ups" in readme
+    assert "schema version `5`" in readme
     assert "rejected unchanged" in readme
 
     for threat in (
@@ -323,25 +323,25 @@ def test_phase_three_schema_security_contract_remains_documented() -> None:
         assert threat in threat_model
 
 
-def test_readme_defers_every_post_phase_four_capability() -> None:
+def test_readme_defers_every_post_phase_five_capability() -> None:
     """Prevent the current public surface from claiming later roadmap slices."""
     current_cli = _section(
         _README,
         "## Current CLI",
-        "## Phase 4 boundaries",
+        "## Phase 5 boundaries",
     )
     boundaries = _section(
         _README,
-        "## Phase 4 boundaries",
-        "## Planned for v1 (not implemented)",
+        "## Phase 5 boundaries",
+        "## Development checks",
     )
 
     for unavailable in (
-        "distinct Agent identities, Tokens, credentials, remote profiles",
-        "`RemoteSession`, a server, authentication, or team coordination",
+        "`RemoteSession`, a server, remote profiles",
+        "distributed team coordination",
         "JSON or PostgreSQL persistence adapters",
-        "schema migration or compatibility across alpha versions",
-        "capability-based scheduling, Project archival, force interruption",
+        "schema migration",
+        "capability-based scheduling",
         "parent/child Task hierarchies",
         "automatic Task creation from proposed follow-ups",
     ):

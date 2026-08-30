@@ -274,21 +274,21 @@ def test_phase_two_explicitly_defers_remote_and_credential_capabilities() -> Non
     assert "Phase 2 does not accept a URL, credential, Token" in context_adr
 
 
-def test_phase_two_behavior_remains_in_the_verified_phase_four_surface() -> None:
+def test_phase_two_behavior_remains_in_the_verified_phase_five_surface() -> None:
     """Retain the Phase 2 profile and Project foundation in the current alpha."""
     readme = _read_normalized(_README)
     current_cli = _section(
         _README,
         "## Current CLI",
-        "## Phase 4 boundaries",
+        "## Phase 5 boundaries",
     )
     boundaries = _section(
         _README,
-        "## Phase 4 boundaries",
-        "## Planned for v1 (not implemented)",
+        "## Phase 5 boundaries",
+        "## Development checks",
     )
 
-    assert "It exposes 24 Project, context, Task, Claim, and Agent execution" in readme
+    assert "multiple Projects" in readme
     for command in (
         "workaholic context",
         "workaholic project create",
@@ -304,8 +304,7 @@ def test_phase_two_behavior_remains_in_the_verified_phase_four_surface() -> None
         'mode = "embedded"',
     ):
         assert selector in readme
-    assert "schema version `4`" in readme
-    assert "schema version `2`" in readme
+    assert "schema version `5`" in readme
     assert (
         "There is no migration, conversion, import, export, or automatic reset"
         in readme
@@ -313,8 +312,7 @@ def test_phase_two_behavior_remains_in_the_verified_phase_four_surface() -> None
 
     assert "It does not implement:" in boundaries
     for unavailable in (
-        "distinct Agent identities, Tokens, credentials, remote profiles",
-        "`RemoteSession`, a server",
+        "`RemoteSession`, a server, remote profiles",
         "JSON or PostgreSQL persistence adapters",
         "schema migration",
         "Project archival",
