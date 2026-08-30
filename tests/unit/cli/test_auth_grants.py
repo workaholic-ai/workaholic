@@ -359,7 +359,7 @@ def test_grant_commands_reject_missing_project_before_session(
     )
 
     assert result.exit_code == 2
-    assert "--project" in result.stderr
+    assert "--project" in unstyle(result.stderr)
     assert provider.call_count == 0
 
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import stat
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, replace
@@ -16,7 +17,6 @@ from filelock import Timeout
 from pydantic import ValidationError
 
 if TYPE_CHECKING:
-    import os
     from collections.abc import Callable
 
     from workaholic.application import (
@@ -474,9 +474,10 @@ def test_protected_token_file_rejects_malformed_or_unprotected_retry(
 
 
 def test_protected_token_file_rejects_invalid_create_and_changed_compensation(
+    monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    """Creation and compensation cannot act on untyped or replaced state."""
+    """Compensation rejects replaced state even when an inode is reused."""
     path = _token_path(tmp_path, "replace.token")
     output = ProtectedTokenFile(path)
 
@@ -490,6 +491,14 @@ def test_protected_token_file_rejects_invalid_create_and_changed_compensation(
     path.unlink()
     path.write_text(raw_token.get_secret_value(), encoding="ascii")
     path.chmod(0o600)
+    os.utime(
+        path,
+        ns=(created.st_atime_ns, created.st_mtime_ns + 1_000_000_000),
+    )
+    monkeypatch.setattr(
+        "workaholic.auth._files.os.path.samestat",
+        lambda _left, _right: True,
+    )
     with pytest.raises(CredentialUnavailableError):
         output.compensate(created)
 

@@ -42,6 +42,7 @@ from workaholic.auth import (
 )
 from workaholic.auth._files import (
     UnsafeDataFileError,
+    _same_file_state,
     read_bounded_regular_file_snapshot,
 )
 from workaholic.auth.errors import TokenFormatError, TokenGenerationError
@@ -216,7 +217,7 @@ class ProtectedTokenFile:
             if (
                 not stat.S_ISREG(current.st_mode)
                 or stat.S_ISLNK(current.st_mode)
-                or not os.path.samestat(candidate, current)
+                or not _same_file_state(candidate, current)
             ):
                 raise CredentialUnavailableError  # noqa: TRY301 - atomic guard.
             self.path.unlink()
