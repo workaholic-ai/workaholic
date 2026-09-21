@@ -1,5 +1,5 @@
 [build-system]
-requires = ["hatchling==1.31.0"]
+requires = ["hatchling==1.32.3"]
 build-backend = "hatchling.build"
 
 [project]
@@ -52,14 +52,14 @@ workaholic = "workaholic.composition:main"
 [dependency-groups]
 dev = [
   "actionlint-py>=1.7.12.24,<1.8.0",
-  "import-linter>=2.13.0,<2.14.0",
+  "import-linter>=2.13.0,<2.16.0",
   "markdown-it-py>=4.2.0,<5.0.0",
   "mypy>=2.3.0,<2.4.0",
   "pre-commit>=4.6.0,<5.0.0",
   "pytest>=9.1.1,<10.0.0",
   "pytest-cov>=7.1.0,<8.0.0",
   "pyyaml>=6.0.3,<7.0.0",
-  "ruff>=0.15.22,<0.16.0",
+  "ruff>=0.15.22,<0.17.0",
   "shellcheck-py>=0.11.0.1,<0.12.0.0",
   "types-pyyaml>=6.0.12.20260518,<7.0.0",
 ]
