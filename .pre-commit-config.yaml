@@ -30,7 +30,7 @@ repos:
           - --fix=lf
 
   - repo: https://github.com/DavidAnson/markdownlint-cli2
-    rev: 996abf60411a8d954288ac9856aae7602b80cbda # frozen: v0.22.1
+    rev: 916ad0aaa108c64d294101002066f530ea170b10 # frozen: v0.23.3
     hooks:
       - id: markdownlint-cli2
 
